@@ -4,6 +4,10 @@ What can the user do, how do they reach it, and what would prove it works?
 This maps existing behavior. [ROADMAP.md](../../ROADMAP.md) owns future work;
 [AGENTS.md](../../AGENTS.md) owns implementation invariants.
 
+Personal build (2026-11-01): primary and raw macOS dictation send keyboard
+events instead of clipboard paste. See [the local change](../../LOCAL_TYPING.md).
+Paste Last and meeting delta still use the existing paste modes.
+
 Initial source baseline: September 1, 2026, `9e9da53aa9ed`. Public macOS release:
 [2.3.1](../releases/2.3.1.md), with custom-domain downloads, a GitHub DMG mirror,
 and model-download recovery guidance. The initial map was source-only. Listed checks are

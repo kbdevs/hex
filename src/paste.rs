@@ -29,6 +29,9 @@ pub struct Paster {
 pub enum PasteMode {
     Continue,
     Standalone,
+    /// Primary dictation output: send synthesized keyboard events instead of
+    /// changing the clipboard or posting Command-V.
+    Type,
     /// Labs › Copy dictation only: the text goes to the clipboard as an
     /// ordinary entry and nothing is pasted, typed, or restored.
     CopyOnly,
@@ -244,7 +247,16 @@ impl Paster {
             None if crate::labs::smart_spacing() => with_smart_spacing(text),
             None => text.to_string(),
         };
-        if crate::dictation::context::frontmost_bundle_path()
+        if matches!(mode, PasteMode::Type) {
+            commit_prepared_paste(
+                || Ok(()),
+                commit,
+                |()| {
+                    tracing::debug!("typing dictation instead of pasting");
+                    keyboard::type_text(&text)
+                },
+            )?;
+        } else if crate::dictation::context::frontmost_bundle_path()
             .is_some_and(|bundle| has_clipboard_race(&bundle))
         {
             commit_prepared_paste(

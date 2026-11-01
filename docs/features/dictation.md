@@ -961,6 +961,15 @@ check version detection on fake bundles;
 [keyboard.rs](../../src/keyboard.rs) check the typed events. Neither proves
 insertion into a real Chrome page.
 
+**Personal typing build (2026-11-01):** ordinary and raw macOS dictations
+use `PasteMode::Type`, which sends the existing synthesized Unicode key
+events after the commit gate. This path does not write to the clipboard
+or post Command-V. It keeps continuation spacing, text processing, and
+history. Copy-only mode, Paste Last, and meeting delta retain their prior
+behavior. `primary_dictation_uses_typing_and_cancelled_output_sends_nothing`
+in [parakeet.rs](../../src/parakeet.rs) checks routing and cancellation.
+This check does not prove insertion into a target app.
+
 **Chromium 155 and 156:** these versions on macOS can lose a ⌘V that races
 Chromium's own pasteboard change notification
 ([#136](https://github.com/anomalyco/hex/issues/136),

@@ -18,8 +18,12 @@
 </p>
 
 Hex is local-first voice dictation for Apple silicon Macs running macOS 15 or
-newer. Hold a shortcut, speak, and release. Hex transcribes on your Mac and
-pastes the result into the app you are using.
+newer. Hold a shortcut, speak, and release. On macOS, this fork types normal
+dictation through keyboard events and leaves the clipboard unchanged.
+
+This fork is based on Hex 3.1.2. See [the typing change and build instructions](LOCAL_TYPING.md).
+The download links below install upstream Hex. Build this branch to use the
+typing change.
 
 - **On-device transcription.** Download a local speech model during setup;
   ordinary dictation does not require OpenCode or a cloud transcription service.
@@ -109,18 +113,18 @@ dictating in the new one so their shortcuts do not compete.
 
 ## Dictate Anywhere
 
-Hold **Option**, speak, then release. Hex transcribes and pastes at the current
-focus.
+Hold **Option**, speak, then release. On macOS, this fork transcribes and types
+at the current focus. Linux and Windows keep their existing paste behavior.
 
 - Double-tap Option to keep recording; press Option again to finish.
-- Escape never cancels: every dictation finishes and pastes. A tap under
+- Escape never cancels: every dictation finishes and inserts its result. A tap under
   300 ms records nothing.
 - Press Option-Shift-V to paste the last completed dictation again.
 
 Settings let you change the shortcut, microphone, language, local model,
 recording behavior, feedback volume, launch-at-login behavior, and Dock
 visibility. Corrections in Modes fix names and preferred spellings before text
-is pasted; modes can also apply optional rewriting and text transformations.
+is inserted; modes can also apply optional rewriting and text transformations.
 
 Use **menu bar > Transcription Model** to switch between downloaded models without
 opening Settings. Each model remembers its last selected language. Choose the

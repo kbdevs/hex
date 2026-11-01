@@ -963,7 +963,7 @@ fn finish_output(
                             let mode = if crate::labs::copy_only() {
                                 PasteMode::CopyOnly
                             } else {
-                                PasteMode::Continue
+                                PasteMode::Type
                             };
                             paste(&completed.text, mode, &commit)
                         }
@@ -1298,6 +1298,53 @@ mod tests {
                 prepare_ms: 0,
                 inference_ms: 0,
             },
+        }
+    }
+
+    #[test]
+    fn primary_dictation_uses_typing_and_cancelled_output_sends_nothing() {
+        for target in [TranscriptionTarget::Paste, TranscriptionTarget::RawPaste] {
+            for cancelled in [false, true] {
+                let job = processing_job(target);
+                job.control.cancelled.store(cancelled, Ordering::Release);
+                let text = "Hello é漢😀.\nNext line.";
+                let mut emitted = Vec::new();
+                let mut last = None;
+                let event = finish_output(
+                    OutputJob::Completed {
+                        job_id: job.job_id,
+                        control: job.control,
+                        target,
+                        result: Box::new(Ok(CompletedTranscript {
+                            text: text.into(),
+                            raw: text.into(),
+                            application: None,
+                            timings: job.timings,
+                            processing: None,
+                        })),
+                    },
+                    &mut |text, mode, commit| {
+                        assert!(matches!(mode, PasteMode::Type));
+                        assert!(commit());
+                        emitted.push(text.to_string());
+                        Ok(())
+                    },
+                    &mut last,
+                    None,
+                );
+                if cancelled {
+                    assert!(emitted.is_empty());
+                    assert!(last.is_none());
+                    assert!(matches!(event, WorkerEvent::Cancelled { .. }));
+                } else {
+                    assert_eq!(emitted, [text]);
+                    assert_eq!(last.as_deref(), Some(text));
+                    assert!(matches!(
+                        event,
+                        WorkerEvent::Completed { result: Ok(_), .. }
+                    ));
+                }
+            }
         }
     }
 
