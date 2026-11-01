@@ -61,6 +61,9 @@ hex
 │   └── story <story> [--variant V] [--play]  the playground (Labs): open a story
 ├── onboarding reset (alias restart)  replay the first run now; every OS (below)
 ├── history clear --yes            delete every retained dictation
+├── import superwhisper            this fork: import local Superwhisper data while Hex is stopped
+│   └── --dry-run --json           scan only; no files or settings are changed
+├── meetings templates list|show   this fork: read imported meeting-template prompts
 ├── vocabulary                     the shared vocabulary (features/vocabulary.md)
 │   ├── list [--json]              every term and its "sounds like" spellings
 │   ├── add <term> [--sounds-like a,b]  add a term, or new spellings to an existing one

@@ -6,6 +6,7 @@
 //! is never retained here. Every retention choice remains subject to hard
 //! entry and byte caps, writes are atomic, and files are owner-only.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -114,11 +115,16 @@ pub struct HistoryEntry {
     pub inference_ms: u64,
     #[serde(default)]
     pub total_ms: u64,
+    /// Stable source identity for imported entries. It keeps a repeated
+    /// migration from creating duplicates while leaving normal dictations
+    /// without an external identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl HistoryEntry {
     fn text_bytes(&self) -> usize {
-        self.raw_text.len() + self.final_text.len()
+        self.raw_text.len() + self.final_text.len() + self.source.as_ref().map_or(0, String::len)
     }
 
     fn matches(&self, needle: &str) -> bool {
@@ -166,7 +172,7 @@ pub fn read_snapshot(path: &std::path::Path) -> io::Result<Vec<HistoryEntry>> {
     use std::io::Read;
     // Text can expand sixfold when JSON-escaped, plus bounded metadata.
     const MAX_FILE_BYTES: u64 = (MAX_TOTAL_TEXT_BYTES * 6
-        + MAX_ENTRIES * (6 * (2 * MAX_LABEL_BYTES + MAX_FALLBACK_BYTES) + 1_024))
+        + MAX_ENTRIES * (6 * (3 * MAX_LABEL_BYTES + MAX_FALLBACK_BYTES) + 1_024))
         as u64;
     let file = match fs::File::open(path) {
         Ok(file) => file,
@@ -227,7 +233,9 @@ impl HistoryStore {
                         .next_id
                         .max(max_entry_id.map_or(1, |id| id.saturating_add(1)));
                     store.entries = loaded.entries;
-                    store.entries.sort_by_key(|entry| entry.id);
+                    store
+                        .entries
+                        .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
                 }
                 Ok(loaded) => {
                     tracing::warn!(version = loaded.version, "unsupported history version");
@@ -276,7 +284,8 @@ impl HistoryStore {
             .max(loaded.next_id)
             .max(max_entry_id.map_or(1, |id| id.saturating_add(1)));
         self.entries = loaded.entries;
-        self.entries.sort_by_key(|entry| entry.id);
+        self.entries
+            .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
     }
 
     /// Record one successful result. Returns the stable entry ID, or `None`
@@ -306,10 +315,72 @@ impl HistoryStore {
             audio_ms: draft.audio_ms,
             inference_ms: draft.inference_ms,
             total_ms: draft.total_ms,
+            source: None,
         });
+        self.entries
+            .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
         self.prune(now_ms);
         self.persist()?;
         Ok(Some(id))
+    }
+
+    /// Merge entries from an external history, using each entry's source as
+    /// its idempotency key. Imported records get fresh local ids and use the
+    /// same retention and size limits as new dictations.
+    pub fn import(
+        &mut self,
+        imported: impl IntoIterator<Item = HistoryEntry>,
+        now_ms: u64,
+    ) -> io::Result<usize> {
+        if self.retention.is_off() {
+            return Ok(0);
+        }
+        let cutoff = self
+            .retention
+            .max_age_ms()
+            .map(|age| now_ms.saturating_sub(age));
+        let mut known: HashSet<String> = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.source.clone())
+            .collect();
+        let mut added = 0;
+        for mut entry in imported {
+            let Some(source) = entry.source.as_deref().filter(|source| !source.is_empty()) else {
+                continue;
+            };
+            let source = truncated(source, MAX_LABEL_BYTES);
+            if cutoff.is_some_and(|cutoff| entry.timestamp_ms < cutoff)
+                || !known.insert(source.clone())
+            {
+                continue;
+            }
+            entry.source = Some(source);
+            entry.raw_text = truncated(&entry.raw_text, MAX_TEXT_BYTES);
+            entry.final_text = truncated(&entry.final_text, MAX_TEXT_BYTES);
+            entry.application = entry
+                .application
+                .map(|label| truncated(&label, MAX_LABEL_BYTES));
+            if let Some(processing) = &mut entry.processing {
+                processing.profile = truncated(&processing.profile, MAX_LABEL_BYTES);
+                processing.fallback = processing
+                    .fallback
+                    .as_deref()
+                    .map(|text| truncated(text, MAX_FALLBACK_BYTES));
+            }
+            entry.id = self.next_id;
+            self.next_id = self.next_id.saturating_add(1);
+            self.entries.push(entry);
+            added += 1;
+        }
+        if added == 0 {
+            return Ok(0);
+        }
+        self.entries
+            .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
+        self.prune(now_ms);
+        self.persist()?;
+        Ok(added)
     }
 
     /// Delete one entry. Returns whether it existed.

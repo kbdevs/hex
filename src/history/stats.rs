@@ -175,6 +175,7 @@ mod tests {
             audio_ms,
             inference_ms: 0,
             total_ms: 0,
+            source: None,
         }
     }
 

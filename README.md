@@ -22,6 +22,8 @@ newer. Hold a shortcut, speak, and release. On macOS, this fork types normal
 dictation through keyboard events and leaves the clipboard unchanged.
 
 This fork is based on Hex 3.1.2. See [the typing change and build instructions](LOCAL_TYPING.md).
+It also adds a [Superwhisper importer](SUPERWHISPER_IMPORT.md) for local history,
+meetings, audio archives, and saved template prompts.
 The download links below install upstream Hex. Build this branch to use the
 typing change.
 

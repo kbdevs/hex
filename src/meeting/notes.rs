@@ -71,7 +71,11 @@ the main topic. Use only what the transcript says.";
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MeetingNotes {
     pub title: String,
-    /// At most two sentences. Older manifests stored a list of points, and
+    /// Present for notes imported from another application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_from: Option<String>,
+    /// Generated summaries are at most two sentences; imports keep their
+    /// original notes. Older manifests stored a list of points, and
     /// action items and decisions, which are read as joined text or ignored.
     #[serde(default, deserialize_with = "summary_text")]
     pub summary: String,
@@ -372,6 +376,7 @@ impl MeetingNotes {
     fn from_summary(summary: Summary, elapsed: Duration) -> Self {
         Self {
             title: summary.notes.title,
+            imported_from: None,
             summary: summary.notes.summary,
             generated_at_ms: now_ms(),
             elapsed_ms: elapsed.as_millis() as u64,
@@ -421,8 +426,15 @@ fn base_title(manifest: &MeetingManifest) -> String {
 
 pub(super) fn render_notes_block(notes: &MeetingNotes) -> String {
     let summary = notes.summary.trim();
+    let attribution = match notes.imported_from.as_deref() {
+        Some(source) => format!("_Imported from {source}._"),
+        None => {
+            "_Written on this Mac by Apple Intelligence; the transcript below has the details._"
+                .into()
+        }
+    };
     format!(
-        "{NOTES_START}\n## Summary\n\n{}\n\n_Written on this Mac by Apple Intelligence; the transcript below has the details._\n{NOTES_END}\n",
+        "{NOTES_START}\n## Summary\n\n{}\n\n{attribution}\n{NOTES_END}\n",
         if summary.is_empty() {
             "_Nothing to summarize._"
         } else {

@@ -33,3 +33,7 @@ The source change and its tests are public. Runtime settings, account data,
 recordings, and transcripts stay on the user's Mac. This fork does not
 include signed release downloads; the download links in the upstream
 sections of the README install stock Hex.
+
+This fork also includes a local [Superwhisper importer](SUPERWHISPER_IMPORT.md)
+and instructions for enabling Hex's existing cloud rewrite support through
+OpenCode. These do not change the keyboard output path.

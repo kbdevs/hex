@@ -161,6 +161,26 @@ pub enum MeetingsCommand {
         #[command(flatten)]
         output: crate::control::cli::Output,
     },
+    /// List or print imported meeting templates.
+    Templates {
+        #[command(subcommand)]
+        command: Option<MeetingTemplatesCommand>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MeetingTemplatesCommand {
+    /// List templates saved by the Superwhisper importer.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print one template's prompt.
+    Show {
+        key: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -442,6 +462,40 @@ pub fn history(args: &HistoryArgs) -> Result<()> {
     Ok(())
 }
 
+/// Read imported meeting templates without starting Hex.
+pub fn meeting_templates(command: Option<&MeetingTemplatesCommand>) -> Result<()> {
+    let templates = crate::meeting_templates::list()?;
+    match command {
+        None | Some(MeetingTemplatesCommand::List { json: false }) => {
+            if templates.is_empty() {
+                println!("No meeting templates imported.");
+            } else {
+                for template in templates {
+                    println!("{}\t{}", template.key, template.name);
+                }
+            }
+        }
+        Some(MeetingTemplatesCommand::List { json: true }) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "version": 1,
+                    "templates": templates,
+                }))?
+            );
+        }
+        Some(MeetingTemplatesCommand::Show { key, json: false }) => {
+            let template = crate::meeting_templates::find(key)?;
+            println!("{}\n\n{}", template.name, template.prompt);
+        }
+        Some(MeetingTemplatesCommand::Show { key, json: true }) => {
+            let template = crate::meeting_templates::find(key)?;
+            println!("{}", serde_json::to_string_pretty(&template)?);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct MeetingRow<'a> {
     id: &'a str,
@@ -667,6 +721,9 @@ pub fn meetings(command: &MeetingsCommand) -> Result<()> {
         MeetingsCommand::Record { .. }
         | MeetingsCommand::Stop { .. }
         | MeetingsCommand::CopyLast { .. } => Err(eyre!("this command needs the running Hex")),
+        MeetingsCommand::Templates { .. } => {
+            Err(eyre!("meeting templates are handled by the outer CLI"))
+        }
     }
 }
 

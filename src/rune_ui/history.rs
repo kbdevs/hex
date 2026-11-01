@@ -104,6 +104,7 @@ impl HistoryPane {
                     audio_ms: 4200,
                     inference_ms: 180,
                     total_ms: 640,
+                    source: None,
                 }
             };
         let mut rewritten = entry(

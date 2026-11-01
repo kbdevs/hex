@@ -42,6 +42,7 @@ mod local_api;
 mod macos_rune;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod meeting;
+mod meeting_templates;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod microphone_activity;
 #[cfg(target_os = "macos")]
@@ -54,6 +55,7 @@ mod personal_commands;
 mod recognition;
 mod rune_hud;
 mod rune_ui;
+mod superwhisper_import;
 #[cfg(target_os = "macos")]
 mod suppression;
 mod transcription;

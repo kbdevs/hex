@@ -9,6 +9,13 @@ lists where they differ.
 
 Linked checks are locators unless an executed result is recorded below.
 
+This personal fork can [import local Superwhisper meetings](../../SUPERWHISPER_IMPORT.md).
+The explicit CLI command preserves titles, saved summaries, and speaker names
+in transcript text, and publishes each complete meeting folder atomically.
+Mixed audio stays in the local original-file archive. Importing does not run
+transcription or generate notes. Template prompts can be listed or read through
+`hex meetings templates`; there is no automatic template execution.
+
 ## How To Get To It
 
 ```ts
