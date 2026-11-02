@@ -639,17 +639,24 @@ fn copy_file(source: &Path, destination: &Path) -> Result<bool> {
         .ok_or_else(|| eyre!("destination has no parent"))?;
     private_dir(parent)?;
     let temporary = staging_path(destination);
+    private_dir(&temporary)?;
     let copied = (|| -> Result<()> {
-        let mut input = File::open(source)?;
-        let mut output = private_file(&temporary)?;
-        io::copy(&mut input, &mut output)?;
+        let staged = temporary.join("data");
+        fs::copy(source, &staged)?;
+        let output = OpenOptions::new().write(true).open(&staged)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            output.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         output.sync_all()?;
-        fs::rename(&temporary, destination)?;
+        fs::rename(&staged, destination)?;
+        fs::remove_dir(&temporary)?;
         crate::durable::sync_directory(parent)?;
         Ok(())
     })();
     if copied.is_err() {
-        let _ = fs::remove_file(&temporary);
+        let _ = fs::remove_dir_all(&temporary);
     }
     copied?;
     Ok(true)
