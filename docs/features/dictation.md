@@ -971,7 +971,7 @@ in [parakeet.rs](../../src/parakeet.rs) checks routing and cancellation.
 This check does not prove insertion into a target app.
 
 **Personal typing pace (2026-11-02):** primary and raw dictation send one
-Unicode character per keystroke, with 60 ms between complete keystrokes.
+Unicode character per keystroke, with 15 ms between complete keystrokes.
 There is no initial or final pause. Surrogate pairs stay together and a
 Shift-Return releases Shift before any pause. The Chromium fallback keeps
 its fast batches. `paced_typing_preserves_unicode_and_line_breaks_one_character_at_a_time`

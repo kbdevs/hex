@@ -584,7 +584,7 @@ mod tests {
             Key(u16, bool, u64),
             Pause(Duration),
         }
-        let interval = Duration::from_millis(60);
+        let interval = Duration::from_millis(15);
         let actions = std::cell::RefCell::new(Vec::new());
         let run = |strokes, interval| {
             post_typing_strokes(

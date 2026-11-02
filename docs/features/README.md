@@ -5,7 +5,7 @@ This maps existing behavior. [ROADMAP.md](../../ROADMAP.md) owns future work;
 [AGENTS.md](../../AGENTS.md) owns implementation invariants.
 
 Personal build (2026-11-01): primary and raw macOS dictation send keyboard
-events instead of clipboard paste, with a 60 ms pause between characters
+events instead of clipboard paste, with a 15 ms pause between characters
 (2026-11-02). See [the local change](../../LOCAL_TYPING.md).
 Paste Last and meeting delta still use the existing paste modes.
 This fork also provides an explicit [Superwhisper import command](../../SUPERWHISPER_IMPORT.md).
