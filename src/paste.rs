@@ -252,8 +252,8 @@ impl Paster {
                 || Ok(()),
                 commit,
                 |()| {
-                    tracing::debug!("typing dictation instead of pasting");
-                    keyboard::type_text(&text)
+                    tracing::debug!("typing dictation at 60 ms per character");
+                    keyboard::type_text(&text, Duration::from_millis(60))
                 },
             )?;
         } else if crate::dictation::context::frontmost_bundle_path()
@@ -267,7 +267,7 @@ impl Paster {
                         self.continuation = None;
                     }
                     tracing::debug!("typing instead of pasting into Chromium 155 or 156");
-                    keyboard::type_text(&text)?;
+                    keyboard::type_text(&text, Duration::ZERO)?;
                     if crate::labs::keep_on_clipboard() {
                         self.clipboard_restore
                             .lock()

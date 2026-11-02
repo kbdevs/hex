@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use color_eyre::eyre::{Result, eyre};
 
@@ -232,9 +233,12 @@ pub fn post_command(character: char) -> Result<()> {
 
 /// Types `text` as synthesized key events, never touching the clipboard. Line
 /// breaks are Shift-Return so chat boxes insert a newline instead of sending.
-pub fn type_text(text: &str) -> Result<()> {
-    let mut events = Vec::new();
-    for stroke in typing_strokes(text) {
+/// A nonzero interval sends one character at a time, with a pause between
+/// complete keystrokes so modifiers are never held during a pause.
+pub fn type_text(text: &str, interval: Duration) -> Result<()> {
+    let mut strokes = Vec::new();
+    for stroke in typing_strokes(text, !interval.is_zero()) {
+        let mut events = Vec::new();
         match stroke {
             Stroke::Text(units) => {
                 for down in [true, false] {
@@ -251,11 +255,26 @@ pub fn type_text(text: &str) -> Result<()> {
                 }
             }
         }
+        strokes.push(events);
     }
-    for event in events {
-        event.post();
-    }
+    post_typing_strokes(strokes, interval, |event| event.post(), std::thread::sleep);
     Ok(())
+}
+
+fn post_typing_strokes<E>(
+    strokes: Vec<Vec<E>>,
+    interval: Duration,
+    mut post: impl FnMut(E),
+    mut sleep: impl FnMut(Duration),
+) {
+    for (index, events) in strokes.into_iter().enumerate() {
+        if index > 0 && !interval.is_zero() {
+            sleep(interval);
+        }
+        for event in events {
+            post(event);
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -266,8 +285,9 @@ enum Stroke {
 
 /// Splits text into key events of at most `MAX_UNICODE_UNITS` UTF-16 units,
 /// the most one event carries, without splitting a surrogate pair. `\r\n`,
-/// `\n`, and `\r` each become one line break.
-fn typing_strokes(text: &str) -> Vec<Stroke> {
+/// `\n`, and `\r` each become one line break. Paced typing uses one Unicode
+/// character per event instead of filling the event's buffer.
+fn typing_strokes(text: &str, one_character: bool) -> Vec<Stroke> {
     let mut strokes = Vec::new();
     let mut units = Vec::new();
     let mut characters = text.chars().peekable();
@@ -284,7 +304,7 @@ fn typing_strokes(text: &str) -> Vec<Stroke> {
         }
         let mut encoded = [0; 2];
         let encoded = character.encode_utf16(&mut encoded);
-        if units.len() + encoded.len() > MAX_UNICODE_UNITS {
+        if !units.is_empty() && (one_character || units.len() + encoded.len() > MAX_UNICODE_UNITS) {
             strokes.push(Stroke::Text(std::mem::take(&mut units)));
         }
         units.extend_from_slice(encoded);
@@ -485,22 +505,22 @@ mod tests {
     #[test]
     fn typing_splits_text_into_twenty_unit_events_without_splitting_surrogate_pairs() {
         let text = |text: &str| Stroke::Text(text.encode_utf16().collect());
-        assert_eq!(typing_strokes(""), []);
-        assert_eq!(typing_strokes("hello"), [text("hello")]);
+        assert_eq!(typing_strokes("", false), []);
+        assert_eq!(typing_strokes("hello", false), [text("hello")]);
         assert_eq!(
-            typing_strokes("abcdefghijklmnopqrstuvwxyz"),
+            typing_strokes("abcdefghijklmnopqrstuvwxyz", false),
             [text("abcdefghijklmnopqrst"), text("uvwxyz")]
         );
         // 19 units, then a surrogate pair that would make 21, moves whole.
         assert_eq!(
-            typing_strokes("abcdefghijklmnopqrs😀z"),
+            typing_strokes("abcdefghijklmnopqrs😀z", false),
             [text("abcdefghijklmnopqrs"), text("😀z")]
         );
         assert_eq!(
-            typing_strokes("😀😀😀😀😀😀😀😀😀😀😀"),
+            typing_strokes("😀😀😀😀😀😀😀😀😀😀😀", false),
             [text("😀😀😀😀😀😀😀😀😀😀"), text("😀")]
         );
-        for stroke in typing_strokes(&"é漢😀a".repeat(40)) {
+        for stroke in typing_strokes(&"é漢😀a".repeat(40), false) {
             let Stroke::Text(units) = stroke else {
                 panic!("unexpected line break");
             };
@@ -513,7 +533,7 @@ mod tests {
     fn typing_sends_each_line_break_as_one_shift_return() {
         let text = |text: &str| Stroke::Text(text.encode_utf16().collect());
         assert_eq!(
-            typing_strokes("one\ntwo\r\nthree\rfour\n\n"),
+            typing_strokes("one\ntwo\r\nthree\rfour\n\n", false),
             [
                 text("one"),
                 Stroke::LineBreak,
@@ -534,6 +554,85 @@ mod tests {
                 (RETURN_KEY_CODE, true, SHIFT_FLAG),
                 (RETURN_KEY_CODE, false, SHIFT_FLAG),
                 (SHIFT_KEY_CODE, false, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn paced_typing_preserves_unicode_and_line_breaks_one_character_at_a_time() {
+        let text = |text: &str| Stroke::Text(text.encode_utf16().collect());
+        assert_eq!(typing_strokes("", true), []);
+        assert_eq!(
+            typing_strokes("Aé漢😀\r\nZ\r\n\n", true),
+            [
+                text("A"),
+                text("é"),
+                text("漢"),
+                text("😀"),
+                Stroke::LineBreak,
+                text("Z"),
+                Stroke::LineBreak,
+                Stroke::LineBreak,
+            ]
+        );
+    }
+
+    #[test]
+    fn typing_pauses_only_between_complete_keystrokes() {
+        #[derive(Debug, PartialEq, Eq)]
+        enum Action {
+            Key(u16, bool, u64),
+            Pause(Duration),
+        }
+        let interval = Duration::from_millis(60);
+        let actions = std::cell::RefCell::new(Vec::new());
+        let run = |strokes, interval| {
+            post_typing_strokes(
+                strokes,
+                interval,
+                |(key, down, flags)| actions.borrow_mut().push(Action::Key(key, down, flags)),
+                |duration| actions.borrow_mut().push(Action::Pause(duration)),
+            );
+        };
+        let letter = || vec![(0, true, 0), (0, false, 0)];
+        run(
+            vec![
+                letter(),
+                shortcut_event_specs(RETURN_KEY_CODE, &[(SHIFT_FLAG, SHIFT_KEY_CODE)], 1).collect(),
+                letter(),
+            ],
+            interval,
+        );
+        assert_eq!(
+            actions.take(),
+            [
+                Action::Key(0, true, 0),
+                Action::Key(0, false, 0),
+                Action::Pause(interval),
+                Action::Key(SHIFT_KEY_CODE, true, SHIFT_FLAG),
+                Action::Key(RETURN_KEY_CODE, true, SHIFT_FLAG),
+                Action::Key(RETURN_KEY_CODE, false, SHIFT_FLAG),
+                Action::Key(SHIFT_KEY_CODE, false, 0),
+                Action::Pause(interval),
+                Action::Key(0, true, 0),
+                Action::Key(0, false, 0),
+            ]
+        );
+        run(vec![], interval);
+        assert!(actions.take().is_empty());
+        run(vec![letter()], interval);
+        assert_eq!(
+            actions.take(),
+            [Action::Key(0, true, 0), Action::Key(0, false, 0)]
+        );
+        run(vec![letter(), letter()], Duration::ZERO);
+        assert_eq!(
+            actions.take(),
+            [
+                Action::Key(0, true, 0),
+                Action::Key(0, false, 0),
+                Action::Key(0, true, 0),
+                Action::Key(0, false, 0),
             ]
         );
     }

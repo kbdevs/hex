@@ -7,8 +7,11 @@ Primary and raw macOS dictation use the existing synthesized Unicode
 keyboard events. They do not write the transcript to the clipboard or send
 Command-V. Text enters after the recording ends. Live text in the HUD is
 still a preview. Line breaks use Shift-Return to prevent chat submission.
-Events carry at most 20 UTF-16 units; this is keyboard input, not a visual
-one-character-at-a-time animation.
+Primary and raw dictation send one Unicode character at a time with 60 ms
+between complete keystrokes. The first character starts without an added
+wait. Emoji surrogate pairs stay together, and Shift-Return completes
+before the next pause. This is a steady pace, without random human pauses.
+The Chromium clipboard workaround keeps its existing fast event batches.
 
 Copy-only mode, Paste Last, and meeting delta keep their previous behavior.
 Shortcuts, models, text processing, meetings, and other saved settings

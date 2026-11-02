@@ -970,6 +970,16 @@ behavior. `primary_dictation_uses_typing_and_cancelled_output_sends_nothing`
 in [parakeet.rs](../../src/parakeet.rs) checks routing and cancellation.
 This check does not prove insertion into a target app.
 
+**Personal typing pace (2026-11-02):** primary and raw dictation send one
+Unicode character per keystroke, with 60 ms between complete keystrokes.
+There is no initial or final pause. Surrogate pairs stay together and a
+Shift-Return releases Shift before any pause. The Chromium fallback keeps
+its fast batches. `paced_typing_preserves_unicode_and_line_breaks_one_character_at_a_time`
+and `typing_pauses_only_between_complete_keystrokes` in
+[keyboard.rs](../../src/keyboard.rs) check character boundaries, line breaks,
+and the posting schedule with fake events and sleeps. They do not measure
+the target app's input handling.
+
 **Chromium 155 and 156:** these versions on macOS can lose a ⌘V that races
 Chromium's own pasteboard change notification
 ([#136](https://github.com/anomalyco/hex/issues/136),
