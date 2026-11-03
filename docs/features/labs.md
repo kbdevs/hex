@@ -134,6 +134,21 @@ other work). Check:
 `restore_default_brings_back_paste_last_only_with_its_lab_on` in
 [tests.rs](../../src/rune_ui/tests.rs).
 
+Type dictation (`type-dictation`, `labs.type_dictation`, macOS, personal
+build): off by default. On sends real layout key-down and key-up events,
+with a 1 ms pause after each event, and leaves the clipboard unchanged. Off
+uses the existing clipboard paste and restore path, including its Chromium
+155/156 workaround. The output worker reads the switch as primary or raw
+dictation commits; no restart is needed. Copy dictation only takes priority.
+Paste Last and meeting deltas keep their existing paste modes. Typing does
+not copy the result even when Keep dictation on clipboard is on. Checks:
+`type_dictation_is_independent_of_copy_only_and_idle_minutes` in
+[labs.rs](../../src/labs.rs), the output mode checks in
+[paste.rs](../../src/paste.rs), and
+`contributed_options_are_labs_toggles_off_by_default` in
+[panes.rs](../../src/rune_ui/tests/panes.rs). The keyboard-event checks do
+not prove insertion into another app. See [dictation](dictation.md).
+
 Keep dictation on clipboard (`keep-on-clipboard`, issue 200, macOS): while
 on, a pasted dictation stays on the clipboard. `paste::Paster` reads
 `labs::keep_on_clipboard()` as each paste commits: it writes the transcript

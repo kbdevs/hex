@@ -3,10 +3,17 @@
 Based on [Hex 3.1.2](https://github.com/anomalyco/hex/releases/tag/v3.1.2),
 commit `826bdbc44c8806630a45c08ed8cef35a36817a17`.
 
-Primary and raw macOS dictation use synthesized keyboard events with the
-active layout's key codes and Shift flags. They do not write the transcript to the clipboard or send
-Command-V. Text enters after the recording ends. Live text in the HUD is
-still a preview. Line breaks use Shift-Return to prevent chat submission.
+On macOS, Settings > Labs > Type dictation selects actual keyboard typing
+for primary and raw dictation. Turn it off to use clipboard paste and restore.
+The switch is off on a new install; it is enabled in this user's settings.
+It applies to the next output without a restart. Copy dictation only takes
+priority over both methods. Paste Last and meeting deltas use their existing
+paste modes, including the Chromium 155/156 typing workaround.
+
+Typing uses the active layout's key codes and Shift flags. It does not write
+the transcript to the clipboard or send Command-V. Text enters after the
+recording ends. Live text in the HUD is still a preview. Line breaks use
+Shift-Return to prevent chat submission.
 The key-down and key-up each get a 1 ms pause. This follows Superwhisper
 3.0.1's simulated-keypress loop, inspected locally with REA. The layout map
 refreshes on the main thread when the input source changes. Dead keys and
@@ -18,6 +25,14 @@ Copy-only mode, Paste Last, and meeting delta keep their previous behavior.
 Shortcuts, models, text processing, meetings, and other saved settings
 remain in the user's Application Support folder. Set the dictation shortcut
 to `fn` in Hex to use the Globe key.
+
+The installed executable is not on PATH. To change the output method in a
+terminal, use:
+
+```sh
+/Applications/Hex.app/Contents/MacOS/hex labs on type-dictation   # type
+/Applications/Hex.app/Contents/MacOS/hex labs off type-dictation  # paste
+```
 
 Build with Rust 1.97.0 and Xcode. Set `HEX_LOCAL_BUILD=1` so the updater
 cannot replace the typing change. Set `CARGO_PROFILE_RELEASE_STRIP=none`

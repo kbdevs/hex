@@ -73,6 +73,7 @@ pub enum Feature {
     RestoreShortcutDefault,
     KeepOnClipboard,
     CopyOnly,
+    TypeDictation,
     SpokenFormatting,
     FillerWords,
     SubtitleExport,
@@ -89,7 +90,7 @@ pub enum Feature {
 }
 
 impl Feature {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
@@ -105,6 +106,7 @@ impl Feature {
         Self::RestoreShortcutDefault,
         Self::KeepOnClipboard,
         Self::CopyOnly,
+        Self::TypeDictation,
         Self::SpokenFormatting,
         Self::FillerWords,
         Self::SubtitleExport,
@@ -156,6 +158,7 @@ impl Feature {
             | Self::RestoreShortcutDefault
             | Self::KeepOnClipboard
             | Self::CopyOnly
+            | Self::TypeDictation
             | Self::SpokenFormatting
             | Self::FillerWords
             | Self::SubtitleExport
@@ -206,6 +209,7 @@ impl Feature {
             | Self::PauseBrowser
             | Self::KeepOnClipboard
             | Self::CopyOnly
+            | Self::TypeDictation
             | Self::SecondDictationShortcut
             | Self::SmartSpacing
             | Self::SidedChords
@@ -244,6 +248,7 @@ impl Feature {
             Self::RestoreShortcutDefault => "restore-shortcut-default",
             Self::KeepOnClipboard => "keep-on-clipboard",
             Self::CopyOnly => "copy-only",
+            Self::TypeDictation => "type-dictation",
             Self::SpokenFormatting => "spoken-formatting",
             Self::FillerWords => "filler-words",
             Self::SubtitleExport => "subtitle-export",
@@ -278,6 +283,7 @@ impl Feature {
             Self::RestoreShortcutDefault => "labs.restore_shortcut_default",
             Self::KeepOnClipboard => "labs.keep_on_clipboard",
             Self::CopyOnly => "labs.copy_only",
+            Self::TypeDictation => "labs.type_dictation",
             Self::SpokenFormatting => "labs.spoken_formatting",
             Self::FillerWords => "labs.filler_words",
             Self::SubtitleExport => "labs.subtitle_export",
@@ -325,6 +331,9 @@ impl Feature {
                 "Leave the dictation on the clipboard after pasting instead of restoring what was there"
             }
             Self::CopyOnly => "Put the dictation on the clipboard instead of pasting it",
+            Self::TypeDictation => {
+                "Type each character and keep the clipboard unchanged; turn off to paste"
+            }
             Self::SpokenFormatting => {
                 "Turn spoken \"new line\", \"new paragraph\", and \"open/close quote\" into line breaks and quotation marks"
             }
@@ -390,6 +399,7 @@ impl Feature {
             Self::RestoreShortcutDefault => settings.labs.restore_shortcut_default,
             Self::KeepOnClipboard => settings.labs.keep_on_clipboard,
             Self::CopyOnly => settings.labs.copy_only,
+            Self::TypeDictation => settings.labs.type_dictation,
             Self::SpokenFormatting => settings.labs.spoken_formatting,
             Self::FillerWords => settings.labs.filler_words,
             Self::SubtitleExport => settings.labs.subtitle_export,
@@ -423,6 +433,7 @@ impl Feature {
             Self::RestoreShortcutDefault => settings.labs.restore_shortcut_default = on,
             Self::KeepOnClipboard => settings.labs.keep_on_clipboard = on,
             Self::CopyOnly => settings.labs.copy_only = on,
+            Self::TypeDictation => settings.labs.type_dictation = on,
             Self::SpokenFormatting => settings.labs.spoken_formatting = on,
             Self::FillerWords => settings.labs.filler_words = on,
             Self::SubtitleExport => settings.labs.subtitle_export = on,
@@ -461,6 +472,7 @@ const SMART_SPACING: u32 = 1 << 12;
 const SPOKEN_SYMBOLS: u32 = 1 << 13;
 const SIDED_CHORDS: u32 = 1 << 14;
 const TAP_OR_HOLD: u32 = 1 << 15;
+const TYPE_DICTATION: u32 = 1 << 16;
 const PARAKEET_ULTRA: u32 = 1 << 17;
 const HISTORY_STATS: u32 = 1 << 18;
 /// Unload-idle minutes (at most 1,440, 11 bits) sit above the switches.
@@ -523,6 +535,12 @@ pub fn keep_on_clipboard() -> bool {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn copy_only() -> bool {
     on(COPY_ONLY)
+}
+
+/// Type dictations without using the clipboard (macOS; read at output).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn type_dictation() -> bool {
+    on(TYPE_DICTATION)
 }
 
 /// Spoken formatting phrases become line breaks and quotation marks (read
@@ -624,6 +642,11 @@ fn encode_where(settings: &LabsSettings, reaches: impl Fn(Feature) -> bool) -> u
             KEEP_ON_CLIPBOARD,
         ),
         (Feature::CopyOnly, settings.copy_only, COPY_ONLY),
+        (
+            Feature::TypeDictation,
+            settings.type_dictation,
+            TYPE_DICTATION,
+        ),
         (
             Feature::SpokenFormatting,
             settings.spoken_formatting,
@@ -893,6 +916,18 @@ mod tests {
         let state = encode(&labs);
         assert_ne!(state & UNLOAD_IDLE, 0);
         assert_eq!(state >> MINUTES_SHIFT, 30);
+    }
+
+    #[test]
+    fn type_dictation_is_independent_of_copy_only_and_idle_minutes() {
+        let mut labs = LabsSettings::default();
+        assert_eq!(encode(&labs) & TYPE_DICTATION, 0);
+        labs.type_dictation = true;
+        labs.unload_idle_minutes = 24 * 60;
+        let state = encode(&labs);
+        assert_ne!(state & TYPE_DICTATION, 0);
+        assert_eq!(state & COPY_ONLY, 0);
+        assert_eq!(state >> MINUTES_SHIFT, 24 * 60);
     }
 
     #[test]

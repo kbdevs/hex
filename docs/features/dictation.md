@@ -961,16 +961,23 @@ check version detection on fake bundles;
 [keyboard.rs](../../src/keyboard.rs) check the typed events. Neither proves
 insertion into a real Chrome page.
 
-**Personal typing build (2026-11-01):** ordinary and raw macOS dictations
-use `PasteMode::Type`, which sends the existing synthesized Unicode key
-events after the commit gate. This path does not write to the clipboard
+**Personal typing build (2026-11-02):** Labs > Type dictation
+(`labs.type_dictation`, `hex labs on|off type-dictation`) selects the output
+for ordinary and raw macOS dictations when output commits. It defaults off:
+off uses `PasteMode::Continue` and the existing clipboard paste and restore;
+on uses `PasteMode::Type`, which sends keyboard events after the commit gate.
+Copy dictation only takes priority over both methods.
+The typing path does not write to the clipboard
 or post Command-V. It keeps continuation spacing, text processing, and
 history. Copy-only mode, Paste Last, and meeting delta retain their prior
-behavior. `primary_dictation_uses_typing_and_cancelled_output_sends_nothing`
+behavior. `primary_dictation_uses_saved_output_mode_and_cancelled_output_sends_nothing`
 in [parakeet.rs](../../src/parakeet.rs) checks routing and cancellation.
+`dictation_output_selects_typing_or_paste_with_copy_only_priority` in
+[paste.rs](../../src/paste.rs) checks both methods and the copy-only override.
 This check does not prove insertion into a target app.
 
-**Personal keypress output (2026-11-02):** primary and raw dictation use
+**Personal keypress output (2026-11-02):** while Type dictation is on,
+primary and raw dictation use
 the active layout's real key codes and Shift flags, with 1 ms after key-down
 and 1 ms after key-up. This follows Superwhisper 3.0.1's enabled simulated-keypress
 loop, inspected locally with REA 6.8.0 and Rizin at `0x1000f4a64`.

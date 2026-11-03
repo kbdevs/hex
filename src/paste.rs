@@ -25,7 +25,7 @@ pub struct Paster {
     prepared_clipboard: Option<PreparedClipboard>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PasteMode {
     Continue,
     Standalone,
@@ -35,6 +35,18 @@ pub enum PasteMode {
     /// Labs › Copy dictation only: the text goes to the clipboard as an
     /// ordinary entry and nothing is pasted, typed, or restored.
     CopyOnly,
+}
+
+impl PasteMode {
+    pub fn dictation(copy_only: bool, type_dictation: bool) -> Self {
+        if copy_only {
+            Self::CopyOnly
+        } else if type_dictation {
+            Self::Type
+        } else {
+            Self::Continue
+        }
+    }
 }
 
 struct PreparedClipboard {
@@ -841,6 +853,14 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::*;
+
+    #[test]
+    fn dictation_output_selects_typing_or_paste_with_copy_only_priority() {
+        assert_eq!(PasteMode::dictation(false, false), PasteMode::Continue);
+        assert_eq!(PasteMode::dictation(false, true), PasteMode::Type);
+        assert_eq!(PasteMode::dictation(true, false), PasteMode::CopyOnly);
+        assert_eq!(PasteMode::dictation(true, true), PasteMode::CopyOnly);
+    }
 
     static PASTEBOARD_TEST: Mutex<()> = Mutex::new(());
 

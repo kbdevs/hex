@@ -527,6 +527,8 @@ fn run_output_worker(
         for job in ordered.push(job) {
             let event = finish_output(
                 job,
+                // Read the Labs switches as each ordered output starts.
+                PasteMode::dictation(crate::labs::copy_only(), crate::labs::type_dictation()),
                 &mut |text, mode, commit| paster.paste(text, mode, commit),
                 &mut last_transcript,
                 history.as_ref(),
@@ -931,6 +933,7 @@ fn queue_error(error: TrySendError<impl Sized>) -> &'static str {
 
 fn finish_output(
     job: OutputJob,
+    dictation_mode: PasteMode,
     paste: &mut impl FnMut(&str, PasteMode, &dyn Fn() -> bool) -> Result<()>,
     last_transcript: &mut Option<String>,
     history: Option<&History>,
@@ -957,15 +960,7 @@ fn finish_output(
                     let commit = || control.begin_output();
                     match target {
                         TranscriptionTarget::Paste | TranscriptionTarget::RawPaste => {
-                            // Labs › Copy dictation only, read as the output
-                            // commits: dictations go to the clipboard
-                            // unpasted; Paste last dictation still pastes.
-                            let mode = if crate::labs::copy_only() {
-                                PasteMode::CopyOnly
-                            } else {
-                                PasteMode::Type
-                            };
-                            paste(&completed.text, mode, &commit)
+                            paste(&completed.text, dictation_mode, &commit)
                         }
                         TranscriptionTarget::Service
                         | TranscriptionTarget::Print
@@ -1302,47 +1297,50 @@ mod tests {
     }
 
     #[test]
-    fn primary_dictation_uses_typing_and_cancelled_output_sends_nothing() {
-        for target in [TranscriptionTarget::Paste, TranscriptionTarget::RawPaste] {
-            for cancelled in [false, true] {
-                let job = processing_job(target);
-                job.control.cancelled.store(cancelled, Ordering::Release);
-                let text = "Hello é漢😀.\nNext line.";
-                let mut emitted = Vec::new();
-                let mut last = None;
-                let event = finish_output(
-                    OutputJob::Completed {
-                        job_id: job.job_id,
-                        control: job.control,
-                        target,
-                        result: Box::new(Ok(CompletedTranscript {
-                            text: text.into(),
-                            raw: text.into(),
-                            application: None,
-                            timings: job.timings,
-                            processing: None,
-                        })),
-                    },
-                    &mut |text, mode, commit| {
-                        assert!(matches!(mode, PasteMode::Type));
-                        assert!(commit());
-                        emitted.push(text.to_string());
-                        Ok(())
-                    },
-                    &mut last,
-                    None,
-                );
-                if cancelled {
-                    assert!(emitted.is_empty());
-                    assert!(last.is_none());
-                    assert!(matches!(event, WorkerEvent::Cancelled { .. }));
-                } else {
-                    assert_eq!(emitted, [text]);
-                    assert_eq!(last.as_deref(), Some(text));
-                    assert!(matches!(
-                        event,
-                        WorkerEvent::Completed { result: Ok(_), .. }
-                    ));
+    fn primary_dictation_uses_saved_output_mode_and_cancelled_output_sends_nothing() {
+        for expected_mode in [PasteMode::Continue, PasteMode::Type, PasteMode::CopyOnly] {
+            for target in [TranscriptionTarget::Paste, TranscriptionTarget::RawPaste] {
+                for cancelled in [false, true] {
+                    let job = processing_job(target);
+                    job.control.cancelled.store(cancelled, Ordering::Release);
+                    let text = "Hello é漢😀.\nNext line.";
+                    let mut emitted = Vec::new();
+                    let mut last = None;
+                    let event = finish_output(
+                        OutputJob::Completed {
+                            job_id: job.job_id,
+                            control: job.control,
+                            target,
+                            result: Box::new(Ok(CompletedTranscript {
+                                text: text.into(),
+                                raw: text.into(),
+                                application: None,
+                                timings: job.timings,
+                                processing: None,
+                            })),
+                        },
+                        expected_mode,
+                        &mut |text, mode, commit| {
+                            assert_eq!(mode, expected_mode);
+                            assert!(commit());
+                            emitted.push(text.to_string());
+                            Ok(())
+                        },
+                        &mut last,
+                        None,
+                    );
+                    if cancelled {
+                        assert!(emitted.is_empty());
+                        assert!(last.is_none());
+                        assert!(matches!(event, WorkerEvent::Cancelled { .. }));
+                    } else {
+                        assert_eq!(emitted, [text]);
+                        assert_eq!(last.as_deref(), Some(text));
+                        assert!(matches!(
+                            event,
+                            WorkerEvent::Completed { result: Ok(_), .. }
+                        ));
+                    }
                 }
             }
         }

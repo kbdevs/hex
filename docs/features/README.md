@@ -4,8 +4,10 @@ What can the user do, how do they reach it, and what would prove it works?
 This maps existing behavior. [ROADMAP.md](../../ROADMAP.md) owns future work;
 [AGENTS.md](../../AGENTS.md) owns implementation invariants.
 
-Personal build (2026-11-01): primary and raw macOS dictation send keyboard
-events instead of clipboard paste. It uses layout key codes and Shift, with
+Personal build (2026-11-02): Labs > Type dictation chooses keyboard events
+for primary and raw macOS dictation. Off uses the existing clipboard paste
+and restore path. The switch defaults off and applies at output; Copy dictation
+only takes priority. Typing uses layout key codes and Shift, with
 1 ms after each key edge (2026-11-02), following Superwhisper's simulated-keypress
 method. See [the local change](../../LOCAL_TYPING.md).
 Paste Last and meeting delta still use the existing paste modes.

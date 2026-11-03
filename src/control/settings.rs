@@ -308,6 +308,11 @@ const KEYS: &[Key] = &[
         "Labs: put the dictation on the clipboard instead of pasting it (macOS)",
     ),
     key(
+        "labs.type_dictation",
+        Kind::Bool,
+        "Labs: type each character and keep the clipboard unchanged; turn off to paste (macOS)",
+    ),
+    key(
         "labs.spoken_formatting",
         Kind::Bool,
         "Labs: turn spoken \"new line\", \"new paragraph\", and \"open/close quote\" into line breaks and quotation marks",
@@ -563,6 +568,7 @@ const NEEDS: &[(&str, &str)] = &[
     ("meetings.", "meetings"),
     ("labs.live_chapters", "meetings"),
     ("labs.subtitle_export", "meetings"),
+    ("labs.type_dictation", "type_dictation"),
     ("experimental.hex_microphone", "fun"),
     ("show_dock_icon", "dock_icon"),
     ("keyboard_model_switching.", "keyboard_model_switching"),
@@ -1313,6 +1319,14 @@ mod tests {
                 "`{prefix}` names no setting"
             );
         }
+    }
+
+    #[test]
+    fn typing_output_setting_requires_the_native_keyboard_adapter() {
+        assert_eq!(
+            unavailable("labs.type_dictation").is_none(),
+            cfg!(target_os = "macos")
+        );
     }
 
     #[cfg(hex_capture)]

@@ -221,6 +221,14 @@ fn rows(ui: &Ui) -> Vec<Row> {
             tr("Changing input source selects its mapped model and language; manual choices still work"),
         ));
     }
+    if caps.type_dictation {
+        rows.push(row(
+            Feature::TypeDictation,
+            &KEYBOARD,
+            tr("Type dictation"),
+            tr("Type each character and keep the clipboard unchanged; turn off to paste"),
+        ));
+    }
     if caps.os == super::platform::Os::Macos {
         rows.push(row(
             Feature::MouseShortcuts,
@@ -380,6 +388,7 @@ fn row_key(feature: Feature) -> &'static str {
         Feature::RestoreShortcutDefault => "lab-restore-shortcut-default",
         Feature::KeepOnClipboard => "lab-keep-on-clipboard",
         Feature::CopyOnly => "lab-copy-only",
+        Feature::TypeDictation => "lab-type-dictation",
         Feature::SpokenFormatting => "lab-spoken-formatting",
         Feature::FillerWords => "lab-filler-words",
         Feature::SubtitleExport => "lab-subtitle-export",

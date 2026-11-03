@@ -1384,6 +1384,8 @@ pub struct LabsSettings {
     /// A dictation is put on the clipboard and never pasted (macOS,
     /// issue 629).
     pub copy_only: bool,
+    /// Type dictations with keyboard events instead of clipboard paste (macOS).
+    pub type_dictation: bool,
     /// Spoken "new line", "new paragraph", and "open/close quote" become
     /// line breaks and quotation marks (issue 630).
     pub spoken_formatting: bool,
@@ -1437,6 +1439,7 @@ impl Default for LabsSettings {
             restore_shortcut_default: false,
             keep_on_clipboard: false,
             copy_only: false,
+            type_dictation: false,
             spoken_formatting: false,
             filler_words: false,
             subtitle_export: false,
