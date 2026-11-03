@@ -5,8 +5,9 @@ This maps existing behavior. [ROADMAP.md](../../ROADMAP.md) owns future work;
 [AGENTS.md](../../AGENTS.md) owns implementation invariants.
 
 Personal build (2026-11-01): primary and raw macOS dictation send keyboard
-events instead of clipboard paste, with a 15 ms pause between characters
-(2026-11-02). See [the local change](../../LOCAL_TYPING.md).
+events instead of clipboard paste. It uses layout key codes and Shift, with
+1 ms after each key edge (2026-11-02), following Superwhisper's simulated-keypress
+method. See [the local change](../../LOCAL_TYPING.md).
 Paste Last and meeting delta still use the existing paste modes.
 This fork also provides an explicit [Superwhisper import command](../../SUPERWHISPER_IMPORT.md).
 It writes only when invoked, requires Hex to be stopped, and has a read-only dry run.
@@ -502,7 +503,8 @@ Labs > Switch model with keyboard language      // setup.input-source-model; mac
 ├── Manual model choice -> Supersede pending automatic work; do not reapply at recording start
 ├── Enable -> Apply the current source's mapping once it is observed
 ├── Edit the active mapping -> Apply now
-├── Disable -> Cancel automatic work; stop observing; leave the selected model alone
+├── Disable -> Cancel automatic work; leave the selected model alone
+│   └── macOS keeps the shared observer for typing-layout updates
 └── Relaunch -> Observe current source without applying it; preserve the manual choice
 ```
 
@@ -515,11 +517,12 @@ labeled Not installed and can be cleared; a mapping to a model or language Hex n
 longer offers is dropped when settings load. Removing a source hides its row
 without erasing its saved mapping.
 
-Hex reads input sources only while the setting is on: the macOS main-thread TIS
-distributed-notification observer, the Windows runtime's poll of the foreground
-window's layout, and the Linux host's XKB connection (polled every 250 ms) exist
-only then and work without a Settings window; the window lists enabled sources
-only then. Windows lists the language bar's layouts, named by language and
+Model switching uses input-source reports only while the setting is on. macOS
+keeps its main-thread TIS distributed-notification observer active for typing
+layout updates too. The Windows runtime's poll of the foreground window's
+layout and the Linux host's XKB connection (polled every 250 ms) exist only
+while the setting is on. These work without a Settings window; the window lists
+enabled sources only while the setting is on. Windows lists the language bar's layouts, named by language and
 keyboard. On Linux the row appears only in X11 sessions: Wayland compositors keep
 the active layout to themselves, with no general protocol (IBus and Fcitx report
 input-method engines, not the compositor's layout), so Wayland is unavailable. Source changes cancel

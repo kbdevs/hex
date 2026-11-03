@@ -20,7 +20,13 @@ fn main() {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    const CASES: [&str; 4] = ["cold-lookups", "cold-mixed", "warm-hits", "warm-misses"];
+    const CASES: [&str; 5] = [
+        "cold-lookups",
+        "cold-mixed",
+        "warm-hits",
+        "warm-misses",
+        "typed-events",
+    ];
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.first().is_some_and(|arg| arg == "--case") {
         // Native aborts should fail the child without creating crash reports or
@@ -123,6 +129,10 @@ fn run_case(case: &str) {
 
     const WORKERS: usize = 8;
     const ITERATIONS: usize = 1_000;
+    if case == "typed-events" {
+        keyboard::verify_native_typing_events();
+        return;
+    }
     let warm = case.starts_with("warm-");
     if warm {
         keyboard::initialize_layout().unwrap();

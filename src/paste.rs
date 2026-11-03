@@ -252,8 +252,8 @@ impl Paster {
                 || Ok(()),
                 commit,
                 |()| {
-                    tracing::debug!("typing dictation at 15 ms per character");
-                    keyboard::type_text(&text, Duration::from_millis(15))
+                    tracing::debug!("typing dictation with layout keys and 1 ms key edges");
+                    keyboard::type_text(&text, Duration::from_millis(1))
                 },
             )?;
         } else if crate::dictation::context::frontmost_bundle_path()

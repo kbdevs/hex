@@ -1,5 +1,5 @@
 //! Main-thread-only TIS observation, independent of keyboard shortcuts. Hex
-//! reads input sources only while keyboard model switching is on.
+//! also uses this observer to refresh the typing layout.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -138,29 +138,41 @@ pub(crate) fn enabled(_mtm: MainThreadMarker) -> Vec<InputSource> {
 struct Watcher {
     dirty: Box<AtomicBool>,
     mtm: MainThreadMarker,
+    model_switching: bool,
 }
 
 thread_local! {
-    /// Present only while keyboard model switching is on.
+    /// Present while the main-loop pump observes input sources.
     static WATCHER: RefCell<Option<Watcher>> = const { RefCell::new(None) };
 }
 
-/// Starts or stops observing input-source changes. A new observer reports
-/// the current source once, so the runtime learns it when switching turns on.
+/// Typing always observes input-source changes. Enabling model switching
+/// also reports the current source once, as a new model observer would.
 pub(crate) fn observe(mtm: MainThreadMarker, on: bool) {
     WATCHER.with(|slot| {
         let mut slot = slot.borrow_mut();
-        if on && slot.is_none() {
+        if slot.is_none() {
             *slot = Some(Watcher::new(mtm));
-        } else if !on {
-            *slot = None;
+        }
+        let watcher = slot.as_mut().unwrap();
+        if watcher.model_switching != on {
+            watcher.model_switching = on;
+            if on {
+                watcher.dirty.store(true, Ordering::Release);
+            }
         }
     });
 }
 
 /// The current source when it changed since the last call, if observing.
-pub(crate) fn take_change(_mtm: MainThreadMarker) -> Option<Option<String>> {
-    WATCHER.with(|slot| slot.borrow().as_ref().and_then(Watcher::poll))
+pub(crate) fn take_change(mtm: MainThreadMarker) -> Option<Option<String>> {
+    let change = WATCHER.with(|slot| slot.borrow().as_ref().and_then(Watcher::poll));
+    if change.is_some()
+        && let Err(error) = crate::keyboard::refresh_typing_layout(mtm)
+    {
+        tracing::warn!(%error, "could not refresh typing layout; using Unicode output");
+    }
+    change
 }
 
 impl Watcher {
@@ -168,6 +180,7 @@ impl Watcher {
         let watcher = Self {
             dirty: Box::new(AtomicBool::new(true)),
             mtm,
+            model_switching: false,
         };
         // SAFETY: the boxed flag has a stable address and outlives registration.
         // 4 = DeliverImmediately, including when Hex is in the background.
