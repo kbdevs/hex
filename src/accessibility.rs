@@ -65,7 +65,6 @@ unsafe extern "C" {
     fn CFURLGetString(url: CfTypeRef) -> CfStringRef;
     fn CFRelease(value: CfTypeRef);
     fn CFRetain(value: CfTypeRef) -> CfTypeRef;
-    fn CFEqual(left: CfTypeRef, right: CfTypeRef) -> u8;
     fn CFArrayGetTypeID() -> usize;
     fn CFArrayGetCount(array: CfTypeRef) -> isize;
     fn CFArrayGetValueAtIndex(array: CfTypeRef, index: isize) -> CfTypeRef;
@@ -101,42 +100,22 @@ pub fn focused_web_url(pid: i32) -> Option<String> {
     url
 }
 
-/// Every page a browser's windows show, for a call's address or tab title
+/// The page in a browser's focused or main window, for a call's address or tab title
 /// when its scripting dictionary can't be asked (#831). Chromium (Arc,
-/// Chrome, Brave, Edge) builds its web accessibility tree only for an
+/// Chrome, Brave, Edge, Helium) builds its web accessibility tree only for an
 /// assistive app that asks, which `AXManualAccessibility` does, once per
 /// process; without it a browser behind another app shows windows but no
 /// web areas.
-pub fn browser_pages(pid: i32) -> crate::dictation::browser_page::BrowserPages {
+pub fn browser_page(pid: i32) -> crate::dictation::browser_page::BrowserPage {
     // SAFETY: AXUIElementCreateApplication returns a retained Core Foundation object.
     let Some(application) = bounded_element(unsafe { AXUIElementCreateApplication(pid) }) else {
         return Default::default();
     };
     request_web_accessibility(pid, &application);
-    let mut windows: Vec<CfObject> = Vec::new();
-    let candidates = [
-        copy_element(&application, c"AXFocusedWindow"),
-        copy_element(&application, c"AXMainWindow"),
-    ]
-    .into_iter()
-    .flatten()
-    .chain(copy_elements(&application, c"AXWindows"));
-    for window in candidates {
-        // SAFETY: Both are live AXUIElements.
-        if !windows
-            .iter()
-            .any(|known| unsafe { CFEqual(known.0, window.0) } != 0)
-        {
-            windows.push(window);
-        }
-    }
-    let mut pages = crate::dictation::browser_page::pages(windows.into_iter().map(Element));
-    // The focused web area, when there is one, is the likeliest page.
-    if let Some(url) = focused_web_url(pid) {
-        pages.urls.retain(|known| known != &url);
-        pages.urls.insert(0, url);
-    }
-    pages
+    let window = copy_element(&application, c"AXFocusedWindow")
+        .or_else(|| copy_element(&application, c"AXMainWindow"))
+        .or_else(|| copy_elements(&application, c"AXWindows").into_iter().next());
+    crate::dictation::browser_page::page(window.map(Element))
 }
 
 /// Asks a Chromium browser for its web accessibility tree, once per

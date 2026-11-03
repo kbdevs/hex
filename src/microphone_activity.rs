@@ -89,6 +89,7 @@ fn is_browser_id(canonical_bundle_id: Option<&str>) -> bool {
                 | "org.mozilla.firefox"
                 | "com.microsoft.edgemac"
                 | "company.thebrowser.Browser"
+                | "net.imput.helium"
         )
     )
 }
@@ -217,6 +218,7 @@ fn canonical_bundle_id_for(bundle_id: &str, name: Option<&str>) -> Option<&'stat
         ("org.mozilla.plugincontainer", "org.mozilla.firefox"),
         ("com.microsoft.edgemac", "com.microsoft.edgemac"),
         ("company.thebrowser.browser", "company.thebrowser.Browser"),
+        ("net.imput.helium", "net.imput.helium"),
     ]
     .iter()
     .find_map(|(prefix, canonical)| {
@@ -240,6 +242,7 @@ pub(crate) fn canonical_application_name(canonical_bundle_id: &str) -> Option<&'
         "org.mozilla.firefox" => Some("Firefox"),
         "com.microsoft.edgemac" => Some("Microsoft Edge"),
         "company.thebrowser.Browser" => Some("Arc"),
+        "net.imput.helium" => Some("Helium"),
         _ => None,
     }
 }
@@ -634,6 +637,19 @@ mod tests {
         assert!(brave.is_browser());
         assert_eq!(brave.canonical_bundle_id(), Some("com.brave.Browser"));
 
+        let helium = resolve_application_with(
+            5120,
+            Some("net.imput.helium.helper".into()),
+            |pid| (pid == 5100).then(|| ("net.imput.helium".into(), Some("Helium".into()))),
+            |pid| (pid == 5120).then_some(5100),
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(helium.pid, 5100);
+        assert_eq!(helium.name, "Helium");
+        assert_eq!(helium.canonical_bundle_id(), Some("net.imput.helium"));
+        assert!(helium.is_browser());
+
         // Slack's audio utility process behaves the same way.
         let slack = resolve_application_with(
             31807,
@@ -770,6 +786,7 @@ mod tests {
 
     #[test]
     fn browser_bundles_include_helpers() {
+        assert!(browser_bundle("net.imput.helium.helper", None));
         assert!(browser_bundle("com.brave.Browser.helper", None));
         assert!(browser_bundle("com.google.Chrome.helper", None));
         assert!(browser_bundle(
@@ -844,6 +861,14 @@ mod tests {
                 true,
             ),
             ("company.thebrowser.dia", "Dia", None, false),
+            ("net.imput.helium", "Helium", Some("net.imput.helium"), true),
+            (
+                "net.imput.helium.helper",
+                "Helium Helper",
+                Some("net.imput.helium"),
+                true,
+            ),
+            ("net.imput.heliumfake", "Other", None, false),
             ("anomaly.hex", "Hex", None, false),
             ("zoom", "Zoom", Some("us.zoom.xos"), false),
             (

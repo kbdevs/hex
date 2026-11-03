@@ -164,13 +164,20 @@ The older `meetings.never_offer` list reads as Never offer entries and is
 rewritten as `providers` on the next load.
 ```
 
-Call detection knows Brave, Chrome, Safari, Firefox, Edge, and Arc
-(`company.thebrowser.Browser`, foreground name `Arc`; its tab is read like
-Brave's). Arc was missing until #801, so its Meet calls were never detected.
+Call detection knows Brave, Chrome, Safari, Firefox, Edge, Arc, and Helium.
+Arc (`company.thebrowser.Browser`, foreground name `Arc`) reads its tab like
+Brave. Arc was missing until #801, so its Meet calls were never detected.
 Check: `a_google_meet_call_in_arc_records_after_about_two_seconds`.
 
-Chromium and Electron apps (Brave, Chrome, Edge, Arc, Slack, Teams) capture microphone
-audio in sandboxed `audio.mojom.AudioService` utility processes (`*.helper`) that
+Helium uses its existing Chromium tab reader. Its microphone helper maps to
+`net.imput.helium`, so a known Meet call uses the 2 s threshold; an unknown
+page uses the 20 s threshold and the offer says "Call in Helium". Checks:
+`helium_calls_use_the_known_site_or_the_unknown_browser_threshold`,
+`canonical_bundle_matching_covers_supported_apps_and_variants`, and
+`resolves_unregistered_chromium_and_electron_audio_helpers_to_their_host_apps`.
+
+Chromium and Electron apps (Brave, Chrome, Edge, Arc, Helium, Slack, Teams)
+capture microphone audio in sandboxed `audio.mojom.AudioService` utility processes (`*.helper`) that
 do not register with `NSRunningApplication`; Zoom uses `us.zoom.CptHost`, Firefox
 uses `org.mozilla.plugincontainer`, Safari uses `com.apple.WebKit.GPU` (`Safari
 Graphics and Media`), and FaceTime uses `com.apple.avconferenced`.
@@ -191,8 +198,17 @@ record applies); the landing page ("Google Meet") does not. Before this, a
 Meet call in a background Arc without Automation was an unnamed browser call
 (#827). Check:
 `a_google_meet_call_in_arc_without_its_address_is_known_by_its_title`; not yet
-observed against a live background Arc. Background tabs are not searched: a
-call open in one says nothing about which tab holds the microphone, and a
+observed against a live background Arc. The Accessibility fallback reads one
+window: focused, main, or the first window when neither is available. Other
+windows and background tabs are not searched. The URL and title come from the
+same web area; an app-wide focused URL is not merged in. A window with multiple
+web areas, or a search that hits its limit, stays an unknown browser call
+(20 s). With one web area, its title is used; the window title is used only
+when there is no web area. Checks:
+`a_voice_note_and_meeting_exposed_in_one_window_stay_unknown`,
+`a_meeting_in_another_window_does_not_name_the_current_page`, and
+`an_incomplete_window_search_stays_unknown` (dictation/browser_page.rs).
+A call open elsewhere says nothing about which page holds the microphone, and a
 voice note elsewhere would otherwise get a known service's 2 s threshold or
 trigger Always record. (A call in a background tab is therefore judged by the
 active tab's page, which is the unknown-page 20 s for a new site.) That query is
@@ -204,8 +220,9 @@ while Hex records, Meetings is off, the browser is snoozed, or no browser holds
 the microphone; a query in flight at that moment is not repeated beside itself,
 and its answer is discarded. When a browser's page is found for a run already
 under way (the first pass had no answer yet), the run keeps counting, now
-toward the known service's 2 s. When no answer names a page, the last page a browser showed while
-it held the microphone names the call for 60 s (`BrowserPageMemory`), so the
+toward the known service's 2 s. While no browser-scoped answer is available, the
+last page a browser showed while it held the microphone names the call for
+60 s (`BrowserPageMemory`), so the
 site survives a failed query or Hex being in front. Safari, Chrome, Firefox and
 Edge expose no URL, so their calls are unnamed unless the foreground context
 says otherwise. Banshee has no recognised room path, so any `banshee.app` page
@@ -214,6 +231,10 @@ Detected calls once its choice is set from an offer's "…". Not observed: the
 new tab query against a live Brave with a Banshee call (the script compiles, and
 the thread and memory are unit-tested with fake queries); the Banshee URL shape
 was not available, so the host rule is a guess at "any page".
+
+A fresh browser-scoped answer replaces the remembered page, including a
+title-only or ambiguous result. It cannot revive the previous call's site or
+Always record policy. Check: `an_ambiguous_page_clears_a_remembered_call`.
 
 On 2026-10-21 Brave opened the microphone for 3-6 s at a time on
 problems.kitlangton.com (board voice notes) and each burst got a "Browser call
