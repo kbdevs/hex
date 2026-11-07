@@ -43,7 +43,7 @@ request. The warm text process is shared, and turning the option off or
 quitting Hex stops it and its native engine.
 
 This version refines after recording ends. It does not implement Phonon's
-background streaming refinement or promise the post's key-release latency.
+background streaming refinement or promise Phonon's announced key-release latency.
 The refiner is intended for English cleanup.
 
 Phonon is GPL-3.0; its model uses the LFM Open License v1.0. Hex distributes

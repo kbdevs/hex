@@ -96,7 +96,7 @@ fn invalid_enum_resets_only_that_field_and_leaves_disk_alone() {
 #[test]
 fn custom_output_switches_survive_loading_and_saving_older_settings() {
     let file = SettingsFile::new(
-        br#"{"labs":{"type_dictation":true,"phonon_refiner":true},"release_microphone_while_idle":false}"#,
+        br#"{"labs":{"type_dictation":true,"phonon_refiner":true},"release_microphone_while_idle":true}"#,
     );
     let mut settings = AppSettings::load_from(&file.path).unwrap();
     assert!(settings.labs.type_dictation);
@@ -106,7 +106,7 @@ fn custom_output_switches_survive_loading_and_saving_older_settings() {
     let reloaded = AppSettings::load_from(&file.path).unwrap();
     assert!(reloaded.labs.type_dictation);
     assert!(reloaded.labs.phonon_refiner);
-    assert!(!reloaded.release_microphone_while_idle);
+    assert!(reloaded.release_microphone_while_idle);
     let old: AppSettings = serde_json::from_str("{}").unwrap();
     assert!(!old.labs.type_dictation);
     assert!(!old.labs.phonon_refiner);

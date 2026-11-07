@@ -20,6 +20,7 @@ use super::vocabulary::VocabularyEntry;
 
 const MODEL: &str = "Infatoshi/phonon-refiner-1.7b";
 const REVISION: &str = "2b0ab74bee7ab7cf364695bbe44f64ce4c47439e";
+const MLX_REQUIREMENT: &str = "mlx-lm==0.31.3";
 const POLL: Duration = Duration::from_millis(20);
 const MAX_LINE: usize = 1024 * 1024;
 const MAX_INPUT: usize = 128 * 1024;
@@ -65,7 +66,7 @@ impl Bundle {
                 "--python",
                 "3.12",
                 "--with",
-                "mlx-lm==0.31.3",
+                MLX_REQUIREMENT,
                 "python",
             ])
             .arg(resources.join("sidecar/polish_server.py"))
@@ -97,6 +98,7 @@ struct Client {
     stdin: ChildStdin,
     responses: mpsc::Receiver<Result<Value, &'static str>>,
     ready: bool,
+    reply_complete: bool,
 }
 
 impl Client {
@@ -117,6 +119,7 @@ impl Client {
             stdin,
             responses,
             ready: false,
+            reply_complete: false,
         };
         // A helper that stops reading must not trap a processing worker inside
         // write_all. Every pipe write below shares the request deadline.
@@ -192,6 +195,7 @@ impl Client {
         until: Instant,
         cancelled: &impl Fn() -> bool,
     ) -> Result<String> {
+        self.reply_complete = false;
         if !self.ready {
             self.send(&json!({"command": "warmup"}), until, cancelled)?;
             loop {
@@ -211,6 +215,7 @@ impl Client {
         if value.get("stream").is_some() || value.get("status").is_some() {
             bail!("Phonon refiner did not return final text");
         }
+        self.reply_complete = value.get("outputText").is_some_and(Value::is_string);
         if value
             .pointer("/diagnostics/guardFired")
             .and_then(Value::as_bool)
@@ -273,11 +278,12 @@ pub fn refine(
     if guard.is_none() {
         *guard = Some(Client::spawn(Bundle::installed()?.command())?);
     }
-    let result = guard
-        .as_mut()
-        .expect("initialized client")
-        .run(&payload, text, until, &cancelled);
-    if result.is_err() {
+    let client = guard.as_mut().expect("initialized client");
+    let result = client.run(&payload, text, until, &cancelled);
+    if (result.is_err() && !client.reply_complete)
+        || cancelled()
+        || crate::desktop::process_exit::quitting()
+    {
         *guard = None;
     }
     result

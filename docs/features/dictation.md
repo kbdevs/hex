@@ -1193,7 +1193,7 @@ check version detection on fake bundles;
 [keyboard.rs](../../src/keyboard.rs) check the typed events. Neither proves
 insertion into a real Chrome page.
 
-**Personal typing build (2026-11-02):** Labs > Type dictation
+**Type dictation (Labs):** Labs > Type dictation
 (`labs.type_dictation`, `hex labs on|off type-dictation`) selects the output
 for ordinary and raw macOS dictations when output commits. It defaults off:
 off uses `PasteMode::Continue` and the existing clipboard paste and restore;
@@ -1208,7 +1208,7 @@ in [parakeet.rs](../../src/parakeet.rs) checks routing and cancellation.
 [paste.rs](../../src/paste.rs) checks both methods and the copy-only override.
 This check does not prove insertion into a target app.
 
-**Personal keypress output (2026-11-02):** while Type dictation is on,
+**Type dictation key timing:** while Type dictation is on,
 primary and raw dictation use
 the active layout's real key codes and Shift flags, with balanced Shift
 modifier events and 1 ms after each key edge. This follows Superwhisper 3.0.1's enabled simulated-keypress

@@ -7,10 +7,10 @@ The importer is a CLI command; there is no import button in the window.
 Build this branch using [LOCAL_TYPING.md](LOCAL_TYPING.md). Then run:
 
 ```sh
-hex import superwhisper --dry-run --json
-hex quit
-hex import superwhisper
-hex start
+/Applications/Hex.app/Contents/MacOS/hex import superwhisper --dry-run --json
+/Applications/Hex.app/Contents/MacOS/hex quit
+/Applications/Hex.app/Contents/MacOS/hex import superwhisper
+/Applications/Hex.app/Contents/MacOS/hex start
 ```
 
 The source defaults to `~/Documents/superwhisper`. Use `--path` for another
@@ -51,8 +51,8 @@ Local modes and meeting-template JSON files are also archived. Template prompts
 are available through:
 
 ```sh
-hex meetings templates list
-hex meetings templates show starter.action-items
+/Applications/Hex.app/Contents/MacOS/hex meetings templates list
+/Applications/Hex.app/Contents/MacOS/hex meetings templates show starter.action-items
 ```
 
 Importing a template saves its prompt; it does not add automatic template

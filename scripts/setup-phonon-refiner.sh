@@ -5,7 +5,10 @@ set -euo pipefail
 
 phonon_contents=""
 for candidate in /Applications/Phonon.app/Contents "$HOME/Applications/Phonon.app/Contents"; do
-    if [[ -x "$candidate/Helpers/uv" && -f "$candidate/Resources/sidecar/polish_server.py" ]]; then
+    if [[ -x "$candidate/Helpers/uv" && -f "$candidate/Resources/sidecar/polish_server.py" \
+        && -f "$candidate/Resources/sidecar/linereader.py" \
+        && -f "$candidate/Resources/sidecar/models/lfm3.py" \
+        && -f "$candidate/Resources/prompts/polish_v2.txt" ]]; then
         phonon_contents="$candidate"
         break
     fi
@@ -28,9 +31,10 @@ if [[ -f "$phonon_contents/Helpers/pe" && -f "$phonon_resources/engine/mk.metal"
 fi
 
 # Network access is explicit here. Normal dictation uses offline-only flags.
+cd "$phonon_resources"
 printf '%s\n' '{"command":"warmup"}' '{"command":"shutdown"}' |
     env UV_OFFLINE=false HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 PHONON_STREAM_REFINE=0 "${phonon_command[@]}" |
-    /usr/bin/python3 -c '
+    env UV_OFFLINE=false "$phonon_contents/Helpers/uv" run --no-project --python 3.12 python -c '
 import json, sys
 ready = False
 for line in sys.stdin:
@@ -39,10 +43,16 @@ for line in sys.stdin:
     except ValueError:
         print("Invalid setup response", file=sys.stderr)
         sys.exit(1)
+    if not isinstance(value, dict):
+        print("Invalid setup response", file=sys.stderr)
+        sys.exit(1)
     if value.get("ok") is not True:
-        print("Refiner setup failed. Check the installed Phonon version and network access.", file=sys.stderr)
+        print("Refiner setup failed: " + str(value.get("error") or "Check the installed Phonon version and network access."), file=sys.stderr)
         sys.exit(1)
     status = value.get("status", {})
+    if not isinstance(status, dict):
+        print("Invalid setup status", file=sys.stderr)
+        sys.exit(1)
     if status.get("message"):
         print(status["message"], flush=True)
     ready = ready or status.get("state") == "ready"

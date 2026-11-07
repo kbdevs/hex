@@ -5,7 +5,7 @@ commit `49de3e167598c3e1548c2438a0f4a8597e685346`.
 
 On macOS, Settings > Labs > Type dictation selects actual keyboard typing
 for primary and raw dictation. Turn it off to use clipboard paste and restore.
-The switch is off on a new install; it is enabled in this user's settings.
+The switch is off on a new install.
 It applies to the next output without a restart. Copy dictation only takes
 priority over both methods. Paste Last and meeting deltas use their existing
 paste modes, including the Chromium 155/156 typing workaround.

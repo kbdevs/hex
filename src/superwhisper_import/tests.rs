@@ -252,6 +252,11 @@ fn respects_history_off_and_no_audio_without_losing_metadata() {
         &serde_json::json!({"result":"kept as metadata"}),
         "output.ogg",
     );
+    write_private(
+        &fixture.source.join("recordings/1730000000/output.WAV"),
+        b"audio",
+    )
+    .unwrap();
     let report = fixture.import(false, true).unwrap();
     assert_eq!(report.history_added, 0);
     assert_eq!(report.history_excluded_by_retention, 1);
@@ -269,6 +274,12 @@ fn respects_history_off_and_no_audio_without_losing_metadata() {
             .exists()
     );
     assert!(!fixture.support.join("history.json").exists());
+    assert!(
+        !fixture
+            .archive_path()
+            .join("recordings/1730000000/output.WAV")
+            .exists()
+    );
 }
 
 #[test]
@@ -376,8 +387,7 @@ fn timestamps_and_history_bounds_are_safe_for_untrusted_records() {
     assert_eq!(store.import([entry.clone(), entry], 0).unwrap(), 1);
     let saved = store.entries().next().unwrap();
     assert_eq!(saved.source.as_ref().unwrap().len(), 256);
-    assert!(saved.final_text.len() <= 16 * 1024);
-    assert!(saved.final_text.is_char_boundary(saved.final_text.len()));
+    assert_eq!(saved.final_text, "é".repeat(8 * 1024));
     assert_eq!(saved.processing.as_ref().unwrap().profile.len(), 256);
     let turns = transcript_entries(&Meta {
         segments: vec![MetaSegment {
@@ -446,4 +456,26 @@ fn separate_roots_keep_same_second_recordings_and_legacy_imports_stay_idempotent
             .iter()
             .any(|entry| entry.source.as_deref() == Some("superwhisper:1730000000"))
     );
+}
+
+#[test]
+fn damaged_source_namespaces_are_not_treated_as_legacy_ids() {
+    let fixture = Fixture::new();
+    for bad in [
+        Value::Null,
+        serde_json::json!(42),
+        serde_json::json!([]),
+        serde_json::json!({}),
+    ] {
+        write_private(
+            &fixture.archive.join("import-report.json"),
+            &serde_json::to_vec(
+                &serde_json::json!({"source":fixture.source,"source_namespace":bad}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(fixture.import(false, false).is_err());
+        assert!(!fixture.support.join("history.json").exists());
+    }
 }

@@ -98,7 +98,7 @@ pub fn focused_web_url(pid: i32) -> Option<String> {
     url
 }
 
-/// The page in a browser's focused or main window, when Hex cannot use its
+/// The page in a browser's focused, main, or first listed window, when Hex cannot use its
 /// script dictionary (#831). Chromium browsers build their web accessibility
 /// tree only after an assistive app asks through `AXManualAccessibility`.
 /// Without that request, a browser behind another app shows no web areas.

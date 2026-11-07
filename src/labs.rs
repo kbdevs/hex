@@ -948,7 +948,7 @@ pub fn keep_on_clipboard() -> bool {
 }
 
 /// A dictation goes to the clipboard and is never pasted (macOS; read as
-/// each dictation's output commits).
+/// each ordered dictation output starts).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn copy_only() -> bool {
     on(COPY_ONLY)

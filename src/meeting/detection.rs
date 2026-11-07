@@ -858,9 +858,9 @@ fn call_site_source(host: &str, more_call_apps: bool) -> Option<MeetingSource> {
 }
 
 /// The last page a browser showed while it held the microphone. The call's
-/// site is read from the browser's tabs, which fails now and then (a timed
-/// out AppleScript, a browser without an adapter); the page seen a moment
-/// ago still names the call, but not one seen minutes ago.
+/// site may be reused for 60 s when no matching browser context is available.
+/// A fresh matching result without an address clears it, so ambiguous page
+/// evidence cannot reuse a previous meeting's policy.
 #[derive(Default)]
 pub struct BrowserPageMemory {
     last: Option<(&'static str, ContextSnapshot, Instant)>,
@@ -868,7 +868,8 @@ pub struct BrowserPageMemory {
 
 impl BrowserPageMemory {
     /// The page to judge `application`'s call by: `context` when it shows the
-    /// browser's page, else the page remembered from the last 60 s.
+    /// browser, including a fresh result without a URL; otherwise the page
+    /// remembered from the last 60 s.
     pub fn recall(
         &mut self,
         application: &ActiveMicrophoneApplication,

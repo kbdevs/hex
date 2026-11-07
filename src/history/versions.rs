@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{HistoryEntry, HistoryProcessing, MAX_LABEL_BYTES, MAX_TEXT_BYTES, truncated};
+use super::{
+    HistoryEntry, HistoryProcessing, MAX_FALLBACK_BYTES, MAX_LABEL_BYTES, MAX_TEXT_BYTES, truncated,
+};
 
 /// How many earlier transcripts an entry keeps.
 pub const MAX_VERSIONS: usize = 5;
@@ -30,6 +32,26 @@ impl HistoryVersion {
     pub(super) fn text_bytes(&self) -> usize {
         self.raw_text.len() + self.final_text.len()
     }
+
+    fn bound(&mut self) {
+        self.raw_text = truncated(&self.raw_text, MAX_TEXT_BYTES);
+        self.final_text = truncated(&self.final_text, MAX_TEXT_BYTES);
+        self.model = self
+            .model
+            .as_deref()
+            .map(|text| truncated(text, MAX_LABEL_BYTES));
+        self.language = self
+            .language
+            .as_deref()
+            .map(|text| truncated(text, MAX_LABEL_BYTES));
+        if let Some(processing) = &mut self.processing {
+            processing.profile = truncated(&processing.profile, MAX_LABEL_BYTES);
+            processing.fallback = processing
+                .fallback
+                .as_deref()
+                .map(|text| truncated(text, MAX_FALLBACK_BYTES));
+        }
+    }
 }
 
 /// A transcript that takes an entry's place, such as Transcribe again's.
@@ -42,6 +64,17 @@ pub struct Transcript {
 }
 
 impl HistoryEntry {
+    /// Imported text follows the same bounds as local transcripts and versions.
+    pub(super) fn bound_import_text(&mut self) {
+        let mut current = self.current();
+        current.bound();
+        self.adopt(current);
+        self.versions.truncate(MAX_VERSIONS);
+        for version in &mut self.versions {
+            version.bound();
+        }
+    }
+
     /// The entry's current transcript as a version.
     fn current(&self) -> HistoryVersion {
         HistoryVersion {

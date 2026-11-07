@@ -264,8 +264,8 @@ dictation (the dictation shortcut, Dictate without processing, or
 `hex dictation` without `--print`) is put on the clipboard and nothing is
 sent to the focused app: no ⌘V, no typed text (Chromium 155/156 included),
 and no 500 ms restore, so selected text is never replaced. The paste worker
-(`parakeet::finish_output`) reads `labs::copy_only()` as each dictation's
-output commits and hands `paste::Paster` `PasteMode::CopyOnly`, which writes
+(`parakeet::run_output_worker`) reads `labs::copy_only()` as each ordered
+dictation output starts and hands `paste::Paster` `PasteMode::CopyOnly`, which writes
 the transcript as an ordinary clipboard entry (no nspasteboard.org transient
 markers), drops any earlier snapshot and pending restore
 (`ClipboardRestore::keep`), and ends the continuation, so the next dictation
@@ -1438,8 +1438,8 @@ type-checked only.
 Settings > Labs > Output includes Type dictation (`labs.type_dictation`,
 macOS) and Local refiner (Phonon) (`labs.phonon_refiner`, Apple silicon macOS).
 Both default off and apply without a restart. Type dictation sends mapped
-key-down and key-up events, with 1 ms after each edge. Copy dictation only has
-priority; Paste Last and meeting deltas keep their normal output paths.
+key-down and key-up events, with 1 ms after each edge. Copy dictation only takes
+priority over Type dictation; Paste Last and meeting deltas keep their normal output paths.
 
 Local refiner uses Phonon's separately installed text sidecar and cached model.
 It runs after recording, replaces the OpenCode rewrite while on, and keeps the

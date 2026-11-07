@@ -338,13 +338,7 @@ fn import_into(
                 continue;
             }
             if name == "meeting-templates" {
-                let template: crate::meeting_templates::MeetingTemplate = read_json(&entry.path())?;
-                if template.key.trim().is_empty()
-                    || template.name.trim().is_empty()
-                    || template.prompt.trim().is_empty()
-                {
-                    return Err(eyre!("invalid meeting template {}", entry.path().display()));
-                }
+                crate::meeting_templates::read(&entry.path())?;
                 report.templates_found += 1;
                 if !dry_run
                     && copy_file(&entry.path(), &support.join(name).join(entry.file_name()))?
@@ -392,7 +386,11 @@ fn source_archive(source: &Path, archive: &Path) -> Result<(PathBuf, Option<Stri
     if report.exists() {
         let report: Value = read_json(&report)?;
         if report.get("source") == Some(&serde_json::to_value(source)?) {
-            let saved = report.get("source_namespace").and_then(Value::as_str);
+            let saved = match report.get("source_namespace") {
+                None => None,
+                Some(Value::String(saved)) => Some(saved.as_str()),
+                Some(_) => return Err(eyre!("archive source identity must be text")),
+            };
             if saved.is_some_and(|saved| saved != namespace) {
                 return Err(eyre!("archive source identity does not match its report"));
             }
@@ -643,7 +641,10 @@ fn copy_folder(
             continue;
         }
         let audio = matches!(
-            path.extension().and_then(|extension| extension.to_str()),
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
             Some("wav" | "ogg" | "m4a" | "mp3" | "aac" | "caf" | "flac" | "opus")
         );
         if no_audio && audio {
@@ -669,7 +670,7 @@ fn copy_file(source: &Path, destination: &Path) -> Result<bool> {
             return Ok(false);
         }
         return Err(eyre!(
-            "archive file differs: {}; choose another archive folder",
+            "destination file differs; nothing was overwritten: {}",
             destination.display()
         ));
     }
@@ -753,13 +754,13 @@ fn private_dir(path: &Path) -> Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        fs::DirBuilder::new().mode(0o700).create(path)?;
     }
-    builder.create(path)?;
+    #[cfg(not(unix))]
+    fs::create_dir(path)?;
     Ok(())
 }
 

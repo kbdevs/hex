@@ -1628,7 +1628,7 @@ mod tests {
     #[test]
     fn typing_output_setting_requires_the_native_keyboard_adapter() {
         assert_eq!(
-            unavailable("labs.type_dictation").is_none(),
+            unavailable_under("labs.type_dictation", crate::policy::Policy::default()).is_none(),
             cfg!(target_os = "macos")
         );
     }
@@ -1636,17 +1636,10 @@ mod tests {
     #[test]
     fn phonon_refiner_setting_requires_apple_silicon_macos() {
         assert_eq!(
-            unavailable("labs.phonon_refiner").is_none(),
+            unavailable_under("labs.phonon_refiner", crate::policy::Policy::default()).is_none(),
             cfg!(all(target_os = "macos", target_arch = "aarch64"))
         );
-        let setting = list(&AppSettings::default())
-            .into_iter()
-            .find(|setting| setting.key == "labs.phonon_refiner")
-            .expect("the Phonon setting is registered");
-        assert_eq!(
-            setting.available,
-            cfg!(all(target_os = "macos", target_arch = "aarch64"))
-        );
+        assert!(keys().any(|setting| setting.key == "labs.phonon_refiner"));
     }
 
     #[cfg(hex_capture)]

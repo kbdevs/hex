@@ -109,14 +109,17 @@ print(json.dumps({"ok":True,"status":{"state":"ready"}}))
 time.sleep(10)
 "#,
     );
+    client
+        .send(&json!({"command":"warmup"}), until(), &|| false)
+        .unwrap();
+    let ready = client.receive(until(), &|| false).unwrap();
+    assert_eq!(
+        ready.pointer("/status/state").and_then(Value::as_str),
+        Some("ready")
+    );
     let start = Instant::now();
     let payload = json!({"command":"run","inputText":"x".repeat(256 * 1024)});
-    let result = client.run(
-        &payload,
-        "hello",
-        start + Duration::from_millis(150),
-        &|| false,
-    );
+    let result = client.send(&payload, start + Duration::from_millis(150), &|| false);
     assert!(result.unwrap_err().to_string().contains("timed out"));
     assert!(start.elapsed() < Duration::from_secs(2));
 }
@@ -143,6 +146,53 @@ fn length_guard_covers_short_expansion_and_long_collapse() {
         safe_output("hello rune", Some("Hello Rune.")).unwrap(),
         "Hello Rune."
     );
+}
+
+#[test]
+fn rejected_final_text_keeps_the_warm_process_reusable() {
+    let mut client = fixture(
+        r#"
+import sys,json
+assert json.loads(sys.stdin.readline()) == {"command":"warmup"}
+print(json.dumps({"ok":True,"status":{"state":"ready"}}))
+for response in [
+    {"ok":True,"outputText":"one two three"},
+    {"ok":True,"outputText":"Hello.","diagnostics":{"guardFired":True}},
+    {"ok":True,"outputText":"Hello."}
+]:
+    assert json.loads(sys.stdin.readline())["command"] == "run"
+    print(json.dumps(response))
+"#,
+    );
+    let payload = json!({"command":"run","inputText":"hello"});
+    for _ in 0..2 {
+        assert!(client.run(&payload, "hello", until(), &|| false).is_err());
+        assert!(
+            client.reply_complete,
+            "a complete rejected reply can reuse the client"
+        );
+    }
+    assert_eq!(
+        client.run(&payload, "hello", until(), &|| false).unwrap(),
+        "Hello."
+    );
+}
+
+#[test]
+fn setup_and_offline_runtime_use_the_same_pins_and_bundle_files() {
+    let setup = include_str!("../../../scripts/setup-phonon-refiner.sh");
+    for required in [
+        MODEL,
+        REVISION,
+        MLX_REQUIREMENT,
+        "Helpers/uv",
+        "Resources/sidecar/polish_server.py",
+        "Resources/sidecar/linereader.py",
+        "Resources/sidecar/models/lfm3.py",
+        "Resources/prompts/polish_v2.txt",
+    ] {
+        assert!(setup.contains(required), "setup missing {required}");
+    }
 }
 
 #[test]
