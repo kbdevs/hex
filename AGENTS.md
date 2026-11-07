@@ -8,6 +8,11 @@ to `main`, including upstream syncs. Preserve selectable keyboard typing,
 Superwhisper imports, scoped Helium meeting detection, and the optional local
 Phonon refiner. The `dev` and `production` rules below describe upstream Hex.
 
+For local Mac builds, keep the signing profile in `hex.localSigningIdentity`
+and `hex.localSigningTeam` in this checkout's local Git config. Use
+`HEX_LOCAL_BUILD=1` and omit `HEX_RELEASE_UNSIGNED`; do not replace a configured
+certificate with an ad-hoc signature. See `LOCAL_TYPING.md` for the commands.
+
 ## Upstream Kit Tool
 
 `dev` and `production` take changes only through pull requests (Dax's
