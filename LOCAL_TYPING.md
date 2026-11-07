@@ -38,15 +38,35 @@ terminal, use:
 Build with Rust 1.97.0 and Xcode. Set `HEX_LOCAL_BUILD=1` so the updater
 cannot replace the typing change. Set `CARGO_PROFILE_RELEASE_STRIP=none`
 to avoid a misaligned LINKEDIT error when loading stripped Rust procedural
-macros on macOS. The local app has an ad-hoc signature. macOS may require
-new Microphone and Accessibility grants.
+macros on macOS.
+
+For local builds, save one signing certificate in this checkout's local Git
+config. Use its SHA-1 from `security find-identity -v -p codesigning` and its
+team ID from the certificate's subject `OU` field. An Apple Development
+certificate's common-name suffix can differ from its team ID.
 
 ```sh
-RUSTUP_TOOLCHAIN=1.97.0 CARGO_PROFILE_RELEASE_STRIP=none \
+git config --local hex.localSigningIdentity CERTIFICATE_SHA1
+git config --local hex.localSigningTeam TEAM_ID
+```
+
+These machine-specific values stay outside Git history. With a profile saved,
+local builds require that certificate and reject unsigned builds or conflicting
+signing overrides. Test builds and release signing keep their existing rules.
+Keep the bundle ID `anomaly.hex` and the same certificate so macOS can retain
+permission grants across rebuilds. Moving from an ad-hoc signature to a
+certificate may require one final grant. macOS can also reset grants if the
+identity or its security requirements change.
+
+`sh scripts/test-local-signing.sh` checks profile selection and rejection
+without building an app or using a private key.
+
+```sh
+PATH="$HOME/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin:$PATH" \
+CARGO_PROFILE_RELEASE_STRIP=none \
 scripts/check -E 'test(keyboard::tests) or test(primary_dictation) or binary(keyboard_layout)'
-HEX_RELEASE_UNSIGNED=1 HEX_LOCAL_BUILD=1 \
-RUSTUP_TOOLCHAIN=1.97.0 CARGO_PROFILE_RELEASE_STRIP=none \
-./scripts/build-app.sh
+PATH="$HOME/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin:$PATH" \
+HEX_LOCAL_BUILD=1 CARGO_PROFILE_RELEASE_STRIP=none bash scripts/build-app.sh
 ```
 
 The source change and its tests are public. Runtime settings, account data,

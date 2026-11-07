@@ -66,4 +66,5 @@ if output=$(env -u HEX_NOTARY_PROFILE sh "$root/scripts/prepare-service-app.sh" 
 fi
 printf '%s\n' "$output" | grep -Fq 'Set HEX_NOTARY_PROFILE to the matching notarization profile'
 
+sh "$root/scripts/test-local-signing.sh"
 echo "Rust app identity guards passed."

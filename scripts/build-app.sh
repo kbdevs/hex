@@ -7,11 +7,33 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # name and bundle ID so it installs beside the released Hex and never
 # touches its permissions; it never checks for updates.
 # HEX_LOCAL_BUILD=1 marks a build made from a checkout for its owner's own
-# machine (Developer ID signed as usual): it shows "Local build · updates off"
+# machine, using its saved signing profile or the normal Developer ID path:
+# it shows "Local build · updates off"
 # with its commit and never checks for or offers updates.
 # HEX_RELEASE_UNSIGNED=1 builds the release app (Hex, anomaly.hex) ad-hoc
 # signed: the Release workflow's build job, which holds no credentials. Its
 # sign-macos job signs it with the Developer ID (.github/release/sign-macos.sh).
+local_signing_identity=
+local_signing_team=
+if [ "${HEX_LOCAL_BUILD:-}" = 1 ] && [ "${HEX_TEST_BUILD:-}" != 1 ]; then
+  local_signing_identity=$(git -C "$root" config --local --get hex.localSigningIdentity 2>/dev/null || true)
+  local_signing_team=$(git -C "$root" config --local --get hex.localSigningTeam 2>/dev/null || true)
+  if [ -n "$local_signing_identity$local_signing_team" ]; then
+    if [ -z "$local_signing_identity" ] || [ -z "$local_signing_team" ]; then
+      echo "Set both hex.localSigningIdentity and hex.localSigningTeam in this checkout's Git config." >&2
+      exit 1
+    fi
+    if [ "${HEX_RELEASE_UNSIGNED:-}" = 1 ]; then
+      echo "Local signing is configured. Omit HEX_RELEASE_UNSIGNED to preserve the app's signing identity." >&2
+      exit 1
+    fi
+    if { [ -n "${HEX_CODESIGN_IDENTITY:-}" ] && [ "$HEX_CODESIGN_IDENTITY" != "$local_signing_identity" ]; } ||
+       { [ -n "${HEX_TEAM_ID:-}" ] && [ "$HEX_TEAM_ID" != "$local_signing_team" ]; }; then
+      echo "Signing overrides differ from this checkout's saved local signing profile." >&2
+      exit 1
+    fi
+  fi
+fi
 if [ "${HEX_RELEASE_UNSIGNED:-}" = 1 ]; then
   team_id=
   identity=-
@@ -22,6 +44,11 @@ elif [ "${HEX_TEST_BUILD:-}" = 1 ]; then
   identity=-
   app_name="Hex Test"
   bundle_id=anomaly.hex.test
+elif [ -n "$local_signing_identity" ]; then
+  team_id=$local_signing_team
+  identity=$(hex_local_codesign_identity "$local_signing_identity")
+  app_name=Hex
+  bundle_id=anomaly.hex
 else
   team_id=${HEX_TEAM_ID:?Set HEX_TEAM_ID to the Apple Developer signing team}
   identity=$(hex_codesign_identity "$team_id")
@@ -112,4 +139,12 @@ sign "$bundle/Contents/Library/HexMicrophone.driver"
 sign --identifier "$bundle_id.scrawl-helper" "$bundle/Contents/MacOS/scrawl-helper"
 sign --entitlements "$root/.github/release/hex.entitlements" "$bundle"
 codesign --verify --deep --strict --verbose=2 "$bundle"
+if [ -n "$local_signing_identity" ]; then
+  signed_team=$(codesign -d --verbose=4 "$bundle" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+  if [ "$signed_team" != "$local_signing_team" ]; then
+    rm -rf "$bundle"
+    echo "The signed app's team does not match hex.localSigningTeam." >&2
+    exit 1
+  fi
+fi
 echo "$bundle"
