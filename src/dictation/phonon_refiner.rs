@@ -45,8 +45,9 @@ impl Bundle {
     }
 
     fn installed() -> Result<Self> {
-        let paths = std::iter::once(PathBuf::from("/Applications/Phonon.app/Contents"))
-            .chain(dirs::home_dir().map(|home| home.join("Applications/Phonon.app/Contents")));
+        let paths = std::iter::once(PathBuf::from("/Applications/Phonon.app/Contents")).chain(
+            crate::app_paths::home_dir().map(|home| home.join("Applications/Phonon.app/Contents")),
+        );
         paths.filter_map(Self::at).next().ok_or_else(|| {
             eyre!("Install Phonon and prepare its refiner first; see PHONON_REFINER.md")
         })
@@ -247,6 +248,7 @@ fn check(until: Instant, cancelled: &impl Fn() -> bool) -> Result<()> {
 pub fn refine(
     text: &str,
     context: &ContextSnapshot,
+    vocabulary: &[VocabularyEntry],
     deadline: Duration,
     cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<String> {
@@ -258,7 +260,7 @@ pub fn refine(
             || EPOCH.load(Ordering::Acquire) != epoch
     };
     check(until, &cancelled)?;
-    let payload = request(text, context, &super::vocabulary::entries())?;
+    let payload = request(text, context, vocabulary)?;
     let lock = CLIENT.get_or_init(|| Mutex::new(None));
     let mut guard = loop {
         check(until, &cancelled)?;

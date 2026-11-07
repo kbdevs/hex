@@ -21,6 +21,7 @@ use super::list_detail::{self as ld, Item};
 use super::lists::{Tone, dismissible_error_panel, error_panel, section_label, tone_tag};
 use super::platform::MeetingRequest;
 use super::{Menu, Ui};
+use crate::desktop::file_dialog::{Dialog, Filter, Pending, Target};
 use crate::desktop::i18n::{tr, tr_fill, tr_named};
 
 static MORE_ICON: rune::Icon = rune::Icon {
@@ -90,14 +91,18 @@ pub(super) struct Meeting {
     pub(super) app: Option<String>,
     pub(super) summary: Option<String>,
     pub(super) notes_running: bool,
-    /// The exported Markdown still exists, so trashing takes it too.
-    pub(super) has_markdown: bool,
+    /// What the overflow menu reveals: the exported Markdown while it still
+    /// exists, else the recording folder. Trash takes the Markdown too.
+    pub(super) reveal: crate::meeting::RevealTarget,
     pub(super) error: Option<String>,
     pub(super) export_error: Option<String>,
     pub(super) notes_error: Option<String>,
     pub(super) live_error: Option<String>,
     pub(super) transcript: Transcript,
     pub(super) chapters: Vec<Chapter>,
+    /// Imported from an audio file (Labs › Import audio): its one track is
+    /// labelled Speaker.
+    pub(super) imported: bool,
     /// How long it is kept once finished, as `MeetingRetention::label`;
     /// `None` when it is kept for good.
     pub(super) kept_for: Option<&'static str>,
@@ -137,14 +142,32 @@ pub(super) enum View {
 /// Meetings is on, so the pane lists recordings and settings instead of the
 /// opt-in card (`MeetingSettings::available`; scenes leave `developer` off).
 pub(super) fn available(ui: &Ui) -> bool {
-    ui.settings.meetings.enabled || ui.platform.developer
+    crate::labs::Feature::Meetings.managed().is_none()
+        && (ui.settings.meetings.enabled || ui.platform.developer)
 }
 
-/// Whether something can write a meeting's notes: Apple Intelligence on a
-/// Mac that has it, or OpenCode once turned on.
+/// Whether something can write a meeting's notes when asked: OpenCode once
+/// Summaries chooses it, otherwise Apple Intelligence on a Mac that has it.
 fn notes_available(ui: &Ui) -> bool {
-    (ui.platform.caps.os == super::platform::Os::Macos && ui.platform.notes.is_available())
-        || ui.settings.meetings.summarize_with_opencode
+    ui.settings.meetings.summaries == crate::app_settings::MeetingSummaries::OpenCode
+        || apple_intelligence_writes(ui)
+}
+
+/// Whether Apple Intelligence writes notes asked for now: Summaries isn't
+/// OpenCode and this Mac has it.
+fn apple_intelligence_writes(ui: &Ui) -> bool {
+    ui.settings.meetings.summaries != crate::app_settings::MeetingSummaries::OpenCode
+        && ui.platform.caps.os == super::platform::Os::Macos
+        && ui.platform.notes.is_available()
+}
+
+/// What writes the notes now, as the generator picks it.
+fn notes_running_label(ui: &Ui) -> &'static str {
+    if apple_intelligence_writes(ui) {
+        tr("Writing a title and summary with Apple Intelligence…")
+    } else {
+        tr("Writing a title and summary with OpenCode…")
+    }
 }
 
 #[derive(Default)]
@@ -155,6 +178,10 @@ pub(super) struct MeetingsPane {
     error: Option<String>,
     /// The last recording that could not start or finish.
     pub(super) runtime_error: Option<String>,
+    /// The last audio file that could not be imported (Labs › Import audio).
+    pub(super) import_error: Option<String>,
+    /// The audio file dialog while it is open.
+    import_chooser: Option<Pending>,
     pub(super) search: TextEdit,
     pub(super) selected: Option<String>,
     pub(super) renaming: Option<String>,
@@ -192,14 +219,21 @@ fn clock_offset(milliseconds: u64) -> String {
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
 }
 
-/// Speaker turns as Markdown, as `meeting::transcript_markdown`.
-fn transcript_markdown(turns: &[Turn]) -> String {
+/// Speaker turns as Markdown, as `meeting::transcript_markdown`; an imported
+/// meeting's one track is Speaker.
+fn transcript_markdown(turns: &[Turn], imported: bool) -> String {
     turns
         .iter()
         .map(|turn| {
             format!(
                 "**{}** · {}\n{}",
-                if turn.mine { "You" } else { "Them" },
+                if imported {
+                    "Speaker"
+                } else if turn.mine {
+                    "You"
+                } else {
+                    "Them"
+                },
                 clock_offset(turn.start_ms),
                 turn.text.trim()
             )
@@ -322,13 +356,16 @@ impl MeetingsPane {
                 app: None,
                 summary: None,
                 notes_running: false,
-                has_markdown: false,
+                reveal: crate::meeting::RevealTarget::Folder(
+                    format!("/Users/kit/Library/Application Support/hex/meetings/{id}").into(),
+                ),
                 error: None,
                 export_error: None,
                 notes_error: None,
                 live_error: None,
                 transcript: Transcript::Loaded(Vec::new()),
                 chapters: Vec::new(),
+                imported: false,
                 kept_for: Some("24 hours"),
             };
         let mut live = meeting(
@@ -350,7 +387,9 @@ impl MeetingsPane {
             38,
         );
         notes.app = Some("Zoom".into());
-        notes.has_markdown = true;
+        notes.reveal = crate::meeting::RevealTarget::Markdown(
+            "/Users/kit/Documents/Hex Meetings/Arcade launch plan.md".into(),
+        );
         notes.summary = Some(
             "One login for every Anomaly Arcade game, aiming for twenty to thirty games over the next couple of months. The build screen needs a proposal before more polish."
                 .into(),
@@ -382,6 +421,28 @@ impl MeetingsPane {
         }
     }
 
+    /// The fixture with recordings from more call services: a Zoom call, a
+    /// Google Meet tab, a Teams website call, a Slack huddle, FaceTime, and
+    /// one started by hand.
+    #[cfg(all(test, not(target_os = "macos")))]
+    pub(super) fn platforms_fixture() -> Self {
+        let mut pane = Self::fixture();
+        let mut more = Vec::new();
+        for (id, title, app) in [
+            ("preview-meet", "Weekly sync", "Google Meet"),
+            ("preview-teams", "Vendor check-in", "teams.microsoft.com"),
+            ("preview-huddle", "Release huddle", "Slack Huddle"),
+        ] {
+            let mut meeting = pane.meetings[2].clone();
+            meeting.id = id.into();
+            meeting.title = title.into();
+            meeting.app = Some(app.into());
+            more.push(meeting);
+        }
+        pane.meetings.splice(2..2, more);
+        pane
+    }
+
     /// The fixture with live chapters (Labs) on the
     /// meeting with notes, its title extended by them.
     pub(super) fn chapters_fixture() -> Self {
@@ -406,6 +467,7 @@ impl MeetingsPane {
         if let Some(notes) = pane.meetings.iter_mut().find(|m| m.id == "preview-notes") {
             notes.title = "Arcade launch plan: One login, Gravity well, Build screen".into();
             let turns = notes.turns().to_vec();
+            let imported = notes.imported;
             notes.chapters = chapters
                 .iter()
                 .enumerate()
@@ -425,7 +487,7 @@ impl MeetingsPane {
                         start_ms,
                         markdown: format!(
                             "## {title}\n\n{summary}\n\n{}",
-                            transcript_markdown(&inside)
+                            transcript_markdown(&inside, imported)
                         )
                         .trim_end()
                         .into(),
@@ -530,13 +592,16 @@ pub(super) fn pane(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> (Vec<El>, El) {
             "enable",
             vec![super::platform_settings::meetings_toggle(ui, p)],
         ));
-        return (Vec::new(), super::scroll_body("scroll", content));
+        return (Vec::new(), super::scroll_body(p.k, "scroll", content));
     }
     let action = recording_action(ui, p);
     if ui.meetings.view == View::Settings {
         let content =
             page("content").children(super::platform_settings::meetings_settings(ui, p, layer));
-        return (vec![action], super::scroll_body("settings-scroll", content));
+        return (
+            vec![action],
+            super::scroll_body(p.k, "settings-scroll", content),
+        );
     }
     recordings(ui, p, layer, action)
 }
@@ -595,7 +660,7 @@ fn recording_action(ui: &Ui, p: Paint) -> El {
             .color(p.muted())
     };
     let active = pane.active();
-    match active.map(|meeting| meeting.status) {
+    let action = match active.map(|meeting| meeting.status) {
         _ if pane.stop_pending => busy(tr("Finalizing…")),
         Some(Status::Transcribing) => busy(tr("Finalizing…")),
         Some(Status::Starting) => busy(tr("Starting…")),
@@ -632,7 +697,70 @@ fn recording_action(ui: &Ui, p: Paint) -> El {
             ButtonKind::Primary,
             |ui: &mut Ui, _| start(ui),
         ),
+    };
+    // Importing is a second way in, never a competing main action.
+    if crate::labs::meeting_import() && active.is_none() && !pane.start_pending {
+        return row()
+            .key("meeting-actions")
+            .gap(8.0)
+            .center_y()
+            .child(button(
+                p,
+                "import-meeting",
+                tr("Import audio…"),
+                ButtonKind::Secondary,
+                |ui: &mut Ui, _| choose_import(ui),
+            ))
+            .child(action);
     }
+    action
+}
+
+/// The Labs › Import audio file dialog: one supported audio file.
+fn choose_import(ui: &mut Ui) {
+    if ui.meetings.import_chooser.is_some() {
+        return;
+    }
+    ui.meetings.action_error = None;
+    let waker = ui.modes.waker.clone();
+    let wake = move || {
+        if let Some(waker) = &waker {
+            waker();
+        }
+    };
+    ui.meetings.import_chooser = Some(crate::desktop::file_dialog::open(
+        Dialog {
+            title: tr("Import audio").into(),
+            target: Target::File(vec![Filter {
+                label: tr("Audio files").into(),
+                extensions: &["wav", "m4a", "mp3", "aiff", "aif", "caf"],
+            }]),
+            directory: dirs::audio_dir(),
+        },
+        wake,
+    ));
+}
+
+/// The audio file dialog's answer: a chosen file is imported where meetings
+/// are carried out. True when the answer changed what the pane shows.
+pub(super) fn poll_import(ui: &mut Ui) -> bool {
+    let Some(choice) = ui.meetings.import_chooser.as_ref().and_then(Pending::poll) else {
+        return false;
+    };
+    ui.meetings.import_chooser = None;
+    match choice {
+        Ok(Some(path)) => {
+            ask(ui, MeetingRequest::Import(path));
+        }
+        Ok(None) => {}
+        Err(error) => ui.meetings.action_error = Some(error),
+    }
+    true
+}
+
+/// An audio file could not be imported; the Meetings pane says why.
+pub(crate) fn meeting_import_failed(ui: &mut Ui, error: String) {
+    ui.meetings.import_error = Some(error);
 }
 
 /// A row's state line: what went wrong or is happening, else the app and
@@ -654,6 +782,20 @@ fn row_meta(pane: &MeetingsPane, meeting: &Meeting, p: Paint) -> (String, Option
     (parts.join(" · "), ink)
 }
 
+/// The icon before a row's title: the call service's when its app names
+/// one and a neutral one otherwise (another app, or a meeting started by
+/// hand).
+fn platform_icon(meeting: &Meeting) -> &'static rune::Icon {
+    match meeting
+        .app
+        .as_deref()
+        .and_then(crate::calendar::CallProvider::from_meeting_app)
+    {
+        Some(provider) => super::platform_settings::provider_icon(provider),
+        None => &super::icons::CALL,
+    }
+}
+
 /// Copy transcript as an icon: a completed row's hover action, or the
 /// card's.
 fn copy_action(p: Paint, pane: &MeetingsPane, meeting: &Meeting, what: &'static str) -> El {
@@ -669,7 +811,7 @@ fn copy_action(p: Paint, pane: &MeetingsPane, meeting: &Meeting, what: &'static 
     let id = meeting.id.clone();
     let press = move |ui: &mut Ui, tx: &mut Tx| {
         if let Some(meeting) = ui.meetings.meeting(&id) {
-            let markdown = transcript_markdown(meeting.turns());
+            let markdown = transcript_markdown(meeting.turns(), meeting.imported);
             copy(ui, tx, id.clone(), what, markdown);
         }
     };
@@ -707,6 +849,15 @@ fn recordings(ui: &Ui, p: Paint, layer: &mut Vec<El>, action: El) -> (Vec<El>, E
             |ui: &mut Ui| ui.meetings.runtime_error = None,
         ));
     }
+    if let Some(error) = &pane.import_error {
+        notices.push(dismissible_error_panel(
+            p,
+            "meeting-import-error",
+            tr("Audio could not be imported."),
+            error,
+            |ui: &mut Ui| ui.meetings.import_error = None,
+        ));
+    }
     let body = if pane.meetings.is_empty() {
         ld::empty_state(
             p,
@@ -716,9 +867,11 @@ fn recordings(ui: &Ui, p: Paint, layer: &mut Vec<El>, action: El) -> (Vec<El>, E
             Some(tr("Record a call to see its notes and transcript here.")),
         )
     } else {
-        let mut list = col().key("meetings-list");
+        let mut list = col().key("meetings-list").label(tr("Meetings"));
         let mut day: Option<&str> = None;
-        for (index, meeting) in pane.visible().into_iter().enumerate() {
+        let visible = pane.visible();
+        let count = visible.len();
+        for (index, meeting) in visible.into_iter().enumerate() {
             if day != Some(meeting.day.as_str()) {
                 list = list.child(ld::group(
                     p,
@@ -731,22 +884,26 @@ fn recordings(ui: &Ui, p: Paint, layer: &mut Vec<El>, action: El) -> (Vec<El>, E
             let (meta, meta_ink) = row_meta(pane, meeting, p);
             let completed = meeting.status == Status::Complete && !meeting.turns().is_empty();
             let id = meeting.id.clone();
-            list = list.child(ld::item(
-                p,
-                Item {
-                    key: format!("meeting-{}", meeting.id),
-                    title: meeting.title.clone(),
-                    meta,
-                    meta_ink,
-                    time: meeting.clock.clone(),
-                    hover: completed
-                        .then(|| copy_action(p, pane, meeting, "row"))
-                        .into_iter()
-                        .collect(),
-                    selected: pane.selected.as_deref() == Some(meeting.id.as_str()),
-                },
-                move |ui: &mut Ui| ui.meetings.select(id.clone()),
-            ));
+            list = list.child(
+                ld::item_with_icon(
+                    p,
+                    Item {
+                        key: format!("meeting-{}", meeting.id),
+                        title: meeting.title.clone(),
+                        meta,
+                        meta_ink,
+                        time: meeting.clock.clone(),
+                        hover: completed
+                            .then(|| copy_action(p, pane, meeting, "row"))
+                            .into_iter()
+                            .collect(),
+                        selected: pane.selected.as_deref() == Some(meeting.id.as_str()),
+                    },
+                    Some(platform_icon(meeting)),
+                    move |ui: &mut Ui| ui.meetings.select(id.clone()),
+                )
+                .position_in_set(index + 1, count),
+            );
         }
         let detail = match pane.selected.as_deref().and_then(|id| pane.meeting(id)) {
             Some(meeting) => detail(ui, p, meeting, layer),
@@ -765,7 +922,7 @@ fn recordings(ui: &Ui, p: Paint, layer: &mut Vec<El>, action: El) -> (Vec<El>, E
                 None,
             ),
         };
-        let column = ld::list_column(search(ui, p), "meetings-scroll", list);
+        let column = ld::list_column(p, search(ui, p), "meetings-scroll", list);
         ld::body(p, "meetings-body", column, detail)
     };
     (
@@ -811,7 +968,7 @@ fn detail(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> El {
                     button(
                         p,
                         "meeting-confirm-delete",
-                        if meeting.has_markdown {
+                        if meeting.reveal.is_markdown() {
                             tr("Trash recording & Markdown")
                         } else {
                             tr("Trash recording")
@@ -855,6 +1012,7 @@ fn detail(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> El {
             .center_y()
             .child(
                 TextInput::new(&pane.rename)
+                    .label(tr("Name"))
                     .width(Some(220.0))
                     .on_edit(|ui: &mut Ui| &mut ui.meetings.rename)
                     .on_submit(|ui: &mut Ui, _| finish_rename(ui))
@@ -946,7 +1104,7 @@ fn detail(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> El {
         );
     } else if meeting.notes_running {
         body = body.child(
-            text(tr("Writing a title and summary with Apple Intelligence…"))
+            text(notes_running_label(ui))
                 .key("notes-running")
                 .font(DESCRIPTION)
                 .color(p.faint()),
@@ -974,7 +1132,22 @@ fn detail(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> El {
         .shrink()
         .child(ld::card_header(title, meta, actions))
         .children(confirm)
-        .child(ld::card_scroll("meeting-transcript", body))
+        .child(ld::card_scroll_sticky(
+            p,
+            "meeting-transcript",
+            body,
+            follows_live_transcript(ui, meeting),
+        ))
+}
+
+/// Labs › Follow live transcript: a recording meeting's transcript keeps
+/// its newest line in view while scrolled to the bottom. Off, and for any
+/// meeting not recording, the card scrolls only by hand, as before.
+fn follows_live_transcript(ui: &Ui, meeting: &Meeting) -> bool {
+    ui.settings.labs.follow_live_transcript
+        && crate::labs::Feature::FollowLiveTranscript.shipped()
+        && matches!(meeting.status, Status::Starting | Status::Recording)
+        && !ui.meetings.stop_pending
 }
 
 /// The meeting's chapters, each with its start, name, line, and Copy
@@ -1076,16 +1249,18 @@ fn overflow(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> Option
         items += 1;
     }
     if !active {
-        let id = meeting.id.clone();
+        // The label and the file it reveals are one value, so they can't
+        // disagree.
+        let reveal = meeting.reveal.clone();
         menu = menu.item(
-            MenuItem::new(if meeting.has_markdown {
+            MenuItem::new(if reveal.is_markdown() {
                 tr("Reveal Markdown")
             } else {
                 tr("Reveal files")
             })
             .on_select(move |ui: &mut Ui| {
                 ui.open = None;
-                ask(ui, MeetingRequest::Reveal(id.clone()));
+                ask(ui, MeetingRequest::Reveal(reveal.clone()));
             }),
         );
         items += 1;
@@ -1162,7 +1337,7 @@ fn transcript(p: Paint, meeting: &Meeting, stop_pending: bool) -> El {
     }
     let mut lines = col().key("turns").gap(14.0);
     for (index, turn) in turns.iter().enumerate() {
-        lines = lines.children(turn_line(p, index, turn));
+        lines = lines.children(turn_line(p, index, turn, meeting.imported));
     }
     if meeting.status == Status::Recording && !stop_pending {
         lines = lines.child(
@@ -1176,8 +1351,8 @@ fn transcript(p: Paint, meeting: &Meeting, stop_pending: bool) -> El {
 }
 
 /// One turn of a transcript: the pause before it, if any, then the speaker,
-/// the time, and the words.
-pub(super) fn turn_line(p: Paint, index: usize, turn: &Turn) -> Vec<El> {
+/// the time, and the words. An imported meeting has one track: Speaker.
+pub(super) fn turn_line(p: Paint, index: usize, turn: &Turn, imported: bool) -> Vec<El> {
     let mut els = Vec::new();
     if let Some(pause) = turn.pause_before_ms {
         els.push(
@@ -1196,10 +1371,20 @@ pub(super) fn turn_line(p: Paint, index: usize, turn: &Turn) -> Vec<El> {
                     .key("speaker")
                     .gap(8.0)
                     .child(
-                        text(if turn.mine { tr("You") } else { tr("Them") })
-                            .key("name")
-                            .font(p.k.ty.small_medium)
-                            .color(if turn.mine { p.text() } else { p.faint() }),
+                        text(if imported {
+                            tr("Speaker")
+                        } else if turn.mine {
+                            tr("You")
+                        } else {
+                            tr("Them")
+                        })
+                        .key("name")
+                        .font(p.k.ty.small_medium)
+                        .color(if turn.mine && !imported {
+                            p.text()
+                        } else {
+                            p.faint()
+                        }),
                     )
                     .child(
                         text(clock_offset(turn.start_ms))
@@ -1225,6 +1410,21 @@ mod tests {
     use crate::rune_ui::Service;
     use crate::rune_ui::platform::PlatformHost;
 
+    /// An imported meeting has one track: every turn is Speaker, not Them.
+    #[test]
+    fn an_imported_meeting_labels_its_one_track_speaker() {
+        let turn = |mine| Turn {
+            mine,
+            start_ms: 1_000,
+            text: "Hi.".into(),
+            pause_before_ms: None,
+        };
+        assert!(transcript_markdown(&[turn(false)], true).contains("**Speaker** · 00:01"));
+        assert!(transcript_markdown(&[turn(true)], true).contains("**Speaker**"));
+        assert!(transcript_markdown(&[turn(true)], false).contains("**You**"));
+        assert!(transcript_markdown(&[turn(false)], false).contains("**Them**"));
+    }
+
     /// Linux and Windows carry meeting requests out in the window's own
     /// process; the OS host ignored them, so Stop, Rename, and Trash from
     /// the pane did nothing and reported nothing (#566).
@@ -1241,5 +1441,51 @@ mod tests {
         stop(&mut ui);
         assert!(!ui.meetings.stop_pending);
         assert!(ui.meetings.action_error.is_some());
+    }
+
+    /// A known call service's icon, and the neutral one for any other or
+    /// no app (#1290).
+    #[test]
+    fn platform_icons_fall_back_to_a_neutral_one() {
+        let pane = MeetingsPane::platforms_fixture();
+        let name = |id: &str| platform_icon(pane.meeting(id).unwrap()).name;
+        assert_eq!(name("preview-live"), "hex-provider-zoom");
+        assert_eq!(name("preview-meet"), "hex-provider-meet");
+        assert_eq!(name("preview-teams"), "hex-provider-teams");
+        assert_eq!(name("preview-huddle"), "hex-provider-slack");
+        assert_eq!(name("preview-design"), "hex-row-call");
+        assert_eq!(name("preview-failed"), "hex-row-call");
+    }
+
+    /// Labs › Follow live transcript: only a recording meeting's transcript
+    /// follows its newest line, and only with the lab on (#1332).
+    #[test]
+    fn only_a_recording_transcript_follows_and_only_with_its_lab() {
+        let mut settings = crate::app_settings::AppSettings::default();
+        let pane = MeetingsPane::fixture();
+        let live = pane.meeting("preview-live").unwrap();
+        let finished = pane.meeting("preview-notes").unwrap();
+        let ui = Ui::with(settings.clone(), Service::Fixture(Vec::new()));
+        assert!(!follows_live_transcript(&ui, live));
+        assert!(!follows_live_transcript(&ui, finished));
+        settings.labs.follow_live_transcript = true;
+        let mut ui = Ui::with(settings, Service::Fixture(Vec::new()));
+        assert!(follows_live_transcript(&ui, live));
+        assert!(!follows_live_transcript(&ui, finished));
+        ui.meetings.stop_pending = true;
+        assert!(!follows_live_transcript(&ui, live));
+    }
+
+    /// Off a Mac the notes are written by OpenCode, so the progress line
+    /// names it, never Apple Intelligence (#1151).
+    #[test]
+    fn notes_progress_names_opencode_off_a_mac() {
+        let ui = Ui::with(
+            crate::app_settings::AppSettings::default(),
+            Service::Fixture(Vec::new()),
+        );
+        let label = notes_running_label(&ui);
+        assert!(label.contains("OpenCode"), "{label}");
+        assert!(!label.contains("Apple Intelligence"), "{label}");
     }
 }

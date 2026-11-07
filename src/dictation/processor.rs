@@ -11,7 +11,7 @@ use crate::dictation::context::{ContextSelector, ContextSnapshot};
 use crate::dictation::text_replacements::ReplacementSet;
 use crate::dictation::vocabulary::VocabularyEntry;
 
-const PROTOCOL_PROMPT: &str = "You transform dictated speech into replacement text. Return only the text that should be pasted. Do not add an explanation, label, alternative, or Markdown fence.";
+const PROTOCOL_PROMPT: &str = "You transform dictated speech into replacement text. Return only the text that should be pasted. Do not add an explanation, label, alternative, or Markdown fence.\n\nNumbers: keep every number the speaker said. Never drop, merge, reorder, round, or reinterpret a number, and never add thousands separators or other formatting to a number that the transcript already writes in digits.\n\nLists: unless the profile instructions say otherwise, when the speaker enumerates items (for example \"point one ... point two ...\", \"first ... second ...\", or \"number one ... number two ...\"), keep every item and write them as a numbered list, one item per line (\"1. ...\", \"2. ...\"), without the spoken cue words.";
 const CATALOG_DEADLINE: Duration = Duration::from_secs(10);
 /// Newest one-shot generation route first; older OpenCode V2 builds only serve the later name.
 const GENERATE_ENDPOINTS: [&str; 2] = ["/api/experimental/generate", "/api/generate"];
@@ -27,6 +27,8 @@ pub struct Profile {
     deadline: Duration,
     replacements: ReplacementSet,
     transformations: Vec<String>,
+    /// The mode's own vocabulary, heard and spelled ahead of the shared list.
+    vocabulary: Vec<VocabularyEntry>,
 }
 
 impl Profile {
@@ -39,12 +41,24 @@ impl Profile {
             deadline: Duration::from_secs(30),
             replacements: ReplacementSet::default(),
             transformations: Vec::new(),
+            vocabulary: Vec::new(),
         }
+    }
+
+    pub(crate) fn vocabulary(mut self, vocabulary: Vec<VocabularyEntry>) -> Self {
+        self.vocabulary = vocabulary;
+        self
     }
 
     pub fn ai_enabled(mut self, enabled: bool) -> Self {
         self.ai_enabled = enabled;
         self
+    }
+
+    /// Whether this profile runs the OpenCode rewrite.
+    #[cfg(test)]
+    pub(crate) fn rewrites(&self) -> bool {
+        self.ai_enabled
     }
 
     pub(crate) fn replacements(mut self, replacements: ReplacementSet) -> Self {
@@ -91,6 +105,7 @@ impl Profile {
             mode.transformations.clone(),
             &mode.post_processing,
         )
+        .vocabulary(mode.vocabulary.clone())
     }
 
     /// Builds a runtime profile from persisted settings. A malformed model key
@@ -101,8 +116,32 @@ impl Profile {
         transformations: Vec<String>,
         settings: &PostProcessingSettings,
     ) -> Self {
+        Self::configured_under(
+            name,
+            replacements,
+            transformations,
+            settings,
+            crate::policy::Policy::current(),
+        )
+    }
+
+    /// [`Self::configured`] under `policy`: a managed lock drops the
+    /// OpenCode rewrite or every transformation, leaving the mode saved as is.
+    fn configured_under(
+        name: impl Into<String>,
+        replacements: ReplacementSet,
+        transformations: Vec<String>,
+        settings: &PostProcessingSettings,
+        policy: crate::policy::Policy,
+    ) -> Self {
+        use crate::policy::Lock;
+        let transformations = if policy.locks(Lock::Transforms) {
+            Vec::new()
+        } else {
+            transformations
+        };
         let mut profile = Self::new(name, &settings.prompt)
-            .ai_enabled(settings.enabled)
+            .ai_enabled(settings.enabled && !policy.locks(Lock::OpenCodeProcessing))
             .replacements(replacements)
             .transformations(transformations);
         if let Some((provider, model)) = settings
@@ -210,6 +249,9 @@ struct ContextualProfile {
 pub struct Profiles {
     default: Profile,
     contextual: Vec<ContextualProfile>,
+    /// Global's corrections, run before the selected mode's own on every
+    /// dictation, as the Windows and Linux listeners do.
+    global: ReplacementSet,
 }
 
 impl Profiles {
@@ -217,7 +259,13 @@ impl Profiles {
         Self {
             default,
             contextual: Vec::new(),
+            global: ReplacementSet::default(),
         }
+    }
+
+    pub(crate) fn global_replacements(mut self, replacements: ReplacementSet) -> Self {
+        self.global = replacements;
+        self
     }
 
     pub fn application(self, application: impl Into<String>, profile: Profile) -> Self {
@@ -255,6 +303,11 @@ impl Profiles {
                 })
             });
         selected.map_or(&self.default, |selected| &selected.profile)
+    }
+
+    /// The selected mode's own vocabulary.
+    pub(crate) fn vocabulary_for(&self, context: &ContextSnapshot) -> Vec<VocabularyEntry> {
+        self.select(context).vocabulary.clone()
     }
 
     pub fn processes(&self, context: &ContextSnapshot) -> bool {
@@ -296,13 +349,27 @@ impl Profiles {
         } else {
             transcript
         };
-        let corrected = profile.replacements.replace(transcript);
+        let corrected = profile
+            .replacements
+            .replace(&self.global.replace(transcript));
+        let numbers_only =
+            (profile.ai_enabled || crate::labs::phonon_refiner()) && numbers_only(&corrected);
+        if numbers_only {
+            tracing::info!(
+                profile = profile.name,
+                "dictation post-processing skipped for a numbers-only transcript"
+            );
+        }
         #[cfg(target_os = "macos")]
-        if crate::labs::phonon_refiner() {
+        if crate::labs::phonon_refiner() && !numbers_only {
             let started = Instant::now();
             let result = crate::dictation::phonon_refiner::refine(
                 &corrected,
                 context,
+                &crate::dictation::vocabulary::merged(
+                    &profile.vocabulary,
+                    &crate::dictation::vocabulary::entries(),
+                ),
                 profile.deadline,
                 cancelled,
             );
@@ -324,6 +391,12 @@ impl Profiles {
             };
         }
         if !profile.ai_enabled {
+            tracing::info!(
+                profile = profile.name,
+                "dictation post-processing skipped: the OpenCode rewrite is off for this mode"
+            );
+        }
+        if !profile.ai_enabled || numbers_only {
             return Processed {
                 text: corrected,
                 observation: None,
@@ -334,7 +407,10 @@ impl Profiles {
             profile,
             &corrected,
             context,
-            &crate::dictation::vocabulary::entries(),
+            &crate::dictation::vocabulary::merged(
+                &profile.vocabulary,
+                &crate::dictation::vocabulary::entries(),
+            ),
         );
         let (text, observation) = generate_observed(
             &prompt,
@@ -344,12 +420,18 @@ impl Profiles {
             &profile.name,
             Instant::now(),
         );
-        if observation.fallback.is_none() {
-            tracing::info!(
+        match &observation.fallback {
+            None => tracing::info!(
                 profile = profile.name,
                 latency_ms = observation.latency_ms,
                 "dictation post-processing completed"
-            );
+            ),
+            Some(reason) => tracing::warn!(
+                profile = profile.name,
+                latency_ms = observation.latency_ms,
+                %reason,
+                "dictation post-processing failed; pasting the corrected transcript"
+            ),
         }
         Processed {
             text: text.unwrap_or(corrected),
@@ -359,14 +441,91 @@ impl Profiles {
     }
 }
 
+/// Whether a transcript says nothing but numbers: digits or English number
+/// words, with punctuation between them.
+fn numbers_only(transcript: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+        "thirty",
+        "forty",
+        "fifty",
+        "sixty",
+        "seventy",
+        "eighty",
+        "ninety",
+        "hundred",
+        "thousand",
+        "million",
+        "billion",
+    ];
+    /// Words that join numbers but are not numbers themselves.
+    const JOINERS: &[&str] = &["and", "point", "minus", "negative"];
+    let mut any_number = false;
+    for token in transcript.split(|c: char| c.is_whitespace() || c == '-') {
+        let word = token.trim_matches(|c: char| !c.is_alphanumeric());
+        if word.is_empty() {
+            continue;
+        }
+        if word
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+            || WORDS.iter().any(|w| word.eq_ignore_ascii_case(w))
+        {
+            any_number = true;
+        } else if !JOINERS.iter().any(|w| word.eq_ignore_ascii_case(w)) {
+            return false;
+        }
+    }
+    any_number
+}
+
+/// One generation's text and the model that wrote it, when Hex named one
+/// (`None` when OpenCode's own default model answered).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Generated {
+    pub text: String,
+    pub model: Option<Model>,
+}
+
 /// One generation from OpenCode's default ranked models, for work outside
 /// dictation such as meeting notes.
 pub(crate) fn generate_text(
     prompt: &str,
     deadline: Duration,
     cancelled: &AtomicBool,
-) -> Result<String> {
+) -> Result<Generated> {
     generate_cancellable(prompt, None, deadline, cancelled)
+}
+
+/// One generation from exactly `model`, never another provider's: a failure
+/// is OpenCode's answer for that model (the meeting summary model).
+pub(crate) fn generate_text_with(
+    prompt: &str,
+    model: &Model,
+    deadline: Duration,
+    cancelled: &AtomicBool,
+) -> Result<Generated> {
+    generate_cancellable(prompt, Some(model), deadline, cancelled)
 }
 
 /// Runs one generation and reports it as a processing observation. The text is
@@ -380,7 +539,8 @@ fn generate_observed(
     profile_name: &str,
     started: Instant,
 ) -> (Option<String>, ProcessingObservation) {
-    let (text, fallback) = match generate_cancellable(prompt, model, deadline, cancelled) {
+    let result = generate_cancellable(prompt, model, deadline, cancelled);
+    let (text, fallback) = match result.map(|generated| generated.text) {
         Ok(text) if !text.trim().is_empty() => (Some(text.trim().into()), None),
         Ok(_) => (None, Some("processor returned empty text".into())),
         Err(error) => (None, Some(error.to_string())),
@@ -544,14 +704,34 @@ fn cache_ranked_candidates(service: &Service, catalog: &ModelCatalog) {
     }
 }
 
-fn ranked_candidates_for(service: &Service) -> Vec<Model> {
+/// Drops the cached ranked candidates once one of them failed: the catalog
+/// may have been read while OpenCode was still loading, listing models that
+/// left it since (#1123). The next generation reads the catalog again.
+fn forget_ranked_candidates() {
+    if let Ok(mut guard) = CACHED_RANKED_CANDIDATES.lock() {
+        *guard = None;
+    }
+}
+
+fn ranked_candidates_for(
+    service: &Service,
+    deadline: Duration,
+    cancelled: &AtomicBool,
+) -> Vec<Model> {
     if let Ok(guard) = CACHED_RANKED_CANDIDATES.lock()
         && let Some((cached, candidates)) = guard.as_ref()
         && cached == service
     {
         return candidates.clone();
     }
-    let Ok(models) = opencode_api::<ModelsResponse>(service, "/api/model") else {
+    let Ok(models) = opencode_api_within::<ModelsResponse>(
+        service,
+        "/api/model",
+        deadline.min(CATALOG_DEADLINE),
+        cancelled,
+    ) else {
+        // A cancelled or timed-out lookup caches nothing, like any other
+        // catalog failure: the next generation reads it again.
         return Vec::new();
     };
     let catalog = build_model_catalog(models.data, None);
@@ -561,9 +741,14 @@ fn ranked_candidates_for(service: &Service) -> Vec<Model> {
 
 /// The running service's model catalog. Reads OpenCode's registration and
 /// talks loopback HTTP; never starts anything. Call off the UI thread.
+/// `None` when OpenCode isn't running; an obsolete OpenCode is an error that
+/// says to update it.
 pub fn load_model_catalog() -> Result<Option<ModelCatalog>> {
-    let Some(service) = crate::desktop::opencode_service::find() else {
-        return Ok(None);
+    use crate::desktop::opencode_service::Missing;
+    let service = match crate::desktop::opencode_service::find() {
+        Ok(service) => service,
+        Err(Missing::NotRunning) => return Ok(None),
+        Err(missing) => return Err(eyre!(missing.message())),
     };
     let models: ModelsResponse = opencode_api(&service, "/api/model")?;
     let default: DefaultModelResponse = opencode_api(&service, "/api/model/default")?;
@@ -638,15 +823,17 @@ fn decode_api_response<T: for<'de> Deserialize<'de>>(path: &str, body: &[u8]) ->
 }
 
 fn opencode_api<T: for<'de> Deserialize<'de>>(service: &Service, path: &str) -> Result<T> {
+    opencode_api_within(service, path, CATALOG_DEADLINE, &AtomicBool::new(false))
+}
+
+fn opencode_api_within<T: for<'de> Deserialize<'de>>(
+    service: &Service,
+    path: &str,
+    deadline: Duration,
+    cancelled: &AtomicBool,
+) -> Result<T> {
     let workspace = crate::app_paths::opencode_workspace()?;
-    let response = service.request(
-        "GET",
-        path,
-        None,
-        Some(&workspace),
-        CATALOG_DEADLINE,
-        &AtomicBool::new(false),
-    )?;
+    let response = service.request("GET", path, None, Some(&workspace), deadline, cancelled)?;
     if !(200..300).contains(&response.status) {
         return Err(eyre!("OpenCode {path} answered HTTP {}", response.status));
     }
@@ -761,6 +948,7 @@ struct ResponseData {
 #[cfg(test)]
 fn generate(prompt: &str, model: Option<&Model>, deadline: Duration) -> Result<String> {
     generate_cancellable(prompt, model, deadline, &AtomicBool::new(false))
+        .map(|generated| generated.text)
 }
 
 fn generate_cancellable(
@@ -768,14 +956,35 @@ fn generate_cancellable(
     model: Option<&Model>,
     deadline: Duration,
     cancelled: &AtomicBool,
-) -> Result<String> {
+) -> Result<Generated> {
     let started = Instant::now();
-    let service = crate::desktop::opencode_service::find()
-        .ok_or_else(|| eyre!(crate::desktop::opencode_service::NOT_RUNNING))?;
+    let lock = crate::policy::Lock::OpenCodeProcessing;
+    if crate::policy::Policy::current().locks(lock) {
+        return Err(eyre!(lock.refusal()));
+    }
+    // Service discovery and the catalog read spend the generation's own
+    // remaining budget, so a stalled OpenCode falls back by the deadline
+    // instead of adding its fixed lookup timeouts on top.
+    let service = crate::desktop::opencode_service::find_cancellable(
+        remaining_generation_deadline(started, deadline)?,
+        cancelled,
+    );
+    if cancelled.load(Ordering::Acquire) {
+        return Err(eyre!("OpenCode generation was cancelled"));
+    }
+    remaining_generation_deadline(started, deadline)?;
+    let service = service.map_err(|missing| eyre!(missing.message()))?;
     generate_with_candidates(
         prompt,
         model,
-        || ranked_candidates_for(&service),
+        || {
+            ranked_candidates_for(
+                &service,
+                deadline.saturating_sub(started.elapsed()),
+                cancelled,
+            )
+        },
+        forget_ranked_candidates,
         started,
         deadline,
         cancelled,
@@ -783,21 +992,24 @@ fn generate_cancellable(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_with_candidates(
     prompt: &str,
     model: Option<&Model>,
     candidates: impl FnOnce() -> Vec<Model>,
+    forget_candidates: impl FnMut(),
     started: Instant,
     deadline: Duration,
     cancelled: &AtomicBool,
     post: impl FnMut(&str, Duration, &AtomicBool) -> Result<Response>,
-) -> Result<String> {
+) -> Result<Generated> {
     if model.is_none() {
         let candidates = candidates();
         if !candidates.is_empty() {
             return generate_with_ranked_candidates(
                 prompt,
                 &candidates,
+                forget_candidates,
                 started,
                 deadline,
                 cancelled,
@@ -805,7 +1017,11 @@ fn generate_with_candidates(
             );
         }
     }
-    generate_single_model(prompt, model, started, deadline, cancelled, post)
+    let text = generate_single_model(prompt, model, started, deadline, cancelled, post)?;
+    Ok(Generated {
+        text,
+        model: model.cloned(),
+    })
 }
 
 fn remaining_generation_deadline(started: Instant, deadline: Duration) -> Result<Duration> {
@@ -820,37 +1036,61 @@ fn remaining_generation_deadline(started: Instant, deadline: Duration) -> Result
     }
 }
 
+/// Walks the ranked models in order. Any failure forgets the cached list so
+/// the next generation reads OpenCode's catalog again, and when every ranked
+/// model fails, OpenCode's own default model answers instead (#1123).
 fn generate_with_ranked_candidates(
     prompt: &str,
     candidates: &[Model],
+    mut forget_candidates: impl FnMut(),
     started: Instant,
     deadline: Duration,
     cancelled: &AtomicBool,
     mut post: impl FnMut(&str, Duration, &AtomicBool) -> Result<Response>,
-) -> Result<String> {
+) -> Result<Generated> {
     let mut last_error = None;
-    for (index, candidate) in candidates.iter().enumerate() {
+    for candidate in candidates {
         let remaining = remaining_generation_deadline(started, deadline)?;
         let data = serde_json::to_string(&Request {
             prompt,
             model: Some(candidate),
         })?;
-        match post(&data, remaining, cancelled)? {
-            Response::Success { data } => return Ok(data.text),
+        let response = match post(&data, remaining, cancelled) {
+            Ok(response) => response,
+            Err(error) => {
+                forget_candidates();
+                return Err(error);
+            }
+        };
+        match response {
+            Response::Success { data } => {
+                return Ok(Generated {
+                    text: data.text,
+                    model: Some(candidate.clone()),
+                });
+            }
             Response::Error { message } => {
-                if index + 1 < candidates.len() {
-                    tracing::warn!(
-                        provider = %candidate.provider,
-                        model = %candidate.id,
-                        %message,
-                        "ranked OpenCode model failed; trying next available candidate"
-                    );
-                }
-                last_error = Some(eyre!("OpenCode generation failed: {message}"));
+                forget_candidates();
+                tracing::warn!(
+                    provider = %candidate.provider,
+                    model = %candidate.id,
+                    %message,
+                    "ranked OpenCode model failed; trying the next one"
+                );
+                last_error = Some(message);
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| eyre!("no OpenCode models available")))
+    tracing::warn!("every ranked OpenCode model failed; asking OpenCode's default model");
+    match generate_single_model(prompt, None, started, deadline, cancelled, &mut post) {
+        Ok(text) => Ok(Generated { text, model: None }),
+        Err(error) => Err(match last_error {
+            Some(message) => eyre!(
+                "OpenCode generation failed: {message}; OpenCode's default model also failed: {error:#}"
+            ),
+            None => error,
+        }),
+    }
 }
 
 fn generate_single_model(
@@ -880,7 +1120,8 @@ fn generate_single_model(
 }
 
 /// Posts to the newest generation route and falls back to the older name only
-/// when the server reports that route missing. Every attempt shares one deadline.
+/// when the server reports that route missing (a 404 that isn't OpenCode's
+/// own error). Every attempt shares one deadline.
 fn post_generation(
     service: &Service,
     data: &str,
@@ -898,18 +1139,30 @@ fn post_generation(
             deadline.saturating_sub(started.elapsed()),
             cancelled,
         )?;
-        let missing = attempt.status == 404;
+        let missing = route_missing(&attempt);
         response = Some(attempt);
         if !missing {
             break;
         }
     }
     let response = response.expect("at least one generation route");
-    if response.status == 404 {
+    if route_missing(&response) {
         return Err(eyre!("OpenCode does not serve a generation route"));
     }
     serde_json::from_slice(&response.body)
         .wrap_err("OpenCode returned an invalid generation response")
+}
+
+/// A 404 means the route is missing only when it isn't OpenCode's own tagged
+/// error (such as "Model not found"), which the route answered.
+fn route_missing(response: &crate::desktop::opencode_service::Response) -> bool {
+    response.status == 404
+        && !serde_json::from_slice::<serde_json::Value>(&response.body).is_ok_and(|value| {
+            value.get("_tag").is_some()
+                && value
+                    .get("message")
+                    .is_some_and(serde_json::Value::is_string)
+        })
 }
 
 fn retryable_generation_error(message: &str) -> bool {
@@ -940,7 +1193,36 @@ fn wait_for_generation_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+
     use url::Url;
+
+    #[test]
+    fn managed_locks_drop_the_rewrite_and_transformations() {
+        use crate::policy::{Lock, Policy};
+        let settings = PostProcessingSettings {
+            enabled: true,
+            ..PostProcessingSettings::default()
+        };
+        let build = |policy| {
+            Profile::configured_under(
+                "Mode",
+                ReplacementSet::default(),
+                vec!["lowercase".into()],
+                &settings,
+                policy,
+            )
+        };
+        let open = build(Policy::default());
+        assert!(open.rewrites());
+        assert_eq!(open.transformations, ["lowercase"]);
+        let rewrite = build(Policy::default().with(Lock::OpenCodeProcessing));
+        assert!(!rewrite.rewrites());
+        assert_eq!(rewrite.transformations, ["lowercase"]);
+        let transforms = build(Policy::default().with(Lock::Transforms));
+        assert!(transforms.rewrites());
+        assert!(transforms.transformations.is_empty());
+    }
 
     fn context(application: &str, url: Option<&str>) -> ContextSnapshot {
         ContextSnapshot {
@@ -1207,12 +1489,79 @@ mod tests {
     }
 
     #[test]
+    fn numbers_only_transcripts_skip_the_rewrite() {
+        for numbers in [
+            "One, two, three, four, five, six, seven, eight, nine, ten.",
+            "1355",
+            "Twenty-one point five.",
+            "one hundred and forty two",
+        ] {
+            assert!(numbers_only(numbers), "{numbers}");
+        }
+        for speech in [
+            "",
+            "And.",
+            "Point one, the dataset has 1355 evaluation windows.",
+            "Call me at five.",
+        ] {
+            assert!(!numbers_only(speech), "{speech}");
+        }
+
+        let profiles = Profiles::new(Profile::new("default", "Rewrite freely.").ai_enabled(true));
+        let processed = profiles.process_cancellable(
+            "one two three four five",
+            &context("Zed", None),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(processed.text, "one two three four five");
+        assert!(processed.observation.is_none());
+    }
+
+    #[test]
     fn only_model_unavailability_is_retried() {
         assert!(retryable_generation_error(
             "Model unavailable: example/rewrite-model"
         ));
         assert!(!retryable_generation_error("Provider request failed"));
         assert!(!retryable_generation_error("processor returned empty text"));
+    }
+
+    /// The meeting summary model: a chosen model is the only one
+    /// asked, and its failure is reported rather than another provider tried.
+    #[test]
+    fn a_chosen_model_is_asked_alone_and_never_falls_back() {
+        let chosen = Model {
+            provider: "openai".into(),
+            id: "gpt-5".into(),
+            variant: None,
+        };
+        let mut posted = Vec::new();
+        let error = generate_with_candidates(
+            "Summarize.",
+            Some(&chosen),
+            || -> Vec<Model> { panic!("a chosen model never reads the ranked candidates") },
+            || panic!("a chosen model never forgets the ranked candidates"),
+            Instant::now(),
+            Duration::from_secs(5),
+            &AtomicBool::new(false),
+            |data, _, _| {
+                posted.push(data.to_owned());
+                Ok(Response::Error {
+                    message: "Provider request failed".into(),
+                })
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("Provider request failed"),
+            "{error}"
+        );
+        assert_eq!(posted.len(), 1);
+        assert!(
+            posted[0].contains(r#""providerID":"openai""#),
+            "{}",
+            posted[0]
+        );
     }
 
     #[test]
@@ -1225,6 +1574,58 @@ mod tests {
 
         assert!(error.to_string().contains("was cancelled"));
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// A rewrite with no time left, or one already cancelled, stops before
+    /// asking for a service; nothing may add a fixed lookup timeout on top.
+    #[test]
+    fn a_generation_without_time_or_after_cancellation_fails_promptly() {
+        let started = Instant::now();
+        let error = generate_cancellable(
+            "Rewrite this.",
+            None,
+            Duration::ZERO,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exceeded"), "{error}");
+        let error = generate_cancellable(
+            "Rewrite this.",
+            None,
+            Duration::from_secs(1),
+            &AtomicBool::new(true),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_cancelled_catalog_lookup_returns_nothing_and_caches_nothing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let service = crate::desktop::opencode_service::tests::fixture(&url);
+        let started = Instant::now();
+        assert!(
+            ranked_candidates_for(&service, Duration::from_secs(30), &AtomicBool::new(true))
+                .is_empty()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        let cached = CACHED_RANKED_CANDIDATES.lock().unwrap();
+        assert!(
+            !cached
+                .as_ref()
+                .is_some_and(|(cached, _)| *cached == service),
+            "a cancelled catalog lookup must not cache its result"
+        );
     }
 
     /// The service fixture answering each `(path, status, body)` POST in order.
@@ -1266,6 +1667,14 @@ mod tests {
             (
                 vec![("/api/experimental/generate", 400, unavailable)],
                 Err("Model unavailable: x"),
+            ),
+            (
+                vec![(
+                    "/api/experimental/generate",
+                    404,
+                    r#"{"_tag":"NotFoundError","message":"Model not found: github-copilot/gpt-5.4-nano"}"#,
+                )],
+                Err("Model not found: github-copilot/gpt-5.4-nano"),
             ),
             (
                 vec![
@@ -1418,16 +1827,20 @@ mod tests {
                 r#"{"data":{"text":"resolved from second ranked model"}}"#,
             ),
         ]);
+        let mut forgotten = 0;
         let output = generate_with_ranked_candidates(
             "Make this concise.",
             &candidates,
+            || forgotten += 1,
             Instant::now(),
             Duration::from_secs(5),
             &AtomicBool::new(false),
             |data, remaining, cancelled| post_generation(&service, data, remaining, cancelled),
         )
         .unwrap();
-        assert_eq!(output, "resolved from second ranked model");
+        assert_eq!(output.text, "resolved from second ranked model");
+        assert_eq!(output.model.as_ref(), Some(&candidates[1]));
+        assert_eq!(forgotten, 1, "a failed candidate drops the cached list");
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 2);
         let first: serde_json::Value = serde_json::from_slice(&requests[0]).unwrap();
@@ -1447,6 +1860,48 @@ mod tests {
                 "id": "claude-haiku-4-5"
             })
         );
+    }
+
+    /// A ranked list read while OpenCode was still loading can name models
+    /// that left its catalog (#1123): every one failing forgets the list and
+    /// asks OpenCode's own default model instead.
+    #[test]
+    fn stale_ranked_models_fall_back_to_the_default_model() {
+        let candidates = vec![Model {
+            provider: "github-copilot".into(),
+            id: "gpt-5.4-nano".into(),
+            variant: None,
+        }];
+        let mut forgotten = 0;
+        let mut posted = Vec::new();
+        let output = generate_with_ranked_candidates(
+            "Summarize.",
+            &candidates,
+            || forgotten += 1,
+            Instant::now(),
+            Duration::from_secs(5),
+            &AtomicBool::new(false),
+            |data, _, _| {
+                posted.push(serde_json::from_str::<serde_json::Value>(data).unwrap());
+                Ok(if posted.len() == 1 {
+                    Response::Error {
+                        message: "Model not found: github-copilot/gpt-5.4-nano".into(),
+                    }
+                } else {
+                    Response::Success {
+                        data: ResponseData {
+                            text: "from the default".into(),
+                        },
+                    }
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(output.text, "from the default");
+        assert_eq!(output.model, None);
+        assert_eq!(forgotten, 1);
+        assert_eq!(posted.len(), 2);
+        assert!(posted[1].get("model").is_none(), "{}", posted[1]);
     }
 
     #[test]

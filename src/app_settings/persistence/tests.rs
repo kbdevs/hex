@@ -1,5 +1,7 @@
 use super::*;
-use crate::app_settings::{MeetingRetention, MeetingSettings, RecordingAudioBehavior};
+use crate::app_settings::{
+    MeetingRetention, MeetingSettings, MeetingSummaries, RecordingAudioBehavior,
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::atomic::Ordering;
@@ -89,6 +91,25 @@ fn invalid_enum_resets_only_that_field_and_leaves_disk_alone() {
     assert!(settings.meetings.enabled);
     assert_eq!(fs::read(&file.path).unwrap(), original);
     assert!(file.backups().is_empty());
+}
+
+#[test]
+fn custom_output_switches_survive_loading_and_saving_older_settings() {
+    let file = SettingsFile::new(
+        br#"{"labs":{"type_dictation":true,"phonon_refiner":true},"release_microphone_while_idle":false}"#,
+    );
+    let mut settings = AppSettings::load_from(&file.path).unwrap();
+    assert!(settings.labs.type_dictation);
+    assert!(settings.labs.phonon_refiner);
+    settings.sound_effect_volume = 0.37;
+    settings.write_to(&file.path).unwrap();
+    let reloaded = AppSettings::load_from(&file.path).unwrap();
+    assert!(reloaded.labs.type_dictation);
+    assert!(reloaded.labs.phonon_refiner);
+    assert!(!reloaded.release_microphone_while_idle);
+    let old: AppSettings = serde_json::from_str("{}").unwrap();
+    assert!(!old.labs.type_dictation);
+    assert!(!old.labs.phonon_refiner);
 }
 
 #[test]
@@ -257,4 +278,35 @@ fn unreadable_file_does_not_block_load_or_get_overwritten() {
     );
     assert!(AppSettings::default().write_to(&file.path).is_err());
     assert!(file.path.is_dir());
+}
+
+#[test]
+fn a_managed_lock_reads_off_and_never_rewrites_the_saved_switch() {
+    use crate::policy::{Lock, Policy};
+    let file = SettingsFile::new(
+        br#"{"meetings":{"enabled":true,"summarize_with_apple_intelligence":false,"summarize_with_opencode":true},"labs":{"live_text":true}}"#,
+    );
+    let policy = Policy::default()
+        .with(Lock::Meetings)
+        .with(Lock::OpenCodeProcessing)
+        .with(Lock::Labs);
+    let (mut settings, _) = AppSettings::read_managed_from(&file.path, policy).unwrap();
+    assert!(!settings.meetings.enabled);
+    assert_eq!(settings.meetings.summaries, MeetingSummaries::Off);
+    assert!(!settings.labs.live_text);
+
+    // Saving another change, or the locked switch itself, keeps the file's.
+    settings.sound_effects = false;
+    settings.meetings.enabled = true;
+    settings.write_managed_to(&file.path, policy).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&file.path).unwrap()).unwrap();
+    assert_eq!(saved["meetings"]["enabled"], json!(true));
+    assert_eq!(saved["meetings"]["summaries"], json!("opencode"));
+    assert_eq!(saved["labs"]["live_text"], json!(true));
+    assert_eq!(saved["sound_effects"], json!(false));
+
+    // Without the policy the user's own choices come back.
+    let (unmanaged, _) = AppSettings::read_managed_from(&file.path, Policy::default()).unwrap();
+    assert!(unmanaged.meetings.enabled);
+    assert!(unmanaged.labs.live_text);
 }

@@ -72,31 +72,37 @@ impl ContextMonitor {
         let (sender, updates) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
-        thread::spawn(move || {
-            let mut previous = None;
-            let mut previous_error = None;
-            while !worker_stop.load(Ordering::Acquire) {
-                match capture() {
-                    Ok(context) => {
-                        previous_error = None;
-                        if !publish_context(&sender, &mut previous, context) {
-                            break;
+        let spawned = thread::Builder::new()
+            .name("foreground-context".into())
+            .spawn(move || {
+                let mut previous = None;
+                let mut previous_error = None;
+                while !worker_stop.load(Ordering::Acquire) {
+                    match capture() {
+                        Ok(context) => {
+                            previous_error = None;
+                            if !publish_context(&sender, &mut previous, context) {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let error = error.to_string();
+                            if previous_error.as_ref() != Some(&error) {
+                                tracing::warn!(%error, "could not capture foreground context");
+                                previous_error = Some(error);
+                            }
+                            if !publish_context(&sender, &mut previous, ContextSnapshot::default())
+                            {
+                                break;
+                            }
                         }
                     }
-                    Err(error) => {
-                        let error = error.to_string();
-                        if previous_error.as_ref() != Some(&error) {
-                            tracing::warn!(%error, "could not capture foreground context");
-                            previous_error = Some(error);
-                        }
-                        if !publish_context(&sender, &mut previous, ContextSnapshot::default()) {
-                            break;
-                        }
-                    }
+                    thread::sleep(poll_interval);
                 }
-                thread::sleep(poll_interval);
-            }
-        });
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "could not start the foreground context monitor");
+        }
         Self { updates, stop }
     }
 }
@@ -126,7 +132,10 @@ impl Drop for ContextMonitor {
 impl ContextSnapshot {
     #[cfg(target_os = "macos")]
     pub fn capture() -> Result<Self> {
-        capture_macos(crate::dictation::config::reads_browser())
+        capture_macos(Reads {
+            page: crate::dictation::config::reads_browser(),
+            window_title: crate::dictation::config::reads_window_title(),
+        })
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -157,11 +166,10 @@ impl ContextSnapshot {
                     .map(|(pid, _)| pid)
             });
             // Chromium browsers behind another app expose no focused element,
-            // and Arc's chrome sits between its window and the page. Read only
-            // one selected window's page (`browser_page`); a
-            // Meet tab's title still names the call when no address does
-            // (#827, #831). The browser's own window is reported rather than
-            // the app in front.
+            // and Arc's chrome sits between its window and the page. Read one
+            // selected window so a page address and title stay together; the
+            // Meet tab title can name the call when no address does (#827,
+            // #831). Report the browser's window, not the app in front.
             if let Some(pid) = pid {
                 let page = crate::accessibility::browser_page(pid);
                 return Ok(Self {
@@ -172,7 +180,10 @@ impl ContextSnapshot {
                 });
             }
         }
-        capture_macos(true)
+        capture_macos(Reads {
+            page: true,
+            window_title: true,
+        })
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -205,10 +216,17 @@ impl ContextSnapshot {
     }
 }
 
+/// What `capture_macos` reads beyond the front app. Asking a browser for its
+/// page can show an Automation prompt, and a window title can hold an email
+/// subject or a document name, so only callers that use them ask.
 #[cfg(target_os = "macos")]
-/// `read_page` asks the front browser for its page, which can show an
-/// Automation prompt; only callers that use the page pass true.
-fn capture_macos(read_page: bool) -> Result<ContextSnapshot> {
+struct Reads {
+    page: bool,
+    window_title: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn capture_macos(reads: Reads) -> Result<ContextSnapshot> {
     let (application, bundle_id, pid) = autoreleasepool(|_| {
         let application = NSWorkspace::sharedWorkspace()
             .frontmostApplication()
@@ -220,13 +238,18 @@ fn capture_macos(read_page: bool) -> Result<ContextSnapshot> {
         let bundle_id = application.bundleIdentifier().map(|id| id.to_string());
         Ok::<_, color_eyre::Report>((name, bundle_id, application.processIdentifier()))
     })?;
-    let browser_url = read_page
+    let browser_url = reads
+        .page
         .then(|| browser_url(bundle_id.as_deref(), pid))
+        .flatten();
+    let window_title = reads
+        .window_title
+        .then(|| crate::accessibility::focused_window_title(pid))
         .flatten();
     Ok(ContextSnapshot {
         application: Some(application),
         browser_url,
-        window_title: crate::accessibility::focused_window_title(pid),
+        window_title,
         input_revision: None,
     })
 }
@@ -388,11 +411,13 @@ impl ScriptableBrowser {
 
     /// The front window's tab, even when another app is in front.
     /// Background tabs are deliberately not searched: a call open in one
-    /// says nothing about which tab is using the microphone.
+    /// says nothing about which tab is using the microphone. The tab is
+    /// named through the front window each time rather than kept in a
+    /// variable: Arc can't resolve the stored tab-by-id reference (#1113).
     fn meeting_tab(self) -> Result<Option<(Url, Option<String>)>> {
         let (tab, title) = self.tab();
         let script = format!(
-            "tell application id \"{}\"\n    if (count of windows) is 0 then return \"\"\n    set frontTab to {tab} of front window\n    return (URL of frontTab) & linefeed & ({title} of frontTab)\nend tell",
+            "tell application id \"{}\"\n    if (count of windows) is 0 then return \"\"\n    return (URL of {tab} of front window) & linefeed & ({title} of {tab} of front window)\nend tell",
             self.bundle_id
         );
         Ok(parse_tab_output(&self.run(&script)?))

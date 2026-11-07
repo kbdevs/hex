@@ -20,11 +20,12 @@ fn main() {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    const CASES: [&str; 5] = [
+    const CASES: [&str; 6] = [
         "cold-lookups",
         "cold-mixed",
         "warm-hits",
         "warm-misses",
+        "warm-refresh",
         "typed-events",
     ];
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -156,6 +157,16 @@ fn run_case(case: &str) {
             })
         })
         .collect::<Vec<_>>();
+    // The main thread rebuilds the snapshot while workers read it, as after an
+    // input-source change; nothing switched, so nothing changes.
+    let mut refreshes = 0;
+    if case == "warm-refresh" {
+        let mtm = objc2::MainThreadMarker::new().expect("cases run on the main thread");
+        while !workers.iter().all(std::thread::JoinHandle::is_finished) {
+            assert!(!keyboard::refresh_layout(mtm).unwrap());
+            refreshes += 1;
+        }
+    }
     for worker in workers {
         worker.join().unwrap();
     }
@@ -163,7 +174,7 @@ fn run_case(case: &str) {
     if warm {
         assert_eq!(
             queries(),
-            1,
+            1 + refreshes,
             "warm lookups must not re-enter native layout APIs"
         );
     } else if case == "cold-lookups" {

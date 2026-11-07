@@ -8,6 +8,8 @@
 //! preview data and record the requests, so macOS and Windows surfaces render
 //! and are tested on Linux; a native host fills the same data on its own OS.
 
+use std::path::PathBuf;
+
 use super::meetings::Meeting;
 use crate::audio::hex_microphone::{
     DemoPlaybackTrack, DemoSnapshot, DemoSourceKind, HexMicrophoneStatus, TunedFilterConfig,
@@ -305,6 +307,15 @@ pub(super) struct PlatformState {
     pub(super) calendar: CalendarView,
     /// The tour's relaunch failed; the person must reopen Hex.
     pub(super) relaunch_failed: bool,
+    /// The desktop's paste permission where Hex pastes through the
+    /// RemoteDesktop portal (GNOME and KDE on Wayland); `None` elsewhere.
+    pub(super) paste: Option<super::paste_access::PasteAccess>,
+    /// A Wayland desktop without data-control (GNOME): a paste can't put
+    /// the clipboard back unless Labs › Restore clipboard on GNOME is on.
+    pub(super) clipboard_unrestorable: bool,
+    /// A scene's state: [`Self::setup_status`] reports `permissions` on
+    /// every OS rather than asking this computer.
+    preview: bool,
     /// Developer builds: keeps Meetings available without opt-in in debug builds
     /// (`crate::DEVELOPER_FEATURES_ENABLED` on a native host).
     pub(super) developer: bool,
@@ -377,6 +388,9 @@ impl PlatformState {
             meeting_folder_error: None,
             calendar: CalendarView::default(),
             relaunch_failed: false,
+            paste: None,
+            clipboard_unrestorable: false,
+            preview: false,
             developer: false,
             accessibility_renamed: false,
             tuning: TunedFilterConfig::default(),
@@ -391,7 +405,7 @@ impl PlatformState {
     /// The permission state with `transcription_model` from the caller,
     /// which knows the selected model.
     pub(super) fn setup_status(&self, transcription_model: bool) -> SetupStatus {
-        if !self.caps.permissions {
+        if !self.caps.permissions && !self.preview {
             return crate::desktop::onboarding::status_with_transcription_model(
                 transcription_model,
             );
@@ -508,6 +522,7 @@ impl PlatformState {
     /// login item off, and the driver installed.
     pub(super) fn preview(caps: Capabilities) -> Self {
         let mut state = Self::new(caps);
+        state.preview = true;
         let ready = PermissionState::Ready;
         state.permissions = SetupStatus {
             microphone: ready,
@@ -540,15 +555,21 @@ impl PlatformState {
     }
 }
 
-/// A meeting action the pane asks the meetings runtime for.
+/// A meeting action the pane asks the meetings runtime for. Reveal carries the
+/// `RevealTarget` the pane labeled its menu item with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum MeetingRequest {
     Start,
     Stop,
-    Rename { id: String, title: String },
+    /// Import a local audio file as a meeting (macOS; Labs › Import audio).
+    Import(PathBuf),
+    Rename {
+        id: String,
+        title: String,
+    },
     Trash(String),
     Summarize(String),
-    Reveal(String),
+    Reveal(crate::meeting::RevealTarget),
     RevealFolder,
     ChooseFolder,
 }
@@ -634,7 +655,9 @@ pub(super) fn poll_voice_filter(state: &mut PlatformState, refresh: bool) -> boo
             state.tuning = tuning;
             changed = true;
         }
-        let status = on.then(mic::status);
+        // A stable build has no filter, but an installed driver still needs
+        // its Uninstall.
+        let status = (on || mic::driver_bundle_installed()).then(mic::status);
         if state.hex_microphone != status {
             state.hex_microphone = status;
             changed = true;
@@ -657,11 +680,6 @@ pub(super) trait NativeHost {
     /// What the tour hears from the runtime: practice dictation outcomes
     /// while `practicing`, and a shortcut listener that failed to start.
     fn tour_inputs(&mut self, practicing: bool) -> Vec<Input>;
-    /// The microphone's latest peak, 0 to 1; silence when no audio arrived
-    /// lately. The tour reads it only while a practice dictation records.
-    fn practice_level(&self) -> f32 {
-        crate::audio::input_level::recent().unwrap_or(0.0)
-    }
 }
 
 pub(super) enum PlatformHost {
@@ -743,14 +761,6 @@ impl PlatformHost {
         }
     }
 
-    pub(super) fn practice_level(&self) -> f32 {
-        match self {
-            Self::Native(host) => host.practice_level(),
-            Self::Local(_) => crate::audio::input_level::recent().unwrap_or(0.0),
-            Self::Fixture(_) => 0.0,
-        }
-    }
-
     pub(super) fn is_fixture(&self) -> bool {
         matches!(self, Self::Fixture(_))
     }
@@ -813,7 +823,7 @@ impl Difference {
 const DIFFERENCES: &[(&str, Difference)] = &[
     (
         "type_dictation",
-        Difference::Pending("the personal typing build has a macOS Quartz keyboard adapter only"),
+        Difference::Pending("Quartz can type on macOS; Linux and Windows have no typing adapter"),
     ),
     (
         "calendar",

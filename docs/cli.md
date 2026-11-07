@@ -18,6 +18,10 @@ CLI; `hex status --json` lists the OS's `capabilities`. Today that is
 playground stories (`window story`) outside macOS and the local `model`
 tools on macOS.
 
+On Windows a terminal runs `hex` as `hex.com`, a console program that runs
+the app's `hex.exe` and waits for it, so commands print, return their exit
+code, and can be captured like any other (`docs/windows.md`).
+
 The read-only `hex history` and `hex meetings list|show|chapters|search` commands, and
 `hex mcp`, read files rather than the running Hex; see `docs/transcript-cli.md`.
 
@@ -69,21 +73,22 @@ hex
 │   ├── add <term> [--sounds-like a,b]  add a term, or new spellings to an existing one
 │   └── remove <term>              any case
 ├── annotate (alias capture)       Annotate (features/capture.md)
-│   ├── start|stop|cancel|status   record a capture, end or discard it, or report
+│   ├── start|stop|cancel|replay|status  record a capture, end or discard it, save the last 15 s, or report
 │   ├── list [--limit N]           the newest captures in the captures folder
 │   ├── show <capture>             one capture's words, files, and where it went
 │   ├── send <capture> [--to <session>] [--always]  send it to an OpenCode session
 │   └── route <capture> [--ask-jev]  what routing sees and decides; sends nothing
+├── screenshot [--pick]           Labs (macOS): shoot the display under the pointer and print the PNG's path; --pick opens the ⌘⇧4 picker
 ├── labs [on|off <feature>]       list Labs features or turn one on/off; edits settings.json (features/labs.md)
-│   └── link <feature>             macOS: print hex://labs/<feature>, the link that opens Hex's Labs page at that row
+│   └── link <feature>             macOS: print hex://labs/<feature>, the link that opens Hex's Labs page on that lab's group
 ├── check-for-updates              check for an update now
 ├── launch-at-login [on|off]       report or change Launch at Login (macOS: installed Hex.app only; Windows Run key; Linux XDG autostart)
 └── logs [--process] [-n N] [-f]   tail live.ndjson (or process.log); no running Hex needed
 ```
 
 `dictation start` locks the recording, as a double tap would: `dictation stop`
-or the next shortcut press finishes it. Dictation has no cancel (#786): every
-dictation finishes and pastes. A CLI start has no press to judge, so its recording counts as
+or the next shortcut press finishes it, and `dictation cancel` discards it.
+A CLI start has no press to judge, so its recording counts as
 intentional at once: the start tone plays once the microphone is open, and the
 recording behavior (mute or pause media, idle-sleep prevention) and the live
 stream start as they do after a held shortcut. A `stop` replies `done` only
@@ -110,8 +115,12 @@ processing shortcut (`raw_dictation_hotkey`) does. History keeps it as `raw`,
 and Paste Last pastes it. `--raw` with `stop` is a usage error
 (exit 2); `stop --print` of a raw dictation prints the transcript as heard.
 
-`dictation cancel` was removed (#786); an older `hex` that sends it gets
-`removed`. `meetings cancel` doesn't exist because Hex has no way to discard a
+`dictation cancel` discards the recording in any shortcut mode: nothing is
+transcribed, pasted, or saved to History, and dictations already transcribing
+finish. With nothing recording it answers `unchanged`. In Toggle mode the
+cancel shortcut (`cancel_hotkey`, Escape by default) does the same; on Wayland,
+bind `hex dictation cancel` to a key in the desktop instead (#786, #1022).
+`meetings cancel` doesn't exist because Hex has no way to discard a
 meeting recording.
 
 `onboarding reset` (or `onboarding restart`) opens the window on the
@@ -153,6 +162,13 @@ setup, counts as idle. On Linux a Hex its systemd unit runs restarts through
 the unit (after writing this desktop's `session.env`); elsewhere `restart`
 waits for the old Hex to drain and exit, then runs `hex start`.
 
+On Linux, an older Hex an update left running (from before `hex` commands
+moved to the local API) answers only on its `service.sock`. Every control
+command and `hex start` then answer `outdated` (exit 1) instead of
+`not-running`, and `hex restart` restarts its systemd unit into the installed
+build and waits for it to answer (#915); one not run by the unit has to be
+quit from its window or tray.
+
 `model install` with Hex running downloads in the background, as Settings
 does; on Linux and Windows with no Hex running it downloads in this process,
 printing progress (the source-install step `hex model install`). `model
@@ -172,10 +188,15 @@ in every macOS, Linux, and Windows build; with `capture.enabled` off it refuses 
 `hex` process itself and `start`, `stop`, and `cancel` are handed to the
 running Hex's listener, as is `status`. On Windows every `annotate` command
 goes to the running Hex. `capture stop` replies at once with the bundle
-path while the words and files are written in the background; `capture status`
+path while the words and files are written in the background; `capture replay`
+(macOS 27+, Dev Lab `annotate-replay` on) exports the rolling 15 s
+`SCClipBufferingOutput` display buffer to `<bundle>/recording.mp4` and replies
+with the bundle path while keyframes, clipboard copy, and routing finish on the
+same queue (`unsupported` outside macOS 27+, `feature-off` while
+`labs.annotate_replay` is off); `capture status`
 lists bundles still writing and the last outcome (`last`: `bundle`, `stage`
 of `done`, `failed`, or `cancelled`, and for a written bundle `words`, `gaps`,
-and `missing_transcript`, why it has no words). A start while two captures
+and `missing_transcript`, why it has no words). A start or replay while two captures
 are still writing is refused with `busy`. Every action is idempotent.
 
 `<capture>` is a bundle name (`1792933491953.scrawl`, the extension
@@ -242,7 +263,7 @@ Requests are flat objects tagged by `command` (kebab-case):
 
 ```ts
 status | quit {force} | restart {force}
-dictation {action, print?}                       action: start | stop | toggle (`cancel` answers `removed`);
+dictation {action, print?}                       action: start | stop | toggle | cancel;
                                                  print (stop only) answers `transcript`
 paste-last
 meeting-record {title?} | meeting-stop | meeting-copy-last
@@ -333,6 +354,7 @@ update              current | checking | available | unavailable
 
 ```ts
 not-running            Hex isn't running (CLI only; exit 3)
+outdated               Linux: an older Hex an update left running; run `hex restart` (CLI only)
 transport              the request couldn't reach Hex or its reply was unreadable (CLI only)
 version-mismatch       this hex speaks another control version; use the running app's hex
 unknown-setting        no such key (the message suggests a near match)
@@ -411,6 +433,11 @@ observe input-source changes or show these controls.
   second-dictation-shortcut`) and shares no key with another shortcut.
 - `json` settings (modes, meeting providers, excluded calendars) take the JSON
   value the file stores.
+- `ui_language` takes `en`, `pl`, `zh` (Simplified Chinese), `zh-Hant`
+  (Traditional Chinese), `ja`, `de`, `es`, `uk`, `pt`, `fr`, `ru`, or `none`
+  (follow the system language), the same languages Settings offers. Following
+  the system, a Chinese locale with the Hant script or the TW, HK, or MO
+  region shows Traditional Chinese; other Chinese locales show Simplified.
 - `updates.channel` takes `stable`, `dev`, or `none` (follow the build: the
   channel it was published on), and checks for updates at once. Choosing
   another channel than the build's offers that channel's current release
@@ -448,8 +475,7 @@ Writable keys: `release_microphone_while_idle`,
 `second_dictation_hotkey`, `labs.second_dictation_shortcut`, `labs.standalone_special_keys`, `show_dock_icon`, `vocabulary_boost`,
 `dictation_processing.default_mode`, `dictation_processing.modes`,
 `history_retention`, `meetings.enabled`,
-`meetings.output_folder`, `meetings.summarize_with_apple_intelligence`,
-`meetings.summarize_with_opencode`,
+`meetings.output_folder`, `meetings.summaries`, `meetings.opencode_model`,
 `meetings.show_recording_indicator`, `meetings.recording_indicator_corner`,
 `meetings.retention`, `meetings.providers`, `meetings.calendar.excluded_calendars`,
 `meetings.calendar.remind`, `meetings.calendar.lead_minutes`,
@@ -464,6 +490,14 @@ comma-separated, and `set` (or `apply`) adds the comma-separated names to it;
 `list` leaves the key out. Model listings keep `supports_recognition_hints`
 (true where the model reads the vocabulary as its prompt) beside the newer
 `vocabulary`: `prompt`, `bias`, or `none`.
+
+`meetings.summaries` chooses who titles and summarizes meetings: `off`, `mac`
+(Apple Intelligence; nothing leaves this Mac, and nothing falls back to
+OpenCode), or `opencode` (sends the transcript to `meetings.opencode_model`,
+or a fast model Hex picks when that is `none`). Off a Mac it is `off` or
+`opencode`. The retired `meetings.summarize_with_apple_intelligence` and
+`meetings.summarize_with_opencode` are refused with the `meetings.summaries`
+command to use instead.
 
 A test (`control::settings::tests::every_persisted_setting_has_a_cli_key`)
 fails when a new persisted setting has no key here.

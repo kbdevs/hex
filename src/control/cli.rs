@@ -60,10 +60,10 @@ pub enum ControlCli {
         #[command(flatten)]
         output: Output,
     },
-    /// Start, stop, or toggle a dictation, as the shortcut would.
+    /// Start, stop, toggle, or cancel a dictation, as the shortcut would.
     ///
-    /// `start` locks the recording: `stop` or the shortcut finishes it.
-    /// Repeating a command changes nothing.
+    /// `start` locks the recording: `stop` or the shortcut finishes it,
+    /// `cancel` discards it. Repeating a command changes nothing.
     Dictation {
         #[arg(value_enum)]
         action: CaptureAction,
@@ -84,6 +84,15 @@ pub enum ControlCli {
         #[command(flatten)]
         output: Output,
     },
+    /// Take a screenshot of the display under the pointer and print its
+    /// path (Labs › Screenshots, macOS).
+    Screenshot {
+        /// Open the area and window picker instead, as its shortcut does.
+        #[arg(long)]
+        pick: bool,
+        #[command(flatten)]
+        output: Output,
+    },
     /// Read and change any persisted setting, shortcuts included.
     Settings {
         #[command(subcommand)]
@@ -100,7 +109,7 @@ pub enum ControlCli {
         #[command(subcommand)]
         command: WindowCommand,
     },
-    /// Replay the first-run onboarding (needs Labs on).
+    /// Replay the first-run onboarding.
     Onboarding {
         #[command(subcommand)]
         command: OnboardingCommand,
@@ -394,6 +403,10 @@ pub fn run(command: ControlCli) -> u8 {
         ControlCli::Quit { force, output } => send(ControlCommand::Quit { force }, output),
         ControlCli::Restart { force, output } => {
             if !running() {
+                #[cfg(target_os = "linux")]
+                if crate::linux::service::instance_answers() {
+                    return print(restart_older_hex(), output);
+                }
                 return start(output);
             }
             #[cfg(target_os = "linux")]
@@ -418,20 +431,16 @@ pub fn run(command: ControlCli) -> u8 {
             raw,
             output,
         } => {
-            if let Err(error) = super::check_flags(action.into(), print, raw) {
+            if let Err(error) = super::check_flags(action, print, raw) {
                 eprintln!("hex: {}", error.message);
                 return 2;
             }
-            send(
-                ControlCommand::Dictation {
-                    action: action.into(),
-                    print,
-                    raw,
-                },
-                output,
-            )
+            send(ControlCommand::Dictation { action, print, raw }, output)
         }
         ControlCli::PasteLast { output } => send(ControlCommand::PasteLast, output),
+        ControlCli::Screenshot { pick, output } => {
+            send(ControlCommand::Screenshot { pick }, output)
+        }
         ControlCli::Settings { command } => settings(command),
         ControlCli::Model { command } => match command {
             ModelCommand::List { output } => send(ControlCommand::ModelList, output),
@@ -747,6 +756,12 @@ pub enum CaptureCommand {
         #[command(flatten)]
         output: Output,
     },
+    /// Export the last 15 s from the rolling screen buffer into a capture
+    /// bundle (`labs.annotate_replay`, macOS 27+).
+    Replay {
+        #[command(flatten)]
+        output: Output,
+    },
     /// The newest captures, newest first.
     List {
         /// How many to show (20 unless given).
@@ -836,6 +851,7 @@ pub fn capture(command: CaptureCommand) -> u8 {
         CaptureCommand::Cancel { output } => (C::ScrawlCapture { action: A::Cancel }, output),
         CaptureCommand::Toggle { output } => (C::ScrawlCapture { action: A::Toggle }, output),
         CaptureCommand::Status { output } => (C::ScrawlCapture { action: A::Status }, output),
+        CaptureCommand::Replay { output } => (C::ScrawlCapture { action: A::Replay }, output),
         CaptureCommand::List { limit, output } => (C::ScrawlCaptureList { limit }, output),
         CaptureCommand::Show { capture, output } => (C::ScrawlCaptureShow { capture }, output),
         CaptureCommand::Send {
@@ -941,6 +957,10 @@ fn apply_settings(file: &std::path::Path, output: Output) -> u8 {
         match lock {
             Ok(_lock) if !running() => return print(apply_offline(&values), output),
             Ok(_) => {}
+            #[cfg(target_os = "linux")]
+            Err(_) if crate::linux::service::instance_answers() => {
+                return print(older_hex(), output);
+            }
             Err(_) if std::time::Instant::now() >= deadline => {
                 return print(
                     ControlReply::error(
@@ -1017,7 +1037,7 @@ pub(crate) fn set_in_running_hex(key: &str, value: &str) -> Option<ControlReply>
 
 fn call(request: ControlRequest) -> Result<ControlResponse, ControlReply> {
     if !running() {
-        return Err(not_running());
+        return Err(absent());
     }
     crate::local_api::call_control(&request)
         .map_err(|error| ControlReply::error("transport", format!("{error:#}")))
@@ -1025,6 +1045,50 @@ fn call(request: ControlRequest) -> Result<ControlResponse, ControlReply> {
 
 pub(crate) fn not_running() -> ControlReply {
     ControlReply::error("not-running", "Hex is not running; run `hex start`")
+}
+
+/// Why no Hex answered `/control`: on Linux an older Hex an update left
+/// running answers only on its socket (#915).
+fn absent() -> ControlReply {
+    #[cfg(target_os = "linux")]
+    if crate::linux::service::instance_answers() {
+        return older_hex();
+    }
+    not_running()
+}
+
+/// An older Hex that predates `hex` commands over the local API.
+#[cfg(target_os = "linux")]
+fn older_hex() -> ControlReply {
+    ControlReply::error(
+        "outdated",
+        "an older Hex is still running (Hex was updated) and doesn't take `hex` commands; run `hex restart`",
+    )
+}
+
+/// `hex restart` with an older Hex running: restarts its systemd unit into
+/// the installed build, then waits until the new Hex answers.
+#[cfg(target_os = "linux")]
+fn restart_older_hex() -> ControlReply {
+    use std::time::{Duration, Instant};
+
+    if !crate::linux::service::supervised() {
+        return ControlReply::error(
+            "failed",
+            "an older Hex is running outside its systemd unit; quit it from its window or tray, then run `hex start`",
+        );
+    }
+    if let Err(error) = crate::linux::service::restart() {
+        return ControlReply::error("failed", format!("{error:#}"));
+    }
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(20) {
+        if running() {
+            return ControlReply::done("Restarted Hex");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    ControlReply::done("Restarted Hex; it isn't answering yet (it may be loading its model)")
 }
 
 #[cfg(target_os = "macos")]
@@ -1084,6 +1148,10 @@ fn start_reply() -> ControlReply {
 
     if running() {
         return ControlReply::unchanged("Hex is already running");
+    }
+    #[cfg(target_os = "linux")]
+    if crate::linux::service::instance_answers() {
+        return older_hex();
     }
     let executable = match std::env::current_exe() {
         Ok(executable) => executable,
@@ -1284,6 +1352,17 @@ mod tests {
             exit_code(&ControlReply::error("no-speech", "x")),
             EXIT_NO_SPEECH
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_older_hex_is_not_reported_as_not_running() {
+        let reply = older_hex();
+        assert_eq!(exit_code(&reply), EXIT_REFUSED);
+        assert!(matches!(
+            &reply,
+            ControlReply::Error { code, message } if code == "outdated" && message.contains("hex restart")
+        ));
     }
 
     #[cfg(target_os = "macos")]

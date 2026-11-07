@@ -1,7 +1,7 @@
 # Hex typing fork
 
-Based on [Hex 3.1.2](https://github.com/anomalyco/hex/releases/tag/v3.1.2),
-commit `826bdbc44c8806630a45c08ed8cef35a36817a17`.
+The `main` branch includes our changes and upstream Hex 3.3.0 at
+commit `49de3e167598c3e1548c2438a0f4a8597e685346`.
 
 On macOS, Settings > Labs > Type dictation selects actual keyboard typing
 for primary and raw dictation. Turn it off to use clipboard paste and restore.

@@ -156,9 +156,60 @@ pub(super) const NEMOTRON_3_5_ASR_ARTIFACT: GgufArtifact = GgufArtifact {
     architecture: "parakeet",
     variant: "nemotron-3.5-asr-streaming-0.6b",
 };
+// ai-sage's GigaAM v3 e2e RNN-T (MIT), Russian only, cased and punctuated.
+// Hex converted the `v3_e2e_rnnt` checkpoint that salute-developers/GigaAM
+// at 6e4b027c downloads and checks (MD5 2730de75…) with transcribe.cpp
+// 7045d1c's GigaAM converter and quantized it to Q8_0: all 560 tensors
+// match this file byte for byte, and the metadata differs only by four
+// capability flags the newer converter writes as false. The pinned file is
+// handy-computer's (from ai-sage/GigaAM-v3 at ec1dc1f), which ships the
+// licence and notice beside it.
+pub(super) const GIGAAM_V3_E2E_RNNT_ARTIFACT: GgufArtifact = GgufArtifact {
+    filename: "gigaam-v3-e2e-rnnt-Q8_0.gguf",
+    revision: "3efd5b39882ceadca5570a8fb9fa1a2c801d6d6d",
+    repository: "handy-computer/gigaam-v3-e2e-rnnt-gguf",
+    bytes: 273_724_832,
+    sha256: "78d63b47723b7f8d78c6113a6ef983b5a86e2a86f6c273e1f5cb6967b1c4467a",
+    architecture: "gigaam",
+    variant: "gigaam-v3-e2e-rnnt",
+};
+// The National Library of Norway's NB-Whisper Medium (Apache-2.0), a
+// Whisper medium fine-tune for Norwegian: NbAiLab's own whisper.cpp Q5_0
+// file at nb-whisper-medium 0ed074d5, which transcribe.cpp loads as Whisper.
+// Hex also converted the same revision's weights with transcribe.cpp
+// 7045d1c's Whisper converter at Q8_0 (832 MB): it scored 6.75% on FLEURS
+// Norwegian against this file's 6.68%, so the authors' smaller file stays.
+pub(super) const NB_WHISPER_MEDIUM_ARTIFACT: GgufArtifact = GgufArtifact {
+    filename: "ggml-model-q5_0.bin",
+    revision: "0ed074d5985bd56ca4140159a9dbffbc3fb5117e",
+    repository: "NbAiLab/nb-whisper-medium",
+    bytes: 539_212_484,
+    sha256: "18733de634af639a43b0f8c5f5a2ea0920de4c5b32a5570ec130981581c0e5e7",
+    architecture: "whisper",
+    // transcribe.cpp names a legacy Whisper file by its geometry.
+    variant: "whisper-medium",
+};
+// IBM's Granite Speech 5.0 470M TurboCTC (Apache-2.0), the multilingual,
+// cased and punctuated release at ibm-granite 1dd23f46 (handy-computer's
+// file is the earlier English-only, lowercase checkpoint). Hex converted it
+// with transcribe.cpp 7045d1c's Granite 5 converter, patched only to accept
+// the release's missing legacy `preprocessor_config.json` and to list its
+// seven languages, and quantized it to Q8_0: the result matches this file
+// byte for byte. The pinned file is 17slever17's, which ships the licence
+// and notice beside it.
+pub(super) const GRANITE_SPEECH_5_ARTIFACT: GgufArtifact = GgufArtifact {
+    filename: "granite-speech-5.0-470m-turboctc-multilingual-Q8_0.gguf",
+    revision: "62f64d9d5ad35989b06caf199cafe7155944a22b",
+    repository: "17slever17/granite-speech-5.0-470m-turboctc-multilingual-GGUF",
+    bytes: 505_663_136,
+    sha256: "f3efdc05b85b3a764bb5bb7022e69f61cafcecc11605c881c6396a6ed07ec91b",
+    architecture: "granite_speech5_ctc",
+    variant: "granite-speech-5.0-470m-turboctc",
+};
+pub(super) const GRANITE_SPEECH_5_LANGUAGES: &[&str] = &["en", "fr", "de", "es", "pt", "it", "ja"];
 /// The languages Nemotron 3.5 transcribes that Hex names, as the locales
 /// its language prompt takes (`runtime_language`). Its card also lists
-/// Norwegian Bokmål, which Hex doesn't offer yet.
+/// Norwegian Bokmål, which Hex doesn't offer it for yet.
 pub(super) const NEMOTRON_3_5_LOCALES: &[(&str, &str)] = &[
     ("en", "en-US"),
     ("es", "es-ES"),

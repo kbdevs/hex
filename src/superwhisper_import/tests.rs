@@ -70,6 +70,8 @@ fn imports_original_text_speakers_titles_audio_and_templates_without_duplicates(
                 audio_ms: 1,
                 inference_ms: 1,
                 total_ms: 2,
+                recording: None,
+                model: None,
             },
             crate::history::now_ms(),
         )

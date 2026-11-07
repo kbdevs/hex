@@ -122,7 +122,8 @@ struct MetaSpeaker {
 }
 
 pub fn run(args: &Args) -> Result<()> {
-    let documents = dirs::document_dir().ok_or_else(|| eyre!("Documents folder is unavailable"))?;
+    let documents =
+        crate::app_paths::document_dir().ok_or_else(|| eyre!("Documents folder is unavailable"))?;
     let source = args
         .path
         .clone()
@@ -396,6 +397,11 @@ fn history_entry(id: &str, timestamp_ms: u64, meta: &Meta) -> HistoryEntry {
             .processing_time
             .saturating_add(meta.language_model_processing_time),
         source: Some(format!("superwhisper:{id}")),
+        recording_bytes: 0,
+        model: None,
+        language: None,
+        text_ms: None,
+        versions: Vec::new(),
     }
 }
 
@@ -477,6 +483,7 @@ fn write_meeting(
             chapters_refined: false,
             retention_applies: false,
             export_sha256: None,
+            imported: true,
         };
         write_private(
             &staging.join("manifest.json"),

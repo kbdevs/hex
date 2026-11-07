@@ -182,6 +182,9 @@ export type ModelId =
   | "underdog_bark_3_clean"
   | "parakeet_ultra"
   | "nemotron_3_5_asr"
+  | "gigaam_v3"
+  | "nb_whisper_medium"
+  | "granite_speech_5"
   | "apple_speech"
   // An imported or found model, listed while it is ready.
   | `custom-${string}`;

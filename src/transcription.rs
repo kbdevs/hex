@@ -13,6 +13,8 @@ pub(crate) mod found_models;
 pub(crate) mod gguf_header;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub(crate) mod gguf_session;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) mod gpu_health;
 pub(crate) mod keyboard_model_switching;
 pub(crate) mod languages;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -26,6 +28,7 @@ pub(crate) mod preparation;
 pub(crate) mod service;
 pub(crate) mod speech_detector;
 pub(crate) mod stream;
+pub(crate) mod subtitle_credits;
 pub(crate) mod transcript;
 
 #[cfg(target_os = "macos")]

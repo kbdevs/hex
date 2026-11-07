@@ -3,9 +3,11 @@ use std::sync::{OnceLock, RwLock};
 
 use crate::app_settings::DictationProcessingSettings;
 use crate::dictation::processor::{Profile, Profiles};
+use crate::dictation::text_replacements::ReplacementSet;
 
 static DICTATION_PROFILES: OnceLock<RwLock<Profiles>> = OnceLock::new();
 static READS_BROWSER: AtomicBool = AtomicBool::new(false);
+static READS_WINDOW_TITLE: AtomicBool = AtomicBool::new(false);
 
 /// Whether anything the user set up looks at the page: a mode chosen by
 /// website, an enabled local refiner, an OpenCode rewrite, or a script
@@ -15,20 +17,21 @@ pub fn reads_browser() -> bool {
     READS_BROWSER.load(Ordering::Acquire) || crate::labs::phonon_refiner()
 }
 
+/// Whether a script transformation is set up, the only reader of the front
+/// window's title. Otherwise Hex never reads it.
+pub fn reads_window_title() -> bool {
+    READS_WINDOW_TITLE.load(Ordering::Acquire)
+}
+
+fn uses_scripts(settings: &DictationProcessingSettings) -> bool {
+    std::iter::once(&settings.default_mode)
+        .chain(&settings.modes)
+        .flat_map(|mode| &mode.transformations)
+        .any(|id| !crate::personal_commands::is_builtin_transformation(id))
+}
+
 fn uses_browser(settings: &DictationProcessingSettings) -> bool {
-    settings
-        .modes
-        .iter()
-        .any(|mode| !mode.browser_hosts.is_empty())
-        || std::iter::once(&settings.default_mode)
-            .chain(&settings.modes)
-            .any(|mode| {
-                mode.post_processing.enabled
-                    || mode
-                        .transformations
-                        .iter()
-                        .any(|id| !crate::personal_commands::is_builtin_transformation(id))
-            })
+    crate::dictation::modes::uses_page(settings)
 }
 
 pub fn dictation_profiles() -> Profiles {
@@ -41,6 +44,7 @@ pub fn dictation_profiles() -> Profiles {
 pub fn update_dictation_profiles(settings: &DictationProcessingSettings) {
     let profiles = build_dictation_profiles(settings);
     READS_BROWSER.store(uses_browser(settings), Ordering::Release);
+    READS_WINDOW_TITLE.store(uses_scripts(settings), Ordering::Release);
     *dictation_profiles_lock()
         .write()
         .unwrap_or_else(|error| error.into_inner()) = profiles;
@@ -55,7 +59,17 @@ fn dictation_profiles_lock() -> &'static RwLock<Profiles> {
 }
 
 fn build_dictation_profiles(settings: &DictationProcessingSettings) -> Profiles {
-    let mut profiles = Profiles::new(Profile::from_mode(&settings.default_mode));
+    let global = &settings.default_mode;
+    let mut profiles = Profiles::new(
+        Profile::configured(
+            "Global",
+            ReplacementSet::default(),
+            global.transformations.clone(),
+            &global.post_processing,
+        )
+        .vocabulary(global.vocabulary.clone()),
+    )
+    .global_replacements(ReplacementSet::new(&global.replacements));
     for mode in &settings.modes {
         let profile = Profile::from_mode(mode);
         for application in &mode.applications {
@@ -92,6 +106,66 @@ mod tests {
     }
 
     #[test]
+    fn global_corrections_run_before_an_app_modes_own() {
+        use crate::app_settings::DictationMode;
+        use crate::dictation::text_replacements::TextReplacement;
+        let pair = |phrase: &str, output: &str| TextReplacement {
+            matched_phrase: phrase.into(),
+            output: output.into(),
+        };
+        let mut settings = DictationProcessingSettings {
+            modes: vec![DictationMode {
+                applications: vec!["Slack".into()],
+                replacements: vec![pair("OpenCode", "OpenCode :rocket:")],
+                ..DictationMode::default()
+            }],
+            ..DictationProcessingSettings::default()
+        };
+        settings.default_mode.replacements = vec![pair("open code", "OpenCode")];
+        let profiles = build_dictation_profiles(&settings);
+        let process = |application: &str| {
+            let context = ContextSnapshot {
+                application: Some(application.into()),
+                ..ContextSnapshot::default()
+            };
+            profiles
+                .process_cancellable("I like open code", &context, &AtomicBool::new(false))
+                .text
+        };
+
+        assert_eq!(process("Slack"), "I like OpenCode :rocket:");
+        assert_eq!(process("Notes"), "I like OpenCode");
+    }
+
+    #[test]
+    fn an_app_mode_has_its_own_vocabulary() {
+        use crate::app_settings::DictationMode;
+        use crate::dictation::vocabulary::VocabularyEntry;
+        let term = |term: &str| VocabularyEntry {
+            term: term.into(),
+            sounds_like: Vec::new(),
+        };
+        let settings = DictationProcessingSettings {
+            modes: vec![DictationMode {
+                applications: vec!["Zed".into()],
+                vocabulary: vec![term("useEffect")],
+                ..DictationMode::default()
+            }],
+            ..DictationProcessingSettings::default()
+        };
+        let profiles = build_dictation_profiles(&settings);
+        let in_app = |application: &str| {
+            profiles.vocabulary_for(&ContextSnapshot {
+                application: Some(application.into()),
+                ..ContextSnapshot::default()
+            })
+        };
+
+        assert_eq!(in_app("Zed"), [term("useEffect")]);
+        assert!(in_app("Notes").is_empty());
+    }
+
+    #[test]
     fn browsers_are_asked_only_when_something_uses_the_page() {
         use crate::app_settings::{DictationMode, DictationPostProcessing};
         let with = |mode: DictationMode| DictationProcessingSettings {
@@ -109,18 +183,32 @@ mod tests {
             browser_hosts: vec!["x.com".into()],
             ..DictationMode::default()
         })));
-        assert!(uses_browser(&with(DictationMode {
+        let script = with(DictationMode {
             applications: vec!["Slack".into()],
             transformations: vec!["my-script".into()],
             ..DictationMode::default()
-        })));
-        assert!(uses_browser(&with(DictationMode {
+        });
+        assert!(uses_browser(&script));
+        assert!(uses_scripts(&script));
+        let rewrite = with(DictationMode {
             applications: vec!["Slack".into()],
             post_processing: DictationPostProcessing {
                 enabled: true,
                 ..DictationPostProcessing::default()
             },
             ..DictationMode::default()
-        })));
+        });
+        assert!(uses_browser(&rewrite));
+        assert!(!uses_scripts(&rewrite));
+
+        let global = |transformation: &str| DictationProcessingSettings {
+            default_mode: DictationMode {
+                transformations: vec![transformation.into()],
+                ..DictationMode::default()
+            },
+            ..DictationProcessingSettings::default()
+        };
+        assert!(uses_scripts(&global("my-script")));
+        assert!(!uses_scripts(&global("lowercase")));
     }
 }

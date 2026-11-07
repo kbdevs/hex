@@ -57,7 +57,11 @@ Launch -> read settings.json
 
 Loading repaired settings does not itself rewrite the file. A later settings
 save (including a migration save) takes the backup before replacing it.
-Backups are never automatically removed. Unchosen `meetings.retention` is
+Backups are never automatically removed. On Linux, the running Hex checks
+`settings.json` every two seconds and adopts an edit made outside the window
+(by hand or by an agent), so its modes reach the listener and the next save
+keeps it (#970); macOS and Windows still read it only at launch or through
+`hex settings set`. Unchosen `meetings.retention` is
 written as an absent key, so older builds with a non-optional retention still
 read the file; existing `null` values also load in the current build.
 
@@ -100,7 +104,7 @@ LOCKED + key release missed while hands-free          // would block the finish 
 
 delayed pre-recovery input -> fenced                  // cannot corrupt the fresh hold
 ```
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `neutral_keyboard_rearms_after_a_missing_modifier_release`,
 `delayed_neutral_callback_after_recovery_preserves_the_next_hold`,
 `stale_key_recovery_requires_complete_neutrality_and_no_intervening_input`,
@@ -129,10 +133,18 @@ Command-Tab -> Tab still tracked (IDLE, DIRTY, or LOCKED)
               └── older delayed release of the key -> ignored
   -> any check fails -> press ignored (logged with reason + key_codes)
                      -> 100 ms poll as before
+tracked key down in combined-session state but up in HID state  // #612
+  -> reads as up for both the press check and the poll   // a latched Tab or Q
+     no longer blocks every press until Hex restarts
+tracked keyboard key reads down in both states but sent no key event,  // #1008
+not even a key repeat, for 5 s (TRACKED_KEY_REPEAT_TIMEOUT)
+  -> the press check treats it as released               // logged; mouse buttons excluded
+     a Tab really held keeps repeating and still blocks the press
+     (with key repeat turned off, a key held past 5 s no longer blocks it)
 LOCKED + Escape -> Nothing, stale keys or not (#786)
 fenced edges, edges before a disabled tap, suspension -> no neutral evidence
 ```
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `option_soon_after_command_tab_records`,
 `shortcut_press_after_command_tab_from_dirty_records`,
 `typing_after_command_tab_does_not_block_the_next_press`,
@@ -142,7 +154,10 @@ Checks in [suppression.rs](../../src/suppression.rs):
 `stale_press_waits_for_recovery_while_anything_else_is_held`,
 `stale_press_requires_a_neutral_keyboard_after_the_tracked_keys`,
 `stale_press_finishes_a_lock_and_leaves_escape_unchanged`,
-`toggle_mode_finishes_after_command_tab_while_recording`. Unit tests read a keyboard
+`toggle_mode_finishes_after_command_tab_while_recording`,
+`a_latched_key_without_key_repeats_stops_blocking_the_shortcut`,
+`a_key_latched_only_in_session_state_reads_as_released` (the state rule only;
+no real latched key has been observed by a test). Unit tests read a keyboard
 that is all up unless a test sets one, so every shortcut test can take this
 path.
 A binding press ignored while stale or DIRTY logs `shortcut press ignored` to
@@ -163,7 +178,7 @@ SecondaryFn navigation metadata
 
 strip Fn globally from shortcut matching              // UNSAFE: not the recovery rule
 ```
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `arrow_function_metadata_does_not_block_the_next_option_hold`,
 `function_recovery_preserves_unknown_and_flags_only_fn_holds`.
 Proof limit: supplied modifier evidence, not universal native Fn behavior.
@@ -177,7 +192,7 @@ event tap disabled
   -> invalidate uncertain modifier evidence           // no inferred release
   -> fresh input -> next valid gesture -> expected output
 ```
-Checks in [suppression.rs](../../src/suppression.rs):
+Checks in [suppression/tests.rs](../../src/suppression/tests.rs):
 `tap_failure_cancels_recording_after_live_opt_in`,
 `blind_input_periods_invalidate_function_modifier_evidence`.
 Proof limit: reducer response to a supplied interruption, not macOS disabling
@@ -218,9 +233,16 @@ initial open fails OR stream interrupts
   -> bounded backoff -> reopen the resolved input     // warm microphone retries
   -> replacement delivers new audio
   -> fresh capture -> release -> expected output
+device refuses a stream in its own default format     // #988, Intel Smart Sound on Windows
+  -> log the refused format (channels, Hz, sample format) // audio/input_format
+  -> try the other formats it lists (F32, I16, U16, I32), at most 12
+  -> none opens -> the default format's error, with its format, goes to recovery
 no input device at all (macOS)
   -> devices whose name can't be read are skipped     // audio::device_name, never Display
   -> bounded recovery; `hex status` listener: "No microphone"
+no input opens, at startup or after an interruption (Linux) // #937
+  -> one "could not open the microphone: …" failure per outage // take_failure
+  -> last failure filled in while it keeps retrying; reset once one opens
 listener worker returns an error or panics (macOS)
   -> status: running false, "Stopped", capture unknown // never "Enabled"
 saved microphone missing or will not open
@@ -243,6 +265,19 @@ Bluetooth default input (macOS, avoid_bluetooth_microphone on) // transport type
   -> built-in mic stands in, else the first other real input
   ├── no other usable input -> the Bluetooth default
   └── setting changes -> re-resolve like a device-list change -> switch once idle
+virtual input or iPhone Continuity microphone (macOS: ccwd/ccwl transport) // #1100
+  -> never stands in: the phone prompts and can fail to open
+  ├── lid closed, nothing else -> "the built-in microphone is off while the lid is closed"
+  └── the default, the saved microphone, or --device -> used as named
+
+warm stream keeps running but delivers only exact zeros (macOS, #1122)
+  -> that dictation is discarded as near-silent, as before
+  -> its finish reopens the microphone like a stream failure // logged once
+  -> next dictation records from a fresh stream
+
+open stream stops delivering audio without an error (any OS, #1206)
+  -> 4 s with no chunk (STREAM_STALL_TIMEOUT) -> treated as a stream failure
+  -> reopened like any interrupted stream, idle or not // logged "microphone stopped delivering audio"
 
 programmatic dictation (local API) when the stream interrupts or gaps
   ├── audio delivered before the loss -> kept under its id // recover.programmatic-loss
@@ -253,19 +288,25 @@ programmatic dictation (local API) when the stream interrupts or gaps
 ```
 Checks in [audio.rs](../../src/audio.rs):
 `an_unreadable_device_name_is_skipped_instead_of_panicking`,
+`a_microphone_that_cannot_open_is_reported_once_per_outage`,
 `microphone_recovery_retries_with_bounded_backoff_and_resets`,
 `startup_retry_recovers_metadata_and_audio_without_restarting`,
 `a_missing_selection_uses_the_default_until_it_returns`,
 `a_closed_lid_passes_over_the_built_in_microphone`,
 `only_the_internal_microphone_is_switched_off_by_the_lid`,
 `a_headphone_jack_microphone_is_used_with_the_lid_closed`,
+`an_iphone_microphone_never_stands_in`,
+`continuity_capture_transports_are_recognised` (pure resolution and fourcc
+values; no iPhone observed with the lid closed),
 `where_the_os_reports_new_devices_only_a_failed_open_is_retried`,
-`only_an_idle_capture_lets_the_microphone_switch`;
+`only_an_idle_capture_lets_the_microphone_switch`,
+`a_stream_that_stops_delivering_audio_is_reopened`;
 [dictation/audio.rs](../../src/dictation/audio.rs):
 `recovered_owner_delivers_audio_and_accepts_a_new_capture`,
 `microphone_loss_keeps_only_a_programmatic_captures_delivered_audio`,
 `microphone_loss_with_only_pre_roll_keeps_nothing`,
-`finish_after_an_unread_microphone_loss_takes_the_kept_clip`;
+`finish_after_an_unread_microphone_loss_takes_the_kept_clip`,
+`a_dictation_of_digital_silence_reopens_the_microphone`;
 [recognition.rs](../../src/recognition.rs):
 `microphone_loss_keeps_a_programmatic_clip_for_finish` (the hold, not a `/finish`
 through the running listener).
@@ -341,6 +382,22 @@ report that a Bluetooth device was used with `avoid_bluetooth_microphone` on
 was not reproduced (a saved Bluetooth microphone, or no other usable input,
 keeps it by design).
 
+**Fixed after dev ([#1122](https://github.com/anomalyco/hex/issues/1122)):**
+after a WhatsApp desktop call ended, the warm built-in microphone stream kept
+running without an error but delivered only exact zeros, so every dictation
+was discarded as near-silent (`zero_fraction` 1.0) until Hex restarted. A
+finished dictation whose audio through the release is exactly zero now
+reopens the stream the way a stream failure does; a cold microphone
+(release-while-idle) already opens fresh for each press. The first such
+dictation is still discarded. Not verified with a real WhatsApp call.
+
+**Fixed after 3.3.0 ([#1206](https://github.com/anomalyco/hex/issues/1206)):**
+after a burst of overrun warnings while idle, a warm USB microphone's stream
+stopped delivering audio without reporting an error, so every dictation held
+only the stale pre-roll and was discarded as no speech until Hex restarted. An
+open stream that delivers nothing for 4 s now counts as failed and is reopened
+with the usual bounded recovery. Not verified on the reporter's microphone.
+
 ### Fence Late Capture Notifications
 
 `recover.late-notification`: keeping a failure visible is correct until it
@@ -372,6 +429,24 @@ Check in [recognition.rs](../../src/recognition.rs):
 Proof limit: controlled loader responsiveness, not a full model download or
 microphone session. See the [index](README.md) for dependency recovery actions.
 
+`recover.gpu-full`: on Linux and Windows a model, language, or Speech engine
+change loads beside the running model, so a small GPU (2 GB) can run out of
+memory for the second copy (#1170).
+
+```ts
+new model loads beside the running one -> GPU out of memory -> CPU copy loads
+  -> the CPU copy is dropped (not swapped in); the GPU isn't remembered as failed
+  -> once nothing records or transcribes -> engine drops its model, then loads
+     the new one in its place (GPU again, CPU only if it still doesn't fit)
+  -> commands sent meanwhile wait for the load; nothing recorded is lost
+```
+Source: `ModelSwap::place`/`take_reload` in
+[transcription/local_transcriber.rs](../../src/transcription/local_transcriber.rs)
+and `Command::Reload` in [transcription/engine.rs](../../src/transcription/engine.rs).
+Check: `a_model_without_room_on_the_gpu_reloads_in_place_once` (swap state
+only). Not observed on a real 2 GB GPU. A second process (another `hex`
+command that loads a model itself) still loads its own copy.
+
 `recover.command-pressure`: command recognition is best-effort; dictation
 audio is not.
 
@@ -398,6 +473,7 @@ ordinary dictation -> corrections -> optional rewrite -> transformations -> past
                                       v                  v
                              rewrite fails       chain fails
                              -> corrected text   -> chain's input // discard partial results
+                             // the log says why: rewrite off for the mode, or the failure reason
 
 later request -> expected output                       // recovery still needs observation
 ```
@@ -448,6 +524,24 @@ X11, Annotate drawing -> grab Escape (AnyModifier, else bare + lock variants)
   └── BadAccess -> warn once, keep drawing; other grab errors stop the listener
 ```
 
+`recover.linux-portal`: on Wayland, a missing GlobalShortcuts portal is
+looked for again instead of leaving shortcuts off for the session (#875).
+
+```ts
+listener starts -> no GlobalShortcuts portal
+  -> warn (desktop name, restart-the-portal hint) -> hex commands drive dictation
+  -> check again on its own thread: after 15 s, doubling up to every 2 min
+     └── portal appears (e.g. xdg-desktop-portal restarted) -> bind shortcuts as usual
+```
+
+**Fixed after dev-520** ([#875](https://github.com/anomalyco/hex/issues/875)):
+on KDE Plasma Wayland, xdg-desktop-portal started before Plasma exported its
+session environment picked the wrong backend and offered no shortcuts
+interface; Hex fell back to commands and never checked again. Source:
+`Backend::wait_for_portal` in [linux/input.rs](../../src/linux/input.rs);
+`commands_alone_drive_a_listener_without_shortcuts` covers the command loop,
+not the portal appearing. Not run on a live Plasma session.
+
 **Fixed after dev-249** ([#482](https://github.com/anomalyco/hex/issues/482),
 reported by ohlmann on KDE Plasma): Hex bound Escape in a second portal session
 when recording started. KDE keys shortcuts by app, so that session's
@@ -471,10 +565,18 @@ GUI startup -> require OS main thread -> initialize_layout // recover.keyboard-l
      └── Command layer (UCKeyTranslate with cmdKey) -> separate map
                                      // no worker-side TIS/TSM query
 
+Selected input source changes (Dvorak -> U.S.)       // recover.keyboard-layout-change
+  -> observer marks it -> pump on the main thread -> refresh_layout
+  -> rebuild with the same fills -> publish whole       // workers see old or new
+  -> changed -> resolve runtime shortcuts again from the last applied settings
+     ├── letter key -> the key that types the letter now
+     ├── other keys -> recorded key code
+     └── listener rebinds each shortcut once its machine is idle
+
 Synthetic shortcut with Command (⌘V)
   ├── Command layer has the character -> that keycode // "Dvorak – QWERTY ⌘"
   └── otherwise -> plain snapshot as above
-Shortcuts without Command and recorded hotkeys -> plain snapshot only
+Shortcuts without Command -> plain snapshot only
 
 Headless lookup without snapshot -> shared native lock -> current layout query
   -> current layout misses ASCII character -> ASCII-capable fallback
@@ -484,8 +586,17 @@ Sources: [keyboard.rs](../../src/keyboard.rs),
 [macos_rune.rs](../../src/macos_rune.rs).
 The lock alone is not GUI thread safety: successful main-thread prewarming and
 pure cached misses prevent later GUI workers from querying native layout APIs.
-The GUI snapshot remains fixed until restart. CLI lookups without a snapshot
-still query the current layout; this fix does not remove their live resolution.
+Until t1304 the GUI snapshot stayed fixed until restart: launched on Dvorak and
+switched to U.S., ⌘V posted keycode 47 (U.S. `.`), so dictations logged
+"pasted" but nothing appeared. One input-source observer now runs for the
+app's life (keyboard model switching reads the same one while it is on), and
+each change rebuilds the snapshot on the main thread.
+`a_published_layout_replaces_the_one_before`,
+`readers_see_a_whole_layout_while_it_is_replaced`, and
+`letter_shortcuts_resolve_again_on_a_new_layout` cover the swap and the
+shortcut re-resolution; the TIS notification and a real switch followed by a
+paste are unverified on a Mac. CLI lookups without a snapshot still query the
+current layout.
 Non-Latin active layouts (Russian, Hebrew, …) produce no ASCII letters with an
 empty modifier state, so a snapshot built from them alone would miss paste
 shortcuts like ⌘V. macOS resolves such shortcuts against the ASCII-capable
@@ -605,14 +716,20 @@ failure causes; a current hold-to-result sequence is still needed.
 ### Runaway Script
 
 ```ts
-handler or transformation runs past 1 s -> interrupted -> that call fails
+transformation runs past its timeout -> interrupted -> that call fails
+  // 1 s, or 30 s when the config uses fetch or node:child_process; 60 s cap
+  -> its requests abandoned, its process trees killed
   -> transformation chain -> its input is kept           // ordered processing goes on
   -> later call on the same config -> succeeds
+fetch or exec before the person allows the config -> throws -> input kept
 config load past 2 s or past 64 MiB -> rejected -> previous config stays active
 ```
 Sources: [script.rs](../../src/personal_commands/script.rs),
 [personal_commands.rs](../../src/personal_commands.rs);
-check `runaway_scripts_stop_at_the_time_limit_and_the_config_keeps_working`.
+check `runaway_scripts_stop_at_the_time_limit_and_the_config_keeps_working`,
+`the_transformation_timeout_ends_the_whole_process_tree` (Linux), and
+`a_throwing_or_slow_transformation_pastes_the_text_unchanged` in
+[tests/host_apis.rs](../../src/personal_commands/tests/host_apis.rs).
 Handlers return actions instead of awaiting native results, so the old late
 native tool reply ([#20](https://github.com/anomalyco/hex/issues/20)) cannot
 occur.
