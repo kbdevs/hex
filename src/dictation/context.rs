@@ -166,34 +166,16 @@ impl ContextSnapshot {
                     .map(|(pid, _)| pid)
             });
             // Chromium browsers behind another app expose no focused element,
-            // and Arc's chrome sits between its windows and the page, so every
-            // window's web areas and titles are read (`browser_page`), and a
-            // Meet tab's title still names the call when no address does
-            // (#827, #831). The browser's own window is reported rather than
-            // the app in front.
+            // and Arc's chrome sits between its window and the page. Read one
+            // selected window so a page address and title stay together; the
+            // Meet tab title can name the call when no address does (#827,
+            // #831). Report the browser's window, not the app in front.
             if let Some(pid) = pid {
-                let pages = crate::accessibility::browser_pages(pid);
-                let more_call_apps = crate::labs::more_call_apps();
-                let (url, title) = crate::dictation::browser_page::choose(
-                    &pages,
-                    |url| {
-                        web_url(url).is_some_and(|url| {
-                            crate::meeting::detection::names_call(&url, more_call_apps)
-                        })
-                    },
-                    crate::meeting::detection::title_names_call,
-                );
-                // A call's tab title outranks another tab's address.
-                let title_names_call = title
-                    .as_deref()
-                    .is_some_and(crate::meeting::detection::title_names_call);
-                let url = url.as_deref().and_then(web_url).filter(|url| {
-                    crate::meeting::detection::names_call(url, more_call_apps) || !title_names_call
-                });
+                let page = crate::accessibility::browser_page(pid);
                 return Ok(Self {
                     application: Some(browser.name.into()),
-                    browser_url: url,
-                    window_title: title,
+                    browser_url: page.url.as_deref().and_then(web_url),
+                    window_title: page.title,
                     input_revision: None,
                 });
             }
@@ -592,6 +574,10 @@ mod tests {
 
     #[test]
     fn scriptable_browsers_are_found_by_bundle_id() {
+        assert_eq!(
+            ScriptableBrowser::from_bundle_id("net.imput.helium").map(|browser| browser.name),
+            Some("Helium")
+        );
         assert_eq!(
             ScriptableBrowser::from_bundle_id("com.google.Chrome").map(|browser| browser.name),
             Some("Google Chrome")

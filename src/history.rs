@@ -8,6 +8,7 @@
 //! retention choice remains subject to hard entry and byte caps, writes are
 //! atomic, and files are owner-only.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -121,6 +122,11 @@ pub struct HistoryEntry {
     pub inference_ms: u64,
     #[serde(default)]
     pub total_ms: u64,
+    /// Stable source identity for imported entries. It keeps a repeated
+    /// migration from creating duplicates while leaving normal dictations
+    /// without an external identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// The size of this entry's kept audio (Labs › Keep recordings); 0
     /// when it has none.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -153,6 +159,7 @@ impl HistoryEntry {
     fn text_bytes(&self) -> usize {
         self.raw_text.len()
             + self.final_text.len()
+            + self.source.as_ref().map_or(0, String::len)
             + self
                 .versions
                 .iter()
@@ -241,7 +248,7 @@ pub fn read_snapshot(path: &std::path::Path) -> io::Result<Vec<HistoryEntry>> {
     use std::io::Read;
     // Text can expand sixfold when JSON-escaped, plus bounded metadata.
     const MAX_FILE_BYTES: u64 = (MAX_TOTAL_TEXT_BYTES * 6
-        + MAX_ENTRIES * (6 * (2 * MAX_LABEL_BYTES + MAX_FALLBACK_BYTES) + 1_024))
+        + MAX_ENTRIES * (6 * (4 * MAX_LABEL_BYTES + MAX_FALLBACK_BYTES) + 1_024))
         as u64;
     let file = match fs::File::open(path) {
         Ok(file) => file,
@@ -312,7 +319,9 @@ impl HistoryStore {
                         .next_id
                         .max(max_entry_id.map_or(1, |id| id.saturating_add(1)));
                     store.entries = loaded.entries;
-                    store.entries.sort_by_key(|entry| entry.id);
+                    store
+                        .entries
+                        .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
                 }
                 Ok(loaded) => {
                     tracing::warn!(version = loaded.version, "unsupported history version");
@@ -361,7 +370,8 @@ impl HistoryStore {
             .max(loaded.next_id)
             .max(max_entry_id.map_or(1, |id| id.saturating_add(1)));
         self.entries = loaded.entries;
-        self.entries.sort_by_key(|entry| entry.id);
+        self.entries
+            .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
         self.touch();
     }
 
@@ -418,15 +428,75 @@ impl HistoryStore {
             audio_ms: draft.audio_ms,
             inference_ms: draft.inference_ms,
             total_ms: draft.total_ms,
+            source: None,
             recording_bytes,
             model: draft.model.map(|model| truncated(&model, MAX_LABEL_BYTES)),
             language: None,
             text_ms: None,
             versions: Vec::new(),
         });
+        self.entries
+            .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
         self.prune(now_ms);
         self.persist()?;
         Ok(Some(id))
+    }
+
+    /// Merge entries from an external history, using each entry's source as
+    /// its idempotency key. Imported records get fresh local ids and use the
+    /// same retention and size limits as new dictations.
+    pub fn import(
+        &mut self,
+        imported: impl IntoIterator<Item = HistoryEntry>,
+        now_ms: u64,
+    ) -> io::Result<usize> {
+        if self.retention.is_off() {
+            return Ok(0);
+        }
+        let cutoff = self
+            .retention
+            .max_age_ms()
+            .map(|age| now_ms.saturating_sub(age));
+        let mut known: HashSet<String> = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.source.clone())
+            .collect();
+        let first_id = self.next_id;
+        let mut added = 0;
+        for mut entry in imported {
+            let Some(source) = entry.source.as_deref().filter(|source| !source.is_empty()) else {
+                continue;
+            };
+            let source = truncated(source, MAX_LABEL_BYTES);
+            if cutoff.is_some_and(|cutoff| entry.timestamp_ms < cutoff)
+                || !known.insert(source.clone())
+            {
+                continue;
+            }
+            entry.source = Some(source);
+            entry.bound_import_text();
+            entry.recording_bytes = 0;
+            entry.application = entry
+                .application
+                .map(|label| truncated(&label, MAX_LABEL_BYTES));
+            entry.id = self.next_id;
+            self.next_id = self.next_id.saturating_add(1);
+            self.entries.push(entry);
+            added += 1;
+        }
+        if added == 0 {
+            return Ok(0);
+        }
+        self.entries
+            .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
+        self.prune(now_ms);
+        self.persist()?;
+        Ok(self
+            .entries
+            .iter()
+            .filter(|entry| entry.id >= first_id)
+            .count())
     }
 
     /// Delete one entry. Returns whether it existed.
@@ -1003,6 +1073,111 @@ mod tests {
         assert!(store.entry(second).unwrap().has_recording());
         assert!(store.entry(third).unwrap().has_recording());
         assert_eq!(recording_ids(&path), [second, third]);
+    }
+
+    #[test]
+    fn imported_identity_survives_transcript_versions_and_repeated_imports() {
+        let path = temp_path("import-versions");
+        let mut store = HistoryStore::open(path.clone(), HistoryRetention::Forever, 0);
+        let native = store.record(draft("native"), 5_000).unwrap().unwrap();
+        let mut imported = store.entry(native).unwrap().clone();
+        imported.id = 0;
+        imported.timestamp_ms = 1_000;
+        imported.source = Some("superwhisper:fixture".into());
+        let revision = store.revision(6_000);
+        assert_eq!(store.import([imported.clone()], 6_000).unwrap(), 1);
+        assert!(store.revision(6_000) > revision);
+        let imported_id = store.entries[0].id;
+        assert_eq!(store.entries[0].timestamp_ms, 1_000);
+        assert_eq!(store.entries[1].timestamp_ms, 5_000);
+        assert!(
+            store
+                .replace_text(
+                    imported_id,
+                    Transcript {
+                        text: "Updated transcript".into(),
+                        model: Some("fixture-model".into()),
+                        language: Some("en".into()),
+                    },
+                    7_000
+                )
+                .unwrap()
+        );
+        assert_eq!(store.import([imported], 8_000).unwrap(), 0);
+        let reopened = HistoryStore::open(path, HistoryRetention::Forever, 8_000);
+        let entry = reopened.entry(imported_id).unwrap();
+        assert_eq!(entry.source.as_deref(), Some("superwhisper:fixture"));
+        assert_eq!(entry.timestamp_ms, 1_000);
+        assert_eq!(entry.model.as_deref(), Some("fixture-model"));
+        assert_eq!(entry.versions.len(), 1);
+        assert_eq!(reopened.entries.len(), 2);
+    }
+
+    #[test]
+    fn imported_text_versions_are_bounded_and_cannot_claim_unmapped_audio() {
+        let path = temp_path("import-bounds");
+        let mut store = HistoryStore::open(path.clone(), HistoryRetention::Forever, 0);
+        let native = store.record(draft("native"), 0).unwrap().unwrap();
+        let mut entry = store.entry(native).unwrap().clone();
+        entry.source = Some("import:bounded".into());
+        entry.recording_bytes = u64::MAX;
+        entry.model = Some("m".repeat(1_000));
+        entry.language = Some("l".repeat(1_000));
+        entry.versions = vec![
+            HistoryVersion {
+                raw_text: "é".repeat(MAX_TEXT_BYTES),
+                final_text: "é".repeat(MAX_TEXT_BYTES),
+                processing: Some(HistoryProcessing {
+                    profile: "p".repeat(1_000),
+                    latency_ms: 0,
+                    fallback: Some("f".repeat(2_000)),
+                }),
+                model: Some("m".repeat(1_000)),
+                language: Some("l".repeat(1_000)),
+                timestamp_ms: 0,
+            };
+            versions::MAX_VERSIONS + 2
+        ];
+        assert_eq!(store.import([entry], 0).unwrap(), 1);
+        let reopened = HistoryStore::open(path, HistoryRetention::Forever, 0);
+        let saved = reopened
+            .entries
+            .iter()
+            .find(|entry| entry.source.is_some())
+            .unwrap();
+        assert!(!saved.has_recording());
+        assert_eq!(saved.model.as_ref().unwrap().len(), MAX_LABEL_BYTES);
+        assert_eq!(saved.language.as_ref().unwrap().len(), MAX_LABEL_BYTES);
+        assert_eq!(saved.versions.len(), versions::MAX_VERSIONS);
+        for version in &saved.versions {
+            assert_eq!(version.raw_text, "é".repeat(MAX_TEXT_BYTES / 2));
+            assert_eq!(version.final_text, "é".repeat(MAX_TEXT_BYTES / 2));
+            assert_eq!(version.model.as_ref().unwrap().len(), MAX_LABEL_BYTES);
+            assert_eq!(version.language.as_ref().unwrap().len(), MAX_LABEL_BYTES);
+            let processing = version.processing.as_ref().unwrap();
+            assert_eq!(processing.profile.len(), MAX_LABEL_BYTES);
+            assert_eq!(
+                processing.fallback.as_ref().unwrap().len(),
+                MAX_FALLBACK_BYTES
+            );
+        }
+    }
+
+    #[test]
+    fn import_reports_only_entries_that_survive_retention_caps() {
+        let path = temp_path("import-count");
+        let mut store = HistoryStore::open(path, HistoryRetention::Forever, 0);
+        let native = store.record(draft("native"), 0).unwrap().unwrap();
+        let entry = store.entry(native).unwrap().clone();
+        let imported = (0..=MAX_ENTRIES).map(|n| {
+            let mut entry = entry.clone();
+            entry.source = Some(format!("fixture:{n}"));
+            entry.timestamp_ms = 1;
+            entry
+        });
+        assert_eq!(store.import(imported, 0).unwrap(), MAX_ENTRIES);
+        assert_eq!(store.entries.len(), MAX_ENTRIES);
+        assert!(store.entries.iter().all(|entry| entry.source.is_some()));
     }
 
     #[test]

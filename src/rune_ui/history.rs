@@ -182,6 +182,7 @@ impl HistoryPane {
                     audio_ms: 4200,
                     inference_ms: 180,
                     total_ms: 640,
+                    source: None,
                     recording_bytes: 0,
                     model: Some("Parakeet v3".into()),
                     language: None,

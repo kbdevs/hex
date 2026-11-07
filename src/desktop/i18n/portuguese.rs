@@ -15,6 +15,11 @@ pub(super) fn table() -> &'static HashMap<&'static str, &'static str> {
 
 #[rustfmt::skip]
 const TRANSLATIONS: &[(&str, &str)] = &[
+    ("Type dictation", "Digitar o ditado"),
+    ("Type each character and keep the clipboard unchanged; turn off to paste", "Digita cada caractere sem alterar a área de transferência; desative para colar"),
+    ("Local refiner (Phonon)", "Refinador local (Phonon)"),
+    ("Requires installed Phonon and its downloaded refiner; cleans final dictations after recording, entirely locally", "Requer o Phonon instalado e seu modelo de refinamento baixado; corrige os ditados finais após a gravação, totalmente no dispositivo"),
+    ("Cleans the final transcript on this Mac after recording", "Corrige a transcrição final neste Mac após a gravação"),
     ("Hex picks a fast model", "O Hex escolhe um modelo rápido"),
     ("Follow live transcript", "Acompanhar a transcrição ao vivo"),
     ("More call apps", "Mais apps de chamada"),

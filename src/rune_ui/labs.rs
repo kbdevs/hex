@@ -436,6 +436,24 @@ fn rows(ui: &Ui) -> Vec<Row> {
             tr("Changing input source selects its mapped model and language; manual choices still work"),
         ));
     }
+    if caps.type_dictation {
+        rows.push(row(
+            Feature::TypeDictation,
+            Some(&KEYBOARD),
+            tr("Type dictation"),
+            tr("Type each character and keep the clipboard unchanged; turn off to paste"),
+        ));
+    }
+    // Headless pane fixtures run on Linux but can represent macOS. The
+    // production row is limited to the target supported by `Feature`.
+    if caps.os == super::platform::Os::Macos && (Feature::PhononRefiner.supported() || cfg!(test)) {
+        rows.push(row(
+            Feature::PhononRefiner,
+            Some(&SPARKLES),
+            tr("Local refiner (Phonon)"),
+            tr("Requires installed Phonon and its downloaded refiner; cleans final dictations after recording, entirely locally"),
+        ));
+    }
     if caps.os == super::platform::Os::Macos {
         rows.push(row(
             Feature::MouseShortcuts,
@@ -727,6 +745,8 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::RestoreShortcutDefault => "lab-restore-shortcut-default",
         Feature::KeepOnClipboard => "lab-keep-on-clipboard",
         Feature::CopyOnly => "lab-copy-only",
+        Feature::TypeDictation => "lab-type-dictation",
+        Feature::PhononRefiner => "lab-phonon-refiner",
         Feature::SpokenFormatting => "lab-spoken-formatting",
         Feature::FillerWords => "lab-filler-words",
         Feature::SubtitleExport => "lab-subtitle-export",

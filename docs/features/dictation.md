@@ -1193,6 +1193,43 @@ check version detection on fake bundles;
 [keyboard.rs](../../src/keyboard.rs) check the typed events. Neither proves
 insertion into a real Chrome page.
 
+**Type dictation (Labs):** Labs > Type dictation
+(`labs.type_dictation`, `hex labs on|off type-dictation`) selects the output
+for ordinary and raw macOS dictations when output commits. It defaults off:
+off uses `PasteMode::Continue` and the existing clipboard paste and restore;
+on uses `PasteMode::Type`, which sends keyboard events after the commit gate.
+Copy dictation only takes priority over both methods.
+The typing path does not write to the clipboard
+or post Command-V. It keeps continuation spacing, text processing, and
+history. Copy-only mode, Paste Last, and meeting delta retain their prior
+behavior. `primary_dictation_uses_saved_output_mode_and_cancelled_output_sends_nothing`
+in [parakeet.rs](../../src/parakeet.rs) checks routing and cancellation.
+`dictation_output_selects_typing_or_paste_with_copy_only_priority` in
+[paste.rs](../../src/paste.rs) checks both methods and the copy-only override.
+This check does not prove insertion into a target app.
+
+**Type dictation key timing:** while Type dictation is on,
+primary and raw dictation use
+the active layout's real key codes and Shift flags, with balanced Shift
+modifier events and 1 ms after each key edge. This follows Superwhisper 3.0.1's enabled simulated-keypress
+loop, inspected locally with REA 6.8.0 and Rizin at `0x1000f4a64`.
+The earlier 15 ms Unicode events used key code 0 for every character.
+The typing layout refreshes on the main thread when the input source changes;
+workers never query TIS. Dead keys and characters outside the plain and Shift
+layers use Unicode events. Shortcut resolution keeps its launch snapshot.
+Combining sequences and emoji stay together when they fit Quartz's 20 UTF-16
+unit limit. Newlines stay Shift-Return. The Chromium fallback keeps its fast
+batches. `typing_uses_exact_layout_keys_and_shift_without_shortcut_fallbacks`,
+`paced_typing_keeps_graphemes_and_line_breaks_intact`, and
+`typing_pauses_after_each_key_edge_and_keeps_fast_batches_unpaced` in
+[keyboard.rs](../../src/keyboard.rs) check key selection, graphemes, line breaks,
+and the posting schedule with fake events and sleeps. They do not measure
+the target app's input handling.
+The `keyboard_layout::typed-events` main-thread harness also converts Hex's
+prepared CGEvents to AppKit NSEvents and checks layout refresh and the exact resulting text in
+both output paths. It posts no input and opens no window, so it proves native
+event decoding, not delivery through the window server to another app.
+
 **Chromium 155 and 156:** these versions on macOS can lose a ⌘V that races
 Chromium's own pasteboard change notification
 ([#136](https://github.com/anomalyco/hex/issues/136),

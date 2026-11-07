@@ -46,6 +46,8 @@ pub(super) struct Capabilities {
     pub(super) listener_control: bool,
     /// The Terminal paste row in General (Linux; on Windows it is in Labs).
     pub(super) terminal_paste: bool,
+    /// Dictation can type keyboard events instead of using the clipboard.
+    pub(super) type_dictation: bool,
     /// The dictation shortcut can pass through to other apps (Windows).
     pub(super) share_shortcut: bool,
     /// Hex Microphone is a driver to install (macOS). Elsewhere with the
@@ -76,6 +78,7 @@ impl Capabilities {
         dock_icon: false,
         listener_control: true,
         terminal_paste: true,
+        type_dictation: false,
         share_shortcut: false,
         hex_microphone: false,
         practice_dictation: true,
@@ -93,6 +96,7 @@ impl Capabilities {
         dock_icon: true,
         listener_control: false,
         terminal_paste: false,
+        type_dictation: true,
         share_shortcut: false,
         hex_microphone: true,
         practice_dictation: true,
@@ -110,6 +114,7 @@ impl Capabilities {
         dock_icon: false,
         listener_control: true,
         terminal_paste: false,
+        type_dictation: false,
         share_shortcut: true,
         hex_microphone: false,
         practice_dictation: true,
@@ -817,6 +822,10 @@ impl Difference {
 #[cfg(test)]
 const DIFFERENCES: &[(&str, Difference)] = &[
     (
+        "type_dictation",
+        Difference::Pending("Quartz can type on macOS; Linux and Windows have no typing adapter"),
+    ),
+    (
         "calendar",
         Difference::OsPattern("EventKit; there is no cross-platform calendar source"),
     ),
@@ -859,7 +868,7 @@ const DIFFERENCES: &[(&str, Difference)] = &[
 impl Capabilities {
     /// Every capability by name. Destructuring makes a new capability a
     /// compile error here until it is named.
-    pub(super) fn fields(self) -> [(&'static str, bool); 13] {
+    pub(super) fn fields(self) -> [(&'static str, bool); 14] {
         let Self {
             os: _,
             meetings,
@@ -869,6 +878,7 @@ impl Capabilities {
             dock_icon,
             listener_control,
             terminal_paste,
+            type_dictation,
             share_shortcut,
             hex_microphone,
             practice_dictation,
@@ -884,6 +894,7 @@ impl Capabilities {
             ("dock_icon", dock_icon),
             ("listener_control", listener_control),
             ("terminal_paste", terminal_paste),
+            ("type_dictation", type_dictation),
             ("share_shortcut", share_shortcut),
             ("hex_microphone", hex_microphone),
             ("practice_dictation", practice_dictation),

@@ -330,6 +330,16 @@ const KEYS: &[Key] = &[
         "Labs: put the dictation on the clipboard instead of pasting it (macOS)",
     ),
     key(
+        "labs.type_dictation",
+        Kind::Bool,
+        "Labs: type each character and keep the clipboard unchanged; turn off to paste (macOS)",
+    ),
+    key(
+        "labs.phonon_refiner",
+        Kind::Bool,
+        "Labs: clean final dictations after recording with installed Phonon and its downloaded refiner, entirely locally (Apple silicon macOS)",
+    ),
+    key(
         "labs.spoken_formatting",
         Kind::Bool,
         "Labs: turn spoken \"new line\", \"new paragraph\", and \"open/close quote\" into line breaks and quotation marks",
@@ -719,6 +729,7 @@ const NEEDS: &[(&str, &str)] = &[
     ("meetings.", "meetings"),
     ("labs.live_chapters", "meetings"),
     ("labs.subtitle_export", "meetings"),
+    ("labs.type_dictation", "type_dictation"),
     ("labs.stop_when_call_ends", "meetings"),
     ("labs.more_call_apps", "meetings"),
     ("labs.movable_meeting_capsules", "meetings"),
@@ -741,6 +752,11 @@ fn needs(key: &str) -> Option<&'static str> {
         .map(|(_, capability)| *capability)
 }
 
+fn setting_available(key: &str) -> bool {
+    (key != "labs.phonon_refiner" || crate::labs::Feature::PhononRefiner.supported())
+        && needs(key).is_none_or(crate::rune_ui::capability)
+}
+
 /// Why `hex settings set` refuses `name` on this OS, if it does.
 pub fn unavailable(name: &str) -> Option<ControlError> {
     unavailable_under(name, crate::policy::Policy::current())
@@ -750,13 +766,19 @@ fn unavailable_under(name: &str, policy: crate::policy::Policy) -> Option<Contro
     if let Some(lock) = policy.setting_lock(name) {
         return Some(managed(name, lock));
     }
-    if let Some(feature) = crate::labs::Feature::for_settings_key(name)
-        && !feature.shipped()
-    {
-        return Some(ControlError::new(
-            "unsupported",
-            format!("`{name}` belongs to a Labs feature that only dev builds have"),
-        ));
+    if let Some(feature) = crate::labs::Feature::for_settings_key(name) {
+        if feature == crate::labs::Feature::PhononRefiner && !feature.supported() {
+            return Some(ControlError::new(
+                "unsupported",
+                "`labs.phonon_refiner` requires Apple silicon macOS",
+            ));
+        }
+        if !feature.shipped() {
+            return Some(ControlError::new(
+                "unsupported",
+                format!("`{name}` belongs to a Labs feature that only dev builds have"),
+            ));
+        }
     }
     // A `labs.` key is only its feature's switch, so off its OS it does nothing.
     if let Some(feature) = crate::labs::Feature::for_settings_key(name)
@@ -929,7 +951,7 @@ fn value_of(key: &Key, json: &Value) -> SettingValue {
                 .setting_lock(key.key)
                 .is_none(),
         about: key.about.into(),
-        available: needs(key.key).is_none_or(crate::rune_ui::capability),
+        available: setting_available(key.key),
     }
 }
 
@@ -1601,6 +1623,23 @@ mod tests {
                 "`{prefix}` names no setting"
             );
         }
+    }
+
+    #[test]
+    fn typing_output_setting_requires_the_native_keyboard_adapter() {
+        assert_eq!(
+            unavailable_under("labs.type_dictation", crate::policy::Policy::default()).is_none(),
+            cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn phonon_refiner_setting_requires_apple_silicon_macos() {
+        assert_eq!(
+            unavailable_under("labs.phonon_refiner", crate::policy::Policy::default()).is_none(),
+            cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        );
+        assert!(keys().any(|setting| setting.key == "labs.phonon_refiner"));
     }
 
     #[cfg(hex_capture)]

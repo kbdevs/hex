@@ -5,10 +5,9 @@
 //!
 //! Chromium browsers behind another app often have no focused element and
 //! no focused window, and Arc's native window chrome (sidebar, toolbar)
-//! sits between the window and the page. So every window is searched,
-//! breadth first and bounded, for its web areas, and each window's and web
-//! area's title is kept: a call's tab title (`Meet - abc-defg-hij`) names it
-//! even when no address does (#827, #831).
+//! sits between the window and the page. Read one selected window, breadth
+//! first and bounded. Keep the URL and title from the same web area. With no
+//! web area, its window title can still name a call (#827, #831).
 
 use std::collections::VecDeque;
 
@@ -21,31 +20,17 @@ pub(crate) trait AxNode: Sized {
     fn children(&self) -> Vec<Self>;
 }
 
-/// The pages a browser shows: addresses and titles, the most likely first.
+/// One page's address and title. An ambiguous window has neither.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct BrowserPages {
-    pub(crate) urls: Vec<String>,
-    pub(crate) titles: Vec<String>,
+pub(crate) struct BrowserPage {
+    pub(crate) url: Option<String>,
+    pub(crate) title: Option<String>,
 }
 
-impl BrowserPages {
-    fn push_url(&mut self, url: Option<String>) {
-        if let Some(url) = url.filter(|url| !url.is_empty())
-            && !self.urls.contains(&url)
-        {
-            self.urls.push(url);
-        }
-    }
-
-    fn push_title(&mut self, title: Option<String>) {
-        if let Some(title) = title
-            .map(|title| title.trim().to_string())
-            .filter(|title| !title.is_empty())
-            && !self.titles.contains(&title)
-        {
-            self.titles.push(title);
-        }
-    }
+fn nonempty(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 /// How many elements one window's search reads at most. Arc's chrome is a
@@ -53,53 +38,42 @@ impl BrowserPages {
 const MAX_NODES_PER_WINDOW: usize = 400;
 const MAX_DEPTH: usize = 40;
 
-/// Gathers the pages of `windows` (focused or main first): each window's
-/// title, then its web areas' addresses and titles. A web area's contents
-/// are not searched.
-pub(crate) fn pages<N: AxNode>(windows: impl IntoIterator<Item = N>) -> BrowserPages {
-    let mut pages = BrowserPages::default();
-    for window in windows {
-        pages.push_title(window.title());
-        let mut queue = VecDeque::from([(window, 0)]);
-        let mut read = 0;
-        while let Some((node, depth)) = queue.pop_front() {
-            read += 1;
-            if read > MAX_NODES_PER_WINDOW {
-                break;
-            }
-            if node.role().as_deref() == Some("AXWebArea") {
-                pages.push_url(node.url());
-                pages.push_title(node.title());
-                continue;
-            }
-            if depth < MAX_DEPTH {
-                queue.extend(node.children().into_iter().map(|child| (child, depth + 1)));
-            }
+/// Reads only the first selected window. Other windows and web-area contents
+/// are not searched. More than one page, or an incomplete walk, stays unknown.
+pub(crate) fn page<N: AxNode>(windows: impl IntoIterator<Item = N>) -> BrowserPage {
+    let Some(window) = windows.into_iter().next() else {
+        return BrowserPage::default();
+    };
+    let window_title = nonempty(window.title());
+    let mut found = None;
+    let mut queue = VecDeque::from([(window, 0)]);
+    let mut read = 0;
+    while let Some((node, depth)) = queue.pop_front() {
+        read += 1;
+        if read > MAX_NODES_PER_WINDOW {
+            return BrowserPage::default();
         }
+        if node.role().as_deref() == Some("AXWebArea") {
+            // ponytail: split views stay unknown; add window-scoped focus
+            // resolution if naming calls in split views becomes necessary.
+            if found.is_some() {
+                return BrowserPage::default();
+            }
+            found = Some(BrowserPage {
+                url: nonempty(node.url()),
+                title: nonempty(node.title()),
+            });
+            continue;
+        }
+        if depth >= MAX_DEPTH {
+            return BrowserPage::default();
+        }
+        queue.extend(node.children().into_iter().map(|child| (child, depth + 1)));
     }
-    pages
-}
-
-/// The address and title to judge a call by: the first that `names_call`
-/// accepts, else the first of each.
-pub(crate) fn choose(
-    pages: &BrowserPages,
-    url_names_call: impl Fn(&str) -> bool,
-    title_names_call: impl Fn(&str) -> bool,
-) -> (Option<String>, Option<String>) {
-    let url = pages
-        .urls
-        .iter()
-        .find(|url| url_names_call(url))
-        .or_else(|| pages.urls.first())
-        .cloned();
-    let title = pages
-        .titles
-        .iter()
-        .find(|title| title_names_call(title))
-        .or_else(|| pages.titles.first())
-        .cloned();
-    (url, title)
+    found.unwrap_or(BrowserPage {
+        url: None,
+        title: window_title,
+    })
 }
 
 #[cfg(test)]
@@ -184,43 +158,95 @@ mod tests {
                 vec![],
             )],
         );
-        let pages = pages([little_arc, arc_window()]);
+        let page = page([arc_window(), little_arc]);
         assert_eq!(
-            pages.urls,
-            [
-                "https://docs.example.com/",
-                "https://meet.google.com/abc-defg-hij"
-            ]
+            page.url.as_deref(),
+            Some("https://meet.google.com/abc-defg-hij")
         );
-        assert_eq!(pages.titles, ["Docs", "Work", "Meet - abc-defg-hij"]);
-        let (url, title) = choose(
-            &pages,
-            |url| url.contains("meet.google.com/"),
-            |title| title.starts_with("Meet - "),
+        assert_eq!(page.title.as_deref(), Some("Meet - abc-defg-hij"));
+    }
+
+    #[test]
+    fn a_meeting_in_another_window_does_not_name_the_current_page() {
+        let voice_note = Fixture(
+            "AXWindow",
+            Some("Voice note"),
+            None,
+            vec![Fixture(
+                "AXWebArea",
+                Some("Voice note"),
+                Some("https://notes.example.com/"),
+                vec![],
+            )],
         );
-        assert_eq!(url.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
-        assert_eq!(title.as_deref(), Some("Meet - abc-defg-hij"));
+        let page = page([voice_note, arc_window()]);
+        assert_eq!(
+            page,
+            BrowserPage {
+                url: Some("https://notes.example.com/".into()),
+                title: Some("Voice note".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_voice_note_and_meeting_exposed_in_one_window_stay_unknown() {
+        let voice_note = Fixture(
+            "AXWebArea",
+            Some("Voice note"),
+            Some("https://notes.example.com/"),
+            vec![],
+        );
+        let meeting = Fixture(
+            "AXWebArea",
+            Some("Meet - Design sync"),
+            Some("https://meet.google.com/abc-defg-hij"),
+            vec![],
+        );
+        for children in [
+            vec![voice_note.clone(), meeting.clone()],
+            vec![meeting, voice_note],
+        ] {
+            let window = Fixture("AXWindow", Some("Meet - Design sync"), None, children);
+            assert_eq!(page([window]), BrowserPage::default());
+        }
+    }
+
+    #[test]
+    fn a_pages_missing_title_is_not_borrowed_from_the_window() {
+        let window = Fixture(
+            "AXWindow",
+            Some("Meet - Design sync"),
+            None,
+            vec![Fixture("AXWebArea", None, None, vec![])],
+        );
+        assert_eq!(page([window]), BrowserPage::default());
+    }
+
+    #[test]
+    fn an_incomplete_window_search_stays_unknown() {
+        let mut window = arc_window();
+        window
+            .3
+            .extend((0..MAX_NODES_PER_WINDOW).map(|_| element("AXGroup", vec![])));
+        assert_eq!(page([window]), BrowserPage::default());
     }
 
     #[test]
     fn a_window_without_its_web_tree_still_gives_its_title() {
         // Chromium behind another app, its web accessibility still off.
-        let pages = pages([Fixture(
+        let page = page([Fixture(
             "AXWindow",
             Some("Meet - abc-defg-hij"),
             None,
             vec![],
         )]);
-        assert!(pages.urls.is_empty());
-        assert_eq!(
-            choose(&pages, |_| false, |_| false).1.as_deref(),
-            Some("Meet - abc-defg-hij")
-        );
+        assert!(page.url.is_none());
+        assert_eq!(page.title.as_deref(), Some("Meet - abc-defg-hij"));
     }
 
     #[test]
     fn nothing_found_is_nothing_chosen() {
-        let pages = pages(Vec::<Fixture>::new());
-        assert_eq!(choose(&pages, |_| true, |_| true), (None, None));
+        assert_eq!(page(Vec::<Fixture>::new()), BrowserPage::default());
     }
 }

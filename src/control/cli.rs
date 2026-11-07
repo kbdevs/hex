@@ -141,6 +141,11 @@ pub enum ControlCli {
         #[command(subcommand)]
         command: crate::control::transcript_cli::MeetingsCommand,
     },
+    /// Import data from another voice dictation app.
+    Import {
+        #[command(subcommand)]
+        command: ImportCommand,
+    },
     /// Serve recorded meetings to agents over MCP (stdio). Read-only.
     Mcp {
         /// Read meetings from this folder instead of Application Support, such
@@ -185,6 +190,12 @@ pub enum ControlCli {
         #[arg(short, long)]
         follow: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ImportCommand {
+    /// Import Superwhisper transcripts, meeting recordings, and templates.
+    Superwhisper(crate::superwhisper_import::Args),
 }
 
 #[derive(Subcommand, Debug)]
@@ -531,6 +542,9 @@ pub fn run(command: ControlCli) -> u8 {
         }) => clear_history(yes, output),
         ControlCli::History(args) => report(crate::control::transcript_cli::history(&args)),
         ControlCli::Meetings { command } => meetings(command),
+        ControlCli::Import { command } => match command {
+            ImportCommand::Superwhisper(args) => report(crate::superwhisper_import::run(&args)),
+        },
         ControlCli::Mcp { meetings_dir } => report(mcp(meetings_dir)),
         ControlCli::Commands { command } => report(match command {
             CommandsCommand::Init => crate::personal_commands::initialize_workspace()
@@ -683,6 +697,9 @@ fn meetings(command: crate::control::transcript_cli::MeetingsCommand) -> u8 {
         }
         MeetingsCommand::Stop { output } => send(ControlCommand::MeetingStop, output),
         MeetingsCommand::CopyLast { output } => send(ControlCommand::MeetingCopyLast, output),
+        MeetingsCommand::Templates { command } => report(
+            crate::control::transcript_cli::meeting_templates(command.as_ref()),
+        ),
         command => report(crate::control::transcript_cli::meetings(&command)),
     }
 }

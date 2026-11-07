@@ -23,6 +23,10 @@ pub struct LabsSettings {
     pub keep_on_clipboard: bool,
     /// A dictation is put on the clipboard and never pasted (macOS, issue 629).
     pub copy_only: bool,
+    /// Type dictations with keyboard events instead of pasting (macOS).
+    pub type_dictation: bool,
+    /// Refine final dictations with the installed Phonon helper (Apple silicon macOS).
+    pub phonon_refiner: bool,
     /// Spoken "new line", "new paragraph", and "open/close quote" become line breaks and quotes (issue 630).
     pub spoken_formatting: bool,
     /// Filler words such as "um" and "uh" are removed from dictations (issue 631).
@@ -111,6 +115,8 @@ impl Default for LabsSettings {
             restore_shortcut_default: false,
             keep_on_clipboard: false,
             copy_only: false,
+            type_dictation: false,
+            phonon_refiner: false,
             spoken_formatting: false,
             filler_words: false,
             subtitle_export: false,

@@ -1,5 +1,12 @@
 # Hex Feature Map
 
+This fork keeps the optional [keyboard typing](../../LOCAL_TYPING.md),
+[Superwhisper import](../../SUPERWHISPER_IMPORT.md), and
+[Phonon local refiner](../../PHONON_REFINER.md). The refiner is off by default
+and replaces OpenCode rewriting only while enabled; corrections and selected
+transformations still apply. Imported entries retain their original dates
+and stable source identities.
+
 What can the user do, how do they reach it, and what would prove it works?
 This maps existing behavior. [ROADMAP.md](../../ROADMAP.md) owns future work;
 [AGENTS.md](../../AGENTS.md) owns implementation invariants.

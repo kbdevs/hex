@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use color_eyre::eyre::{Result, eyre};
+use unicode_segmentation::UnicodeSegmentation;
 
 type InputSourceRef = *const c_void;
 type EventRef = *mut c_void;
+type TypingCodes = HashMap<char, (u16, u64)>;
 
+const KEY_ACTION_DOWN: u16 = 0;
 const KEY_ACTION_DISPLAY: u16 = 3;
 const NO_DEAD_KEYS: isize = 0;
 const NO_MODIFIER_STATE: u32 = 0;
@@ -87,6 +91,7 @@ unsafe extern "C" {
 struct LayoutCodes {
     plain: HashMap<char, u16>,
     command: HashMap<char, u16>,
+    typing: TypingCodes,
 }
 
 impl LayoutCodes {
@@ -219,13 +224,29 @@ pub fn refresh_layout(_mtm: objc2::MainThreadMarker) -> Result<bool> {
     let _access = LAYOUT_ACCESS
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    Ok(KEY_CODES.publish(read_layout()?))
+    let codes = match read_layout() {
+        Ok(codes) => codes,
+        Err(error) => {
+            // Keep shortcut codes, but never type through a layout that failed
+            // to refresh. The next successful refresh restores mapped typing.
+            if let Some(current) = KEY_CODES.get() {
+                KEY_CODES.publish(LayoutCodes {
+                    plain: current.plain.clone(),
+                    command: current.command.clone(),
+                    typing: HashMap::new(),
+                });
+            }
+            return Err(error);
+        }
+    };
+    Ok(KEY_CODES.publish(codes))
 }
 
 fn read_layout() -> Result<LayoutCodes> {
     let source = LayoutSource::current()?;
     let mut codes = collect_layout_codes(&source, NO_MODIFIER_STATE)?;
     let command = collect_layout_codes(&source, COMMAND_MODIFIER_STATE).unwrap_or_default();
+    let typing = collect_typing_codes(&source)?;
     drop(source);
     // Non-Latin layouts (Russian, Hebrew, …) produce no ASCII letters with an
     // empty modifier state, so shortcuts like Cmd+V would miss. Appkit resolves
@@ -239,6 +260,7 @@ fn read_layout() -> Result<LayoutCodes> {
     Ok(LayoutCodes {
         plain: codes,
         command,
+        typing,
     })
 }
 
@@ -285,6 +307,30 @@ fn collect_key_codes(entries: impl IntoIterator<Item = (char, u16)>) -> HashMap<
         })
 }
 
+fn collect_typing_codes(source: &LayoutSource) -> Result<TypingCodes> {
+    let layout = source.layout_bytes()?;
+    let mut codes = HashMap::new();
+    // Carbon's Shift modifier state is shiftKey >> 8. Keep the plain layer
+    // first, so a character never needs Shift when an ordinary key produces it.
+    for (state, flags) in [(NO_MODIFIER_STATE, 0), (2, SHIFT_FLAG)] {
+        for key in 0..128 {
+            // Display labels include dead keys. Only a complete key-down
+            // translation may become a physical keystroke; accents that start
+            // composition go through the Unicode fallback instead.
+            if let Some((text, 0)) = translate_key(layout, key, state, KEY_ACTION_DOWN) {
+                let mut chars = text.chars();
+                if let Some(character) = chars.next()
+                    && !character.is_control()
+                    && chars.next().is_none()
+                {
+                    codes.entry(character).or_insert((key, flags));
+                }
+            }
+        }
+    }
+    Ok(codes)
+}
+
 pub fn post_command(character: char) -> Result<()> {
     let key_code = resolve_key_code(character, true)?;
     post_key_code(key_code, &[(COMMAND_FLAG, COMMAND_KEY_CODE)], 1)
@@ -292,14 +338,33 @@ pub fn post_command(character: char) -> Result<()> {
 
 /// Types `text` as synthesized key events, never touching the clipboard. Line
 /// breaks are Shift-Return so chat boxes insert a newline instead of sending.
-pub fn type_text(text: &str) -> Result<()> {
-    let mut events = Vec::new();
-    for stroke in typing_strokes(text) {
+/// A nonzero interval uses layout key codes and Shift, with a pause after
+/// each key edge, as Superwhisper's simulated-keypress path does. Characters
+/// absent from the layout use Unicode events; the clipboard stays untouched.
+pub fn type_text(text: &str, interval: Duration) -> Result<()> {
+    let strokes = prepare_typing_strokes(text, interval)?;
+    post_typing_strokes(strokes, interval, |event| event.post(), std::thread::sleep);
+    Ok(())
+}
+
+fn prepare_typing_strokes(text: &str, interval: Duration) -> Result<Vec<Vec<KeyboardEvent>>> {
+    let typing = KEY_CODES.get().map(|codes| codes.typing.clone());
+    let mut strokes = Vec::new();
+    for stroke in typing_strokes(text, !interval.is_zero()) {
+        let mut events = Vec::new();
         match stroke {
             Stroke::Text(units) => {
-                for down in [true, false] {
-                    let event = KeyboardEvent::new((0, down, 0))?;
-                    event.set_unicode(&units);
+                let key = if interval.is_zero() {
+                    None
+                } else {
+                    typing_key(&units, typing.as_ref())
+                };
+                let (code, flags) = key.unwrap_or((0, 0));
+                for spec in typing_event_specs(code, flags) {
+                    let event = KeyboardEvent::new(spec)?;
+                    if key.is_none() {
+                        event.set_unicode(&units);
+                    }
                     events.push(event);
                 }
             }
@@ -311,11 +376,39 @@ pub fn type_text(text: &str) -> Result<()> {
                 }
             }
         }
+        strokes.push(events);
     }
-    for event in events {
-        event.post();
+    Ok(strokes)
+}
+
+fn typing_key(units: &[u16], codes: Option<&TypingCodes>) -> Option<(u16, u64)> {
+    let [unit] = units else { return None };
+    codes?.get(&char::from_u32((*unit).into())?).copied()
+}
+
+fn typing_event_specs(key: u16, flags: u64) -> impl Iterator<Item = (u16, bool, u64)> {
+    let modifiers: &[(u64, u16)] = if flags & SHIFT_FLAG == 0 {
+        &[]
+    } else {
+        &[(SHIFT_FLAG, SHIFT_KEY_CODE)]
+    };
+    shortcut_event_specs(key, modifiers, 1)
+}
+
+fn post_typing_strokes<E>(
+    strokes: Vec<Vec<E>>,
+    interval: Duration,
+    mut post: impl FnMut(E),
+    mut sleep: impl FnMut(Duration),
+) {
+    for events in strokes {
+        for event in events {
+            post(event);
+            if !interval.is_zero() {
+                sleep(interval);
+            }
+        }
     }
-    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -326,8 +419,15 @@ enum Stroke {
 
 /// Splits text into key events of at most `MAX_UNICODE_UNITS` UTF-16 units,
 /// the most one event carries, without splitting a surrogate pair. `\r\n`,
-/// `\n`, and `\r` each become one line break.
-fn typing_strokes(text: &str) -> Vec<Stroke> {
+/// `\n`, and `\r` each become one line break. Paced typing keeps a grapheme
+/// together when it fits Quartz's event buffer.
+fn typing_strokes(text: &str, one_character: bool) -> Vec<Stroke> {
+    if one_character {
+        return text
+            .graphemes(true)
+            .flat_map(|grapheme| typing_strokes(grapheme, false))
+            .collect();
+    }
     let mut strokes = Vec::new();
     let mut units = Vec::new();
     let mut characters = text.chars().peekable();
@@ -493,6 +593,15 @@ impl Drop for LayoutSource {
 }
 
 fn translate(layout: *const u8, key_code: u16, modifier_state: u32) -> Option<String> {
+    translate_key(layout, key_code, modifier_state, KEY_ACTION_DISPLAY).map(|(text, _)| text)
+}
+
+fn translate_key(
+    layout: *const u8,
+    key_code: u16,
+    modifier_state: u32,
+    action: u16,
+) -> Option<(String, u32)> {
     let mut dead_key_state = 0;
     let mut output = [0_u16; 4];
     let mut length = 0;
@@ -501,7 +610,7 @@ fn translate(layout: *const u8, key_code: u16, modifier_state: u32) -> Option<St
         UCKeyTranslate(
             layout,
             key_code,
-            KEY_ACTION_DISPLAY,
+            action,
             modifier_state,
             LMGetKbdType().into(),
             NO_DEAD_KEYS,
@@ -512,8 +621,43 @@ fn translate(layout: *const u8, key_code: u16, modifier_state: u32) -> Option<St
         )
     };
     (status == 0 && length > 0)
-        .then(|| String::from_utf16(&output[..length as usize]).ok())
+        .then(|| {
+            String::from_utf16(&output[..length as usize])
+                .ok()
+                .map(|text| (text, dead_key_state))
+        })
         .flatten()
+}
+
+/// Called on the main thread by the keyboard_layout test harness. This reads
+/// native event characters without posting any input or opening a window.
+#[cfg(test)]
+#[allow(dead_code)] // Used by the separate main-thread keyboard_layout harness.
+pub(crate) fn verify_native_typing_events() {
+    use objc2_app_kit::{NSEvent, NSEventType};
+
+    initialize_layout().unwrap();
+    let original = KEY_CODES.get().unwrap().typing.clone();
+    let refreshed = refresh_layout(objc2::MainThreadMarker::new().unwrap()).unwrap();
+    assert!(!refreshed, "main-thread layout refresh");
+    assert_eq!(KEY_CODES.get().unwrap().typing, original);
+    let expected = "Hello, Hex! 0123 ()[]{} é e\u{301} 漢 😀 👩‍💻\nNext line.";
+    for interval in [Duration::from_millis(1), Duration::ZERO] {
+        let mut actual = String::new();
+        for event in prepare_typing_strokes(expected, interval)
+            .unwrap()
+            .into_iter()
+            .flatten()
+        {
+            // SAFETY: `event` retains its CGEvent until this iteration ends.
+            let native = unsafe { NSEvent::eventWithCGEvent(&*event.0.cast()) };
+            let native = native.expect("AppKit must accept the native keyboard event");
+            if native.r#type() == NSEventType::KeyDown {
+                actual.push_str(&native.characters().unwrap().to_string().replace('\r', "\n"));
+            }
+        }
+        assert_eq!(actual, expected, "native event characters at {interval:?}");
+    }
 }
 
 #[cfg(test)]
@@ -577,22 +721,22 @@ mod tests {
     #[test]
     fn typing_splits_text_into_twenty_unit_events_without_splitting_surrogate_pairs() {
         let text = |text: &str| Stroke::Text(text.encode_utf16().collect());
-        assert_eq!(typing_strokes(""), []);
-        assert_eq!(typing_strokes("hello"), [text("hello")]);
+        assert_eq!(typing_strokes("", false), []);
+        assert_eq!(typing_strokes("hello", false), [text("hello")]);
         assert_eq!(
-            typing_strokes("abcdefghijklmnopqrstuvwxyz"),
+            typing_strokes("abcdefghijklmnopqrstuvwxyz", false),
             [text("abcdefghijklmnopqrst"), text("uvwxyz")]
         );
         // 19 units, then a surrogate pair that would make 21, moves whole.
         assert_eq!(
-            typing_strokes("abcdefghijklmnopqrs😀z"),
+            typing_strokes("abcdefghijklmnopqrs😀z", false),
             [text("abcdefghijklmnopqrs"), text("😀z")]
         );
         assert_eq!(
-            typing_strokes("😀😀😀😀😀😀😀😀😀😀😀"),
+            typing_strokes("😀😀😀😀😀😀😀😀😀😀😀", false),
             [text("😀😀😀😀😀😀😀😀😀😀"), text("😀")]
         );
-        for stroke in typing_strokes(&"é漢😀a".repeat(40)) {
+        for stroke in typing_strokes(&"é漢😀a".repeat(40), false) {
             let Stroke::Text(units) = stroke else {
                 panic!("unexpected line break");
             };
@@ -605,7 +749,7 @@ mod tests {
     fn typing_sends_each_line_break_as_one_shift_return() {
         let text = |text: &str| Stroke::Text(text.encode_utf16().collect());
         assert_eq!(
-            typing_strokes("one\ntwo\r\nthree\rfour\n\n"),
+            typing_strokes("one\ntwo\r\nthree\rfour\n\n", false),
             [
                 text("one"),
                 Stroke::LineBreak,
@@ -631,6 +775,141 @@ mod tests {
     }
 
     #[test]
+    fn paced_typing_keeps_graphemes_and_line_breaks_intact() {
+        let text = |text: &str| Stroke::Text(text.encode_utf16().collect());
+        assert_eq!(typing_strokes("", true), []);
+        assert_eq!(
+            typing_strokes("Aé漢😀e\u{301}👩‍💻\r\nZ\r\n\n", true),
+            [
+                text("A"),
+                text("é"),
+                text("漢"),
+                text("😀"),
+                text("e\u{301}"),
+                text("👩‍💻"),
+                Stroke::LineBreak,
+                text("Z"),
+                Stroke::LineBreak,
+                Stroke::LineBreak,
+            ]
+        );
+    }
+
+    #[test]
+    fn typing_pauses_after_each_key_edge_and_keeps_fast_batches_unpaced() {
+        #[derive(Debug, PartialEq, Eq)]
+        enum Action {
+            Key(u16, bool, u64),
+            Pause(Duration),
+        }
+        let interval = Duration::from_millis(1);
+        let actions = std::cell::RefCell::new(Vec::new());
+        let run = |strokes, interval| {
+            post_typing_strokes(
+                strokes,
+                interval,
+                |(key, down, flags)| actions.borrow_mut().push(Action::Key(key, down, flags)),
+                |duration| actions.borrow_mut().push(Action::Pause(duration)),
+            );
+        };
+        let letter = || vec![(0, true, 0), (0, false, 0)];
+        run(
+            vec![
+                letter(),
+                shortcut_event_specs(RETURN_KEY_CODE, &[(SHIFT_FLAG, SHIFT_KEY_CODE)], 1).collect(),
+                letter(),
+            ],
+            interval,
+        );
+        assert_eq!(
+            actions.take(),
+            [
+                Action::Key(0, true, 0),
+                Action::Pause(interval),
+                Action::Key(0, false, 0),
+                Action::Pause(interval),
+                Action::Key(SHIFT_KEY_CODE, true, SHIFT_FLAG),
+                Action::Pause(interval),
+                Action::Key(RETURN_KEY_CODE, true, SHIFT_FLAG),
+                Action::Pause(interval),
+                Action::Key(RETURN_KEY_CODE, false, SHIFT_FLAG),
+                Action::Pause(interval),
+                Action::Key(SHIFT_KEY_CODE, false, 0),
+                Action::Pause(interval),
+                Action::Key(0, true, 0),
+                Action::Pause(interval),
+                Action::Key(0, false, 0),
+                Action::Pause(interval),
+            ]
+        );
+        run(vec![], interval);
+        assert!(actions.take().is_empty());
+        run(vec![letter()], interval);
+        assert_eq!(
+            actions.take(),
+            [
+                Action::Key(0, true, 0),
+                Action::Pause(interval),
+                Action::Key(0, false, 0),
+                Action::Pause(interval),
+            ]
+        );
+        run(vec![letter(), letter()], Duration::ZERO);
+        assert_eq!(
+            actions.take(),
+            [
+                Action::Key(0, true, 0),
+                Action::Key(0, false, 0),
+                Action::Key(0, true, 0),
+                Action::Key(0, false, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn typing_uses_exact_layout_keys_and_shift_without_shortcut_fallbacks() {
+        let codes = LayoutCodes {
+            plain: collect_key_codes([('v', 9)]),
+            command: collect_key_codes([('v', 9)]),
+            typing: HashMap::from([
+                ('a', (0, 0)),
+                ('z', (6, 0)),
+                ('Z', (6, SHIFT_FLAG)),
+                ('!', (18, SHIFT_FLAG)),
+                ('м', (9, 0)),
+            ]),
+        };
+        let key = |text: &str| {
+            typing_key(
+                &text.encode_utf16().collect::<Vec<_>>(),
+                Some(&codes.typing),
+            )
+        };
+        assert_eq!(key("a"), Some((0, 0)));
+        assert_eq!(key("z"), Some((6, 0)));
+        assert_eq!(key("Z"), Some((6, SHIFT_FLAG)));
+        assert_eq!(key("!"), Some((18, SHIFT_FLAG)));
+        assert_eq!(
+            typing_event_specs(18, SHIFT_FLAG).collect::<Vec<_>>(),
+            [
+                (SHIFT_KEY_CODE, true, SHIFT_FLAG),
+                (18, true, SHIFT_FLAG),
+                (18, false, SHIFT_FLAG),
+                (SHIFT_KEY_CODE, false, 0),
+            ]
+        );
+        assert_eq!(
+            typing_event_specs(0, 0).collect::<Vec<_>>(),
+            [(0, true, 0), (0, false, 0)]
+        );
+        assert_eq!(key("м"), Some((9, 0)));
+        // Command-V's ASCII fallback must never type Cyrillic instead of V.
+        for text in ["v", "漢", "😀", "e\u{301}", "👩‍💻"] {
+            assert_eq!(key(text), None);
+        }
+    }
+
+    #[test]
     fn non_latin_snapshot_gets_shortcut_letters_without_replacing_active_keys() {
         let mut codes = collect_key_codes([('ж', 41), ('v', 12)]);
         let fallback = collect_key_codes([('v', 9), ('c', 8), ('c', 88), ('1', 18)]);
@@ -652,6 +931,7 @@ mod tests {
         let dvorak_qwerty_command = LayoutCodes {
             plain: collect_key_codes([('v', 47), ('.', 9)]),
             command: collect_key_codes([('v', 9), ('.', 47)]),
+            typing: HashMap::new(),
         };
         assert_eq!(dvorak_qwerty_command.key_code('v', true), Some(9));
         assert_eq!(dvorak_qwerty_command.key_code('V', true), Some(9));
@@ -660,6 +940,7 @@ mod tests {
         let qwerty = LayoutCodes {
             plain: collect_key_codes([('v', 9)]),
             command: collect_key_codes([('v', 9)]),
+            typing: HashMap::new(),
         };
         assert_eq!(qwerty.key_code('v', true), Some(9));
         assert_eq!(qwerty.key_code('v', false), Some(9));
@@ -669,6 +950,7 @@ mod tests {
         let non_latin = LayoutCodes {
             plain: collect_key_codes([('м', 9), ('v', 9)]),
             command: collect_key_codes([('м', 9)]),
+            typing: HashMap::new(),
         };
         assert_eq!(non_latin.key_code('v', true), Some(9));
         assert_eq!(non_latin.key_code('x', true), None);
@@ -678,6 +960,7 @@ mod tests {
         LayoutCodes {
             plain: collect_key_codes([('v', 47), ('.', 9)]),
             command: collect_key_codes([('v', 47), ('.', 9)]),
+            typing: HashMap::new(),
         }
     }
 
@@ -685,6 +968,7 @@ mod tests {
         LayoutCodes {
             plain: collect_key_codes([('v', 9), ('.', 47)]),
             command: collect_key_codes([('v', 9), ('.', 47)]),
+            typing: HashMap::new(),
         }
     }
 

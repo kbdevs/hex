@@ -25,13 +25,28 @@ pub struct Paster {
     prepared_clipboard: Option<PreparedClipboard>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PasteMode {
     Continue,
     Standalone,
+    /// Primary dictation output: send synthesized keyboard events instead of
+    /// changing the clipboard or posting Command-V.
+    Type,
     /// Labs › Copy dictation only: the text goes to the clipboard as an
     /// ordinary entry and nothing is pasted, typed, or restored.
     CopyOnly,
+}
+
+impl PasteMode {
+    pub fn dictation(copy_only: bool, type_dictation: bool) -> Self {
+        if copy_only {
+            Self::CopyOnly
+        } else if type_dictation {
+            Self::Type
+        } else {
+            Self::Continue
+        }
+    }
 }
 
 struct PreparedClipboard {
@@ -244,7 +259,16 @@ impl Paster {
             None if crate::labs::smart_spacing() => with_smart_spacing(text),
             None => text.to_string(),
         };
-        if crate::dictation::context::frontmost_bundle_path()
+        if matches!(mode, PasteMode::Type) {
+            commit_prepared_paste(
+                || Ok(()),
+                commit,
+                |()| {
+                    tracing::debug!("typing dictation with layout keys and 1 ms key edges");
+                    keyboard::type_text(&text, Duration::from_millis(1))
+                },
+            )?;
+        } else if crate::dictation::context::frontmost_bundle_path()
             .is_some_and(|bundle| has_clipboard_race(&bundle))
         {
             commit_prepared_paste(
@@ -255,7 +279,7 @@ impl Paster {
                         self.continuation = None;
                     }
                     tracing::debug!("typing instead of pasting into Chromium 155 or 156");
-                    keyboard::type_text(&text)?;
+                    keyboard::type_text(&text, Duration::ZERO)?;
                     if crate::labs::keep_on_clipboard() {
                         self.clipboard_restore
                             .lock()
@@ -829,6 +853,14 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::*;
+
+    #[test]
+    fn dictation_output_selects_typing_or_paste_with_copy_only_priority() {
+        assert_eq!(PasteMode::dictation(false, false), PasteMode::Continue);
+        assert_eq!(PasteMode::dictation(false, true), PasteMode::Type);
+        assert_eq!(PasteMode::dictation(true, false), PasteMode::CopyOnly);
+        assert_eq!(PasteMode::dictation(true, true), PasteMode::CopyOnly);
+    }
 
     static PASTEBOARD_TEST: Mutex<()> = Mutex::new(());
 

@@ -1,5 +1,11 @@
 # Hex
 
+This fork adds selectable keyboard typing, Superwhisper history and meeting
+imports, Helium meeting detection, and an optional local Phonon refiner.
+See [typing](LOCAL_TYPING.md), [Superwhisper import](SUPERWHISPER_IMPORT.md),
+and [local refinement](PHONON_REFINER.md). The main branch includes upstream
+Hex updates. The downloads below are official upstream builds.
+
 Hex is local voice dictation for Mac, Windows and Linux. Hold a key, speak, and
 it pastes.
 
@@ -36,7 +42,7 @@ Or install with:
 
 More docs are in [`docs/`](docs/README.md).
 
-## Contributing
+## Upstream contributions
 
 We don't take pull requests. [Open an issue](https://github.com/anomalyco/hex/issues)
 describing the bug or idea, and our agents usually turn it around fast.

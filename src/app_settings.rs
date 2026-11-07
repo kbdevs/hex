@@ -757,6 +757,10 @@ impl AppSettings {
             Ordering::Release,
         );
         crate::labs::apply(&self.labs);
+        #[cfg(target_os = "macos")]
+        if !crate::labs::phonon_refiner() {
+            crate::dictation::phonon_refiner::stop();
+        }
         screenshots::apply_screenshots(self);
         #[cfg(hex_capture)]
         {

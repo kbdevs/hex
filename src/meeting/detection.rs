@@ -858,9 +858,9 @@ fn call_site_source(host: &str, more_call_apps: bool) -> Option<MeetingSource> {
 }
 
 /// The last page a browser showed while it held the microphone. The call's
-/// site is read from the browser's tabs, which fails now and then (a timed
-/// out AppleScript, a browser without an adapter); the page seen a moment
-/// ago still names the call, but not one seen minutes ago.
+/// site may be reused for 60 s when no matching browser context is available.
+/// A fresh matching result without an address clears it, so ambiguous page
+/// evidence cannot reuse a previous meeting's policy.
 #[derive(Default)]
 pub struct BrowserPageMemory {
     last: Option<(&'static str, ContextSnapshot, Instant)>,
@@ -868,7 +868,8 @@ pub struct BrowserPageMemory {
 
 impl BrowserPageMemory {
     /// The page to judge `application`'s call by: `context` when it shows the
-    /// browser's page, else the page remembered from the last 60 s.
+    /// browser, including a fresh result without a URL; otherwise the page
+    /// remembered from the last 60 s.
     pub fn recall(
         &mut self,
         application: &ActiveMicrophoneApplication,
@@ -882,10 +883,13 @@ impl BrowserPageMemory {
             self.last = None;
             return context;
         };
-        if context_matches_browser(bundle, &application.name, &context)
-            && context.browser_url.is_some()
-        {
-            self.last = Some((bundle, context.clone(), now));
+        if context_matches_browser(bundle, &application.name, &context) {
+            // A fresh browser result replaces old call evidence, including a
+            // title-only or ambiguous page with no address.
+            self.last = context
+                .browser_url
+                .as_ref()
+                .map(|_| (bundle, context.clone(), now));
             return context;
         }
         match &self.last {
@@ -908,9 +912,11 @@ impl BrowserPageMemory {
 fn is_browser_application(application_lower: &str) -> bool {
     // Arc's name is too short to match as a substring.
     application_lower == "arc"
-        || ["brave", "chrome", "safari", "firefox", "edge", "vivaldi"]
-            .iter()
-            .any(|browser| application_lower.contains(browser))
+        || [
+            "brave", "chrome", "safari", "firefox", "edge", "vivaldi", "helium",
+        ]
+        .iter()
+        .any(|browser| application_lower.contains(browser))
 }
 
 fn context_matches_browser(
@@ -933,6 +939,7 @@ fn context_matches_browser(
         "com.microsoft.edgemac" => lower.contains("edge"),
         "company.thebrowser.Browser" => lower == "arc",
         "com.vivaldi.Vivaldi" => lower.contains("vivaldi"),
+        "net.imput.helium" => lower == "helium",
         _ => false,
     }
 }
@@ -961,23 +968,6 @@ fn opaque_key(source: MeetingSource, identity: &str) -> String {
     format!("meeting-{:016x}", hasher.finish())
 }
 
-/// Whether a page address is a call this detection knows: a Google Meet
-/// call, a known call site, or with `more_call_apps`, one of the extra sites.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn names_call(url: &Url, more_call_apps: bool) -> bool {
-    is_google_meet_call(url)
-        || url
-            .host_str()
-            .and_then(|host| call_site_source(host, more_call_apps))
-            .is_some()
-}
-
-/// Whether a browser tab's title names a call (a Google Meet call's).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn title_names_call(title: &str) -> bool {
-    is_google_meet_call_title(title)
-}
-
 fn is_google_meet_call(url: &Url) -> bool {
     if url.host_str() != Some("meet.google.com") {
         return false;
@@ -998,6 +988,7 @@ const BROWSER_TITLE_SUFFIXES: &[&str] = &[
     " - Safari",
     " - Arc",
     " - Vivaldi",
+    " - Helium",
 ];
 
 const GOOGLE_MEET_TITLE_PREFIXES: [&str; 3] = ["Meet - ", "Meet – ", "Meet — "];
@@ -1979,6 +1970,52 @@ mod tests {
         assert_eq!(call.required_stability(), BROWSER_STABLE_FOR);
     }
 
+    #[test]
+    fn helium_calls_use_the_known_site_or_the_unknown_browser_threshold() {
+        let helium = ActiveMicrophoneApplication {
+            pid: 5120,
+            bundle_id: "net.imput.helium.helper".into(),
+            name: "Helium Helper".into(),
+        };
+        for url in [Some("https://meet.google.com/abc-defg-hij"), None] {
+            let meet = candidate_from_microphone(
+                &helium,
+                &context("Helium", url, "Meet - Design sync - Helium"),
+            )
+            .unwrap();
+            assert_eq!(meet.source, MeetingSource::GoogleMeet);
+            assert_eq!(meet.title, "Design sync");
+            assert_eq!(meet.application.as_deref(), Some("net.imput.helium"));
+            assert_eq!(meet.application_name.as_deref(), Some("Helium"));
+            assert_eq!(meet.site.as_deref(), Some("meet.google.com"));
+            let mut watch = Watch::new();
+            assert!(watch.run(Some(&meet), &[], 2_000).is_empty());
+            assert_eq!(
+                watch.run(Some(&meet), &[], 500),
+                [(2_000, Detection::Offer(meet))]
+            );
+        }
+
+        // A call page from another browser cannot name Helium's microphone use.
+        let other_browser = context(
+            "Google Chrome",
+            Some("https://meet.google.com/abc-defg-hij"),
+            "Meet - Design sync",
+        );
+        for page in [ContextSnapshot::default(), other_browser] {
+            let unknown = candidate_from_microphone(&helium, &page).unwrap();
+            assert_eq!(unknown.source, MeetingSource::BrowserCall);
+            assert_eq!(unknown.offer_title(), "Call in Helium");
+            assert_eq!(unknown.provider(false).unwrap().key, "net.imput.helium");
+            let mut watch = Watch::new();
+            assert!(watch.run(Some(&unknown), &[], 20_000).is_empty());
+            assert_eq!(
+                watch.run(Some(&unknown), &[], 500),
+                [(20_000, Detection::Offer(unknown))]
+            );
+        }
+    }
+
     fn brave() -> ActiveMicrophoneApplication {
         ActiveMicrophoneApplication {
             pid: 49686,
@@ -2489,6 +2526,22 @@ mod tests {
         let other = context("Brave Browser", Some("https://example.com/"), "Example");
         assert_eq!(memory.recall(&brave(), other.clone(), t0), other);
         assert_eq!(memory.recall(&brave(), hex, t0), other);
+    }
+
+    #[test]
+    fn an_ambiguous_page_clears_a_remembered_call() {
+        let t0 = Instant::now();
+        let mut memory = BrowserPageMemory::default();
+        memory.recall(&brave(), banshee_page(), t0);
+        let ambiguous = context("Brave Browser", None, "Voice note");
+        let page = memory.recall(&brave(), ambiguous.clone(), t0 + Duration::from_secs(1));
+        assert_eq!(page, ambiguous);
+        let candidate = candidate_from_microphone(&brave(), &page).unwrap();
+        assert_eq!(candidate.source, MeetingSource::BrowserCall);
+        assert_eq!(candidate.required_stability(), BROWSER_STABLE_FOR);
+        // A later failed query must not revive the old call either.
+        let unknown = ContextSnapshot::default();
+        assert_eq!(memory.recall(&brave(), unknown.clone(), t0), unknown);
     }
 
     #[test]

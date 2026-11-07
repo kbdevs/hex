@@ -312,7 +312,9 @@ impl Profiles {
 
     pub fn processes(&self, context: &ContextSnapshot) -> bool {
         let profile = self.select(context);
-        profile.ai_enabled || !profile.transformations.is_empty()
+        profile.ai_enabled
+            || !profile.transformations.is_empty()
+            || cfg!(target_os = "macos") && crate::labs::phonon_refiner()
     }
 
     pub fn process_cancellable(
@@ -350,14 +352,43 @@ impl Profiles {
         let corrected = profile
             .replacements
             .replace(&self.global.replace(transcript));
-        // A transcript of numbers alone has nothing to rewrite; a model only
-        // turns it into digits and re-punctuates it (#949).
-        let numbers_only = profile.ai_enabled && numbers_only(&corrected);
+        let numbers_only =
+            (profile.ai_enabled || crate::labs::phonon_refiner()) && numbers_only(&corrected);
         if numbers_only {
             tracing::info!(
                 profile = profile.name,
                 "dictation post-processing skipped for a numbers-only transcript"
             );
+        }
+        #[cfg(target_os = "macos")]
+        if crate::labs::phonon_refiner() && !numbers_only {
+            let started = Instant::now();
+            let result = crate::dictation::phonon_refiner::refine(
+                &corrected,
+                context,
+                &crate::dictation::vocabulary::merged(
+                    &profile.vocabulary,
+                    &crate::dictation::vocabulary::entries(),
+                ),
+                profile.deadline,
+                cancelled,
+            );
+            let (text, fallback) = match result {
+                Ok(text) => (text, None),
+                Err(error) => {
+                    tracing::warn!(%error, "local Phonon refiner unavailable; keeping transcript");
+                    (corrected.clone(), Some(error.to_string()))
+                }
+            };
+            return Processed {
+                text,
+                observation: Some(ProcessingObservation {
+                    profile: "Phonon local refiner".into(),
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    fallback,
+                }),
+                transformations: profile.transformations.clone(),
+            };
         }
         if !profile.ai_enabled {
             tracing::info!(

@@ -87,6 +87,7 @@ enum Runner {
     BuiltIn,
     Script,
     Rewrite,
+    LocalRefiner,
 }
 
 struct Step {
@@ -95,8 +96,8 @@ struct Step {
     runner: Runner,
 }
 
-/// A mode's steps in the order they run: the names it hears, its
-/// corrections, OpenCode rewriting when it is on, then its transformations.
+/// A mode's steps in order: its vocabulary and corrections, one rewrite, then
+/// its transformations.
 fn steps(ui: &Ui, mode: &DictationMode) -> Vec<Step> {
     let mut steps = Vec::new();
     if !mode.vocabulary.is_empty() {
@@ -133,7 +134,16 @@ fn steps(ui: &Ui, mode: &DictationMode) -> Vec<Step> {
             runner: Runner::BuiltIn,
         });
     }
-    if mode.post_processing.enabled {
+    let local_refiner = ui.settings.labs.phonon_refiner
+        && ui.platform.caps.os == super::platform::Os::Macos
+        && (crate::labs::Feature::PhononRefiner.supported() || cfg!(test));
+    if local_refiner {
+        steps.push(Step {
+            title: tr("Local refiner (Phonon)").into(),
+            detail: Some(tr("Cleans the final transcript on this Mac after recording").into()),
+            runner: Runner::LocalRefiner,
+        });
+    } else if mode.post_processing.enabled {
         steps.push(Step {
             title: tr("Rewrite with OpenCode").into(),
             detail: mode.post_processing.model.clone(),
@@ -421,6 +431,7 @@ fn step_row(p: Paint, key: &str, index: usize, step: &Step) -> El {
         Runner::BuiltIn => tone_tag(p, "runner", tr("Built in"), Tone::Neutral),
         Runner::Script => tone_tag(p, "runner", "JS", Tone::Accent),
         Runner::Rewrite => tone_tag(p, "runner", "AI", Tone::Accent),
+        Runner::LocalRefiner => tone_tag(p, "runner", tr("Local"), Tone::Neutral),
     };
     row()
         .key(key)
@@ -811,6 +822,37 @@ pub(super) fn trust_fixture(ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_local_refiner_replaces_the_cloud_step_without_changing_transformations() {
+        let mut ui = Ui::fixture_base();
+        ui.platform.caps = super::super::platform::Capabilities::MACOS;
+        let mut mode = DictationMode {
+            transformations: vec!["lowercase".into()],
+            ..Default::default()
+        };
+        mode.post_processing.enabled = true;
+        assert!(
+            steps(&ui, &mode)
+                .iter()
+                .any(|step| step.runner == Runner::Rewrite)
+        );
+        ui.settings.labs.phonon_refiner = true;
+        let local = steps(&ui, &mode);
+        assert!(local[0].runner == Runner::LocalRefiner);
+        assert!(local[1].runner == Runner::BuiltIn);
+        assert!(local.iter().all(|step| step.runner != Runner::Rewrite));
+        assert!(
+            mode.post_processing.enabled,
+            "the saved cloud choice is preserved"
+        );
+        ui.platform.caps = super::super::platform::Capabilities::LINUX;
+        assert!(
+            steps(&ui, &mode)
+                .iter()
+                .all(|step| step.runner != Runner::LocalRefiner)
+        );
+    }
 
     #[test]
     fn the_preview_runs_corrections_then_built_in_steps_in_order() {

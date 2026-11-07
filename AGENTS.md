@@ -1,7 +1,14 @@
 <!-- tallow -->
 # Hex Agent Guide
 
-## Private Kit Tool
+## This fork
+
+`kbdevs/hex` uses `main` as its default branch. Open integration pull requests
+to `main`, including upstream syncs. Preserve selectable keyboard typing,
+Superwhisper imports, scoped Helium meeting detection, and the optional local
+Phonon refiner. The `dev` and `production` rules below describe upstream Hex.
+
+## Upstream Kit Tool
 
 `dev` and `production` take changes only through pull requests (Dax's
 ruleset; `.github/` changes also need Dax). Branch from `dev`, open a PR to

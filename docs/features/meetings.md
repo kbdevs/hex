@@ -1543,3 +1543,11 @@ Granola import: see [granola-import.md](../plans/granola-import.md).
   tuned on that transcript; the model's same-topic flag is unreliable, and a
   short detour can still become its own chapter. The boundary pass runs only
   when meeting notes run, after publication.
+
+## Personal fork compatibility
+
+This fork retains Helium and helper detection and ties browser call evidence
+to the selected page and window. An unrelated background meeting page must
+not turn a foreground voice note into a call. The native Record / Not now
+offer remains in use. [Superwhisper import](../../SUPERWHISPER_IMPORT.md)
+retains original meeting dates, transcripts, and notes with source attribution.

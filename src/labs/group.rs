@@ -66,6 +66,8 @@ impl Feature {
             | Self::FillerWords
             | Self::KeepOnClipboard
             | Self::CopyOnly
+            | Self::TypeDictation
+            | Self::PhononRefiner
             | Self::GnomeClipboardRestore
             | Self::TerminalPaste
             | Self::OutputFixes => Group::Output,
