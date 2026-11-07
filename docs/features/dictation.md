@@ -1210,8 +1210,8 @@ This check does not prove insertion into a target app.
 
 **Personal keypress output (2026-11-02):** while Type dictation is on,
 primary and raw dictation use
-the active layout's real key codes and Shift flags, with 1 ms after key-down
-and 1 ms after key-up. This follows Superwhisper 3.0.1's enabled simulated-keypress
+the active layout's real key codes and Shift flags, with balanced Shift
+modifier events and 1 ms after each key edge. This follows Superwhisper 3.0.1's enabled simulated-keypress
 loop, inspected locally with REA 6.8.0 and Rizin at `0x1000f4a64`.
 The earlier 15 ms Unicode events used key code 0 for every character.
 The typing layout refreshes on the main thread when the input source changes;

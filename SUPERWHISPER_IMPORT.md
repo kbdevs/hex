@@ -23,7 +23,11 @@ Dictation raw text and saved rewritten text enter Hex's normal History.
 Recording dates, application names, mode names, and processing times are kept.
 Paragraphs and Unicode are preserved. New local IDs do not change existing IDs,
 and imported older entries appear below recent dictations. Repeating an import
-skips retained entries with the same Superwhisper source ID.
+skips retained entries with the same Superwhisper source ID. New IDs include
+the canonical source folder's hash, so separate data folders can contain
+recordings from the same second. Keep the source folder at the same path for
+repeat imports. Existing archive reports preserve the older IDs for their
+recorded source.
 
 Meetings enter Hex's Meetings list with their existing titles, timed transcript
 turns, and saved summaries. Named speakers appear in the transcript text. Hex's
@@ -33,7 +37,10 @@ Meeting imports publish complete folders atomically. They do not start model
 inference, chapters, or summaries. Existing meeting retention settings apply;
 with no explicit retention choice, imported meetings are kept.
 
-The original files remain in `~/Documents/Hex Imports/Superwhisper/recordings`.
+New archives keep each source under
+`~/Documents/Hex Imports/Superwhisper/sources/<source-hash>/recordings`.
+An existing archive with a matching import report keeps its previous layout.
+The command reports the archive path it uses.
 This archive includes WAV and OGG audio, full metadata, user notes, empty
 recordings, and any recordings that could not be decoded for the native lists.
 Hex history retains its normal text and byte limits; the archive keeps complete

@@ -45,6 +45,8 @@ struct Report {
     version: u32,
     source: PathBuf,
     archive: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_namespace: Option<String>,
     dry_run: bool,
     recordings_seen: usize,
     transcripts_found: usize,
@@ -218,10 +220,12 @@ fn import_into(
     let retention = read_retention(&support)?;
     let now = crate::history::now_ms();
     let cutoff = retention.max_age_ms().map(|age| now.saturating_sub(age));
+    let (archive, namespace) = source_archive(&source, &archive)?;
     let mut report = Report {
         version: 1,
         source: source.clone(),
         archive: archive.clone(),
+        source_namespace: namespace.clone(),
         dry_run,
         ..Report::default()
     };
@@ -273,12 +277,17 @@ fn import_into(
         if !meta.final_text().is_empty() {
             report.transcripts_found += 1;
         }
+        let identity = namespace
+            .as_ref()
+            .map_or_else(|| id.to_owned(), |namespace| format!("{namespace}-{id}"));
         if meta.is_meeting() {
             report.meetings_found += 1;
-            let target = support.join("meetings").join(format!("superwhisper-{id}"));
+            let target = support
+                .join("meetings")
+                .join(format!("superwhisper-{identity}"));
             if target.exists() {
                 let manifest: MeetingManifest = read_json(&target.join("manifest.json"))?;
-                if manifest.id != format!("superwhisper-{id}") {
+                if manifest.id != format!("superwhisper-{identity}") {
                     return Err(eyre!(
                         "existing meeting conflicts with Superwhisper recording {id}"
                     ));
@@ -287,6 +296,7 @@ fn import_into(
             } else if !dry_run {
                 write_meeting(
                     id,
+                    &identity,
                     timestamp_ms,
                     &meta,
                     &target,
@@ -295,7 +305,7 @@ fn import_into(
                 report.meetings_added += 1;
             }
         } else if !meta.final_text().is_empty() {
-            let entry = history_entry(id, timestamp_ms, &meta);
+            let entry = history_entry(&identity, timestamp_ms, &meta);
             if !known.insert(entry.source.clone().expect("imported history has a source")) {
                 report.already_imported += 1;
             } else if retention.is_off() || cutoff.is_some_and(|cutoff| timestamp_ms < cutoff) {
@@ -371,6 +381,27 @@ fn import_into(
     Ok(report)
 }
 
+/// Existing reports bind legacy IDs to their original root. New roots get
+/// separate IDs and archive folders, even when their timestamps overlap.
+fn source_archive(source: &Path, archive: &Path) -> Result<(PathBuf, Option<String>)> {
+    let namespace: String = Sha256::digest(source.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let report = archive.join("import-report.json");
+    if report.exists() {
+        let report: Value = read_json(&report)?;
+        if report.get("source") == Some(&serde_json::to_value(source)?) {
+            let saved = report.get("source_namespace").and_then(Value::as_str);
+            if saved.is_some_and(|saved| saved != namespace) {
+                return Err(eyre!("archive source identity does not match its report"));
+            }
+            return Ok((archive.to_owned(), saved.map(str::to_owned)));
+        }
+    }
+    Ok((archive.join("sources").join(&namespace), Some(namespace)))
+}
+
 fn history_entry(id: &str, timestamp_ms: u64, meta: &Meta) -> HistoryEntry {
     let application = meta
         .prompt_context
@@ -428,6 +459,7 @@ fn timestamp(id: &str, datetime: &str) -> Result<u64> {
 
 fn write_meeting(
     id: &str,
+    identity: &str,
     timestamp_ms: u64,
     meta: &Meta,
     target: &Path,
@@ -460,7 +492,7 @@ fn write_meeting(
             });
         let manifest = MeetingManifest {
             schema_version: 1,
-            id: format!("superwhisper-{id}"),
+            id: format!("superwhisper-{identity}"),
             title: title.clone(),
             status: MeetingStatus::Complete,
             created_at_ms: timestamp_ms,
@@ -555,7 +587,7 @@ fn transcript_entries(meta: &Meta) -> Vec<TranscriptEntry> {
             .or_else(|| {
                 segment
                     .speaker
-                    .map(|number| format!("Speaker {}", number + 1))
+                    .map(|number| format!("Speaker {}", number.saturating_add(1)))
             });
         let text = label.map_or_else(
             || segment.text.trim().to_owned(),

@@ -10,7 +10,8 @@ It applies to the next output without a restart. Copy dictation only takes
 priority over both methods. Paste Last and meeting deltas use their existing
 paste modes, including the Chromium 155/156 typing workaround.
 
-Typing uses the active layout's key codes and Shift flags. It does not write
+Typing uses the active layout's key codes and Shift flags. Shift also sends
+balanced modifier events so remote desktop apps can read it. It does not write
 the transcript to the clipboard or send Command-V. Text enters after the
 recording ends. Live text in the HUD is still a preview. Line breaks use
 Shift-Return to prevent chat submission.

@@ -46,6 +46,10 @@ impl Fixture {
     fn import(&self, dry: bool, no_audio: bool) -> Result<Report> {
         import_into(&self.source, &self.archive, &self.support, dry, no_audio)
     }
+
+    fn archive_path(&self) -> PathBuf {
+        source_archive(&self.source, &self.archive).unwrap().0
+    }
 }
 
 impl Drop for Fixture {
@@ -164,7 +168,10 @@ fn imports_original_text_speakers_titles_audio_and_templates_without_duplicates(
         native_id,
         "newest stays first"
     );
-    let meeting = fixture.support.join("meetings/superwhisper-1730000100");
+    let meeting = fixture.support.join("meetings").join(format!(
+        "superwhisper-{}-1730000100",
+        report.source_namespace.as_ref().unwrap()
+    ));
     let manifest: MeetingManifest = read_json(&meeting.join("manifest.json")).unwrap();
     assert_eq!(manifest.title, "Planning meeting");
     assert_eq!(
@@ -190,7 +197,7 @@ fn imports_original_text_speakers_titles_audio_and_templates_without_duplicates(
     ] {
         assert_eq!(
             digest(&fixture.source.join("recordings").join(name)).unwrap(),
-            digest(&fixture.archive.join("recordings").join(name)).unwrap()
+            digest(&fixture.archive_path().join("recordings").join(name)).unwrap()
         );
     }
     let imported_history_bytes = fs::read(&native_path).unwrap();
@@ -218,10 +225,14 @@ fn imports_original_text_speakers_titles_audio_and_templates_without_duplicates(
             0o700
         );
         assert_eq!(
-            fs::metadata(fixture.archive.join("recordings/1730000100/output.ogg"))
-                .unwrap()
-                .permissions()
-                .mode()
+            fs::metadata(
+                fixture
+                    .archive_path()
+                    .join("recordings/1730000100/output.ogg")
+            )
+            .unwrap()
+            .permissions()
+            .mode()
                 & 0o777,
             0o600
         );
@@ -247,13 +258,13 @@ fn respects_history_off_and_no_audio_without_losing_metadata() {
     assert_eq!(report.audio_files_copied, 0);
     assert!(
         fixture
-            .archive
+            .archive_path()
             .join("recordings/1730000000/meta.json")
             .exists()
     );
     assert!(
         !fixture
-            .archive
+            .archive_path()
             .join("recordings/1730000000/output.ogg")
             .exists()
     );
@@ -286,7 +297,9 @@ fn changed_archive_files_are_never_overwritten_and_overlapping_paths_are_refused
         "output.wav",
     );
     fixture.import(false, false).unwrap();
-    let archived = fixture.archive.join("recordings/1730000000/output.wav");
+    let archived = fixture
+        .archive_path()
+        .join("recordings/1730000000/output.wav");
     fs::write(&archived, b"user edited copy").unwrap();
     assert!(fixture.import(false, false).is_err());
     assert_eq!(fs::read(archived).unwrap(), b"user edited copy");
@@ -326,8 +339,12 @@ fn ignores_source_symlinks_and_rejects_destination_symlinks() {
         &serde_json::json!({"result":"hello"}),
         "output.wav",
     );
-    fs::create_dir_all(fixture.archive.join("recordings")).unwrap();
-    symlink(&external, fixture.archive.join("recordings/1730000100")).unwrap();
+    fs::create_dir_all(fixture.archive_path().join("recordings")).unwrap();
+    symlink(
+        &external,
+        fixture.archive_path().join("recordings/1730000100"),
+    )
+    .unwrap();
     assert!(fixture.import(false, false).is_err());
     assert!(!external.join("meta.json").exists());
 }
@@ -362,4 +379,71 @@ fn timestamps_and_history_bounds_are_safe_for_untrusted_records() {
     assert!(saved.final_text.len() <= 16 * 1024);
     assert!(saved.final_text.is_char_boundary(saved.final_text.len()));
     assert_eq!(saved.processing.as_ref().unwrap().profile.len(), 256);
+    let turns = transcript_entries(&Meta {
+        segments: vec![MetaSegment {
+            text: "hello".into(),
+            end: 1.0,
+            speaker: Some(u64::MAX),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    assert_eq!(turns[0].text, format!("[Speaker {}] hello", u64::MAX));
+}
+
+#[test]
+fn separate_roots_keep_same_second_recordings_and_legacy_imports_stay_idempotent() {
+    let first = Fixture::new();
+    let second = Fixture::new();
+    // An earlier importer wrote unscoped IDs and recorded its source here.
+    write_private(
+        &first.archive.join("import-report.json"),
+        &serde_json::to_vec(&serde_json::json!({"version":1,"source":first.source})).unwrap(),
+    )
+    .unwrap();
+    for (fixture, text) in [(&first, "first root"), (&second, "second root")] {
+        fixture.record(
+            "1730000000",
+            &serde_json::json!({"result":text}),
+            "output.wav",
+        );
+        fixture.record(
+            "1730000001",
+            &serde_json::json!({"kind":"meeting","result":text}),
+            "output.wav",
+        );
+    }
+    let legacy = first.import(false, false).unwrap();
+    assert!(legacy.source_namespace.is_none());
+    let other = import_into(&second.source, &first.archive, &first.support, false, false).unwrap();
+    assert_eq!((other.history_added, other.meetings_added), (1, 1));
+    assert_ne!(legacy.archive, other.archive);
+    for (source, archive) in [
+        (&first.source, &first.archive),
+        (&second.source, &first.archive),
+        (&second.source, &other.archive),
+    ] {
+        let again = import_into(source, archive, &first.support, false, false).unwrap();
+        assert_eq!(
+            (
+                again.history_added,
+                again.meetings_added,
+                again.already_imported
+            ),
+            (0, 0, 2)
+        );
+    }
+    let history = crate::history::read_snapshot(&first.support.join("history.json")).unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(
+        fs::read_dir(first.support.join("meetings"))
+            .unwrap()
+            .count(),
+        2
+    );
+    assert!(
+        history
+            .iter()
+            .any(|entry| entry.source.as_deref() == Some("superwhisper:1730000000"))
+    );
 }

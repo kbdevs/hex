@@ -360,8 +360,8 @@ fn prepare_typing_strokes(text: &str, interval: Duration) -> Result<Vec<Vec<Keyb
                     typing_key(&units, typing.as_ref())
                 };
                 let (code, flags) = key.unwrap_or((0, 0));
-                for down in [true, false] {
-                    let event = KeyboardEvent::new((code, down, flags))?;
+                for spec in typing_event_specs(code, flags) {
+                    let event = KeyboardEvent::new(spec)?;
                     if key.is_none() {
                         event.set_unicode(&units);
                     }
@@ -384,6 +384,15 @@ fn prepare_typing_strokes(text: &str, interval: Duration) -> Result<Vec<Vec<Keyb
 fn typing_key(units: &[u16], codes: Option<&TypingCodes>) -> Option<(u16, u64)> {
     let [unit] = units else { return None };
     codes?.get(&char::from_u32((*unit).into())?).copied()
+}
+
+fn typing_event_specs(key: u16, flags: u64) -> impl Iterator<Item = (u16, bool, u64)> {
+    let modifiers: &[(u64, u16)] = if flags & SHIFT_FLAG == 0 {
+        &[]
+    } else {
+        &[(SHIFT_FLAG, SHIFT_KEY_CODE)]
+    };
+    shortcut_event_specs(key, modifiers, 1)
 }
 
 fn post_typing_strokes<E>(
@@ -880,6 +889,19 @@ mod tests {
         assert_eq!(key("z"), Some((6, 0)));
         assert_eq!(key("Z"), Some((6, SHIFT_FLAG)));
         assert_eq!(key("!"), Some((18, SHIFT_FLAG)));
+        assert_eq!(
+            typing_event_specs(18, SHIFT_FLAG).collect::<Vec<_>>(),
+            [
+                (SHIFT_KEY_CODE, true, SHIFT_FLAG),
+                (18, true, SHIFT_FLAG),
+                (18, false, SHIFT_FLAG),
+                (SHIFT_KEY_CODE, false, 0),
+            ]
+        );
+        assert_eq!(
+            typing_event_specs(0, 0).collect::<Vec<_>>(),
+            [(0, true, 0), (0, false, 0)]
+        );
         assert_eq!(key("м"), Some((9, 0)));
         // Command-V's ASCII fallback must never type Cyrillic instead of V.
         for text in ["v", "漢", "😀", "e\u{301}", "👩‍💻"] {
