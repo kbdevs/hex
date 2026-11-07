@@ -8,11 +8,11 @@ static DICTATION_PROFILES: OnceLock<RwLock<Profiles>> = OnceLock::new();
 static READS_BROWSER: AtomicBool = AtomicBool::new(false);
 
 /// Whether anything the user set up looks at the page: a mode chosen by
-/// website, an OpenCode rewrite (its prompt names the site), or a script
+/// website, an enabled local refiner, an OpenCode rewrite, or a script
 /// transformation (it receives the page address). Otherwise Hex never asks a
 /// browser for its page, so macOS never shows an Automation prompt for it.
 pub fn reads_browser() -> bool {
-    READS_BROWSER.load(Ordering::Acquire)
+    READS_BROWSER.load(Ordering::Acquire) || crate::labs::phonon_refiner()
 }
 
 fn uses_browser(settings: &DictationProcessingSettings) -> bool {

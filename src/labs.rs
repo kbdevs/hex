@@ -7,7 +7,8 @@
 //! model switching, mouse shortcuts, pausing the browser, restoring Paste
 //! last dictation's default shortcut, keeping the dictation on the
 //! clipboard or only copying it (macOS), a second dictation shortcut
-//! (macOS), Toggle's tap or hold (macOS), and Terminal paste
+//! (macOS), the final Phonon refiner (Apple silicon macOS), Toggle's tap or
+//! hold (macOS), and Terminal paste
 //! and shortcut sharing on Windows) is just its toggle.
 //!
 //! Each feature has an audience (`Feature::audience`): `Everyone` ships in
@@ -74,6 +75,7 @@ pub enum Feature {
     KeepOnClipboard,
     CopyOnly,
     TypeDictation,
+    PhononRefiner,
     SpokenFormatting,
     FillerWords,
     SubtitleExport,
@@ -90,7 +92,7 @@ pub enum Feature {
 }
 
 impl Feature {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
@@ -107,6 +109,7 @@ impl Feature {
         Self::KeepOnClipboard,
         Self::CopyOnly,
         Self::TypeDictation,
+        Self::PhononRefiner,
         Self::SpokenFormatting,
         Self::FillerWords,
         Self::SubtitleExport,
@@ -131,13 +134,18 @@ impl Feature {
     fn available_where(reaches: impl Fn(Self) -> bool) -> impl Iterator<Item = Self> {
         Self::ALL
             .into_iter()
-            .filter(move |feature| feature.on_this_os() && reaches(*feature))
+            .filter(move |feature| feature.supported() && reaches(*feature))
     }
 
     /// Whether this build has the feature: its audience reaches a dev or
     /// stable build.
     pub fn shipped(self) -> bool {
         self.audience().reaches(crate::dev_build::is_dev_build())
+    }
+
+    /// Whether this target can run the feature.
+    pub(crate) fn supported(self) -> bool {
+        self.on_this_os()
     }
 
     /// Who the feature is for. Every feature picks one.
@@ -159,6 +167,7 @@ impl Feature {
             | Self::KeepOnClipboard
             | Self::CopyOnly
             | Self::TypeDictation
+            | Self::PhononRefiner
             | Self::SpokenFormatting
             | Self::FillerWords
             | Self::SubtitleExport
@@ -214,6 +223,7 @@ impl Feature {
             | Self::SmartSpacing
             | Self::SidedChords
             | Self::TapOrHold => cfg!(target_os = "macos"),
+            Self::PhononRefiner => cfg!(all(target_os = "macos", target_arch = "aarch64")),
             Self::KeyboardModelSwitching => crate::keyboard_input_sources::available(),
             Self::Playground
             | Self::LiveText
@@ -249,6 +259,7 @@ impl Feature {
             Self::KeepOnClipboard => "keep-on-clipboard",
             Self::CopyOnly => "copy-only",
             Self::TypeDictation => "type-dictation",
+            Self::PhononRefiner => "phonon-refiner",
             Self::SpokenFormatting => "spoken-formatting",
             Self::FillerWords => "filler-words",
             Self::SubtitleExport => "subtitle-export",
@@ -284,6 +295,7 @@ impl Feature {
             Self::KeepOnClipboard => "labs.keep_on_clipboard",
             Self::CopyOnly => "labs.copy_only",
             Self::TypeDictation => "labs.type_dictation",
+            Self::PhononRefiner => "labs.phonon_refiner",
             Self::SpokenFormatting => "labs.spoken_formatting",
             Self::FillerWords => "labs.filler_words",
             Self::SubtitleExport => "labs.subtitle_export",
@@ -333,6 +345,9 @@ impl Feature {
             Self::CopyOnly => "Put the dictation on the clipboard instead of pasting it",
             Self::TypeDictation => {
                 "Type each character and keep the clipboard unchanged; turn off to paste"
+            }
+            Self::PhononRefiner => {
+                "Clean final dictations after recording with installed Phonon and its downloaded refiner; keep the corrected transcript if it fails (Apple silicon macOS)"
             }
             Self::SpokenFormatting => {
                 "Turn spoken \"new line\", \"new paragraph\", and \"open/close quote\" into line breaks and quotation marks"
@@ -400,6 +415,7 @@ impl Feature {
             Self::KeepOnClipboard => settings.labs.keep_on_clipboard,
             Self::CopyOnly => settings.labs.copy_only,
             Self::TypeDictation => settings.labs.type_dictation,
+            Self::PhononRefiner => settings.labs.phonon_refiner,
             Self::SpokenFormatting => settings.labs.spoken_formatting,
             Self::FillerWords => settings.labs.filler_words,
             Self::SubtitleExport => settings.labs.subtitle_export,
@@ -434,6 +450,7 @@ impl Feature {
             Self::KeepOnClipboard => settings.labs.keep_on_clipboard = on,
             Self::CopyOnly => settings.labs.copy_only = on,
             Self::TypeDictation => settings.labs.type_dictation = on,
+            Self::PhononRefiner => settings.labs.phonon_refiner = on,
             Self::SpokenFormatting => settings.labs.spoken_formatting = on,
             Self::FillerWords => settings.labs.filler_words = on,
             Self::SubtitleExport => settings.labs.subtitle_export = on,
@@ -475,8 +492,9 @@ const TAP_OR_HOLD: u32 = 1 << 15;
 const TYPE_DICTATION: u32 = 1 << 16;
 const PARAKEET_ULTRA: u32 = 1 << 17;
 const HISTORY_STATS: u32 = 1 << 18;
+const PHONON_REFINER: u32 = 1 << 19;
 /// Unload-idle minutes (at most 1,440, 11 bits) sit above the switches.
-const MINUTES_SHIFT: u32 = 19;
+const MINUTES_SHIFT: u32 = 20;
 
 /// This process's `labs` switches: unknown until settings load or one is
 /// first read.
@@ -541,6 +559,13 @@ pub fn copy_only() -> bool {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn type_dictation() -> bool {
     on(TYPE_DICTATION)
+}
+
+/// Final dictations use the installed Phonon-compatible local refiner
+/// (Apple silicon macOS; read as each dictation's processing starts).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn phonon_refiner() -> bool {
+    Feature::PhononRefiner.supported() && on(PHONON_REFINER)
 }
 
 /// Spoken formatting phrases become line breaks and quotation marks (read
@@ -646,6 +671,11 @@ fn encode_where(settings: &LabsSettings, reaches: impl Fn(Feature) -> bool) -> u
             Feature::TypeDictation,
             settings.type_dictation,
             TYPE_DICTATION,
+        ),
+        (
+            Feature::PhononRefiner,
+            settings.phonon_refiner,
+            PHONON_REFINER,
         ),
         (
             Feature::SpokenFormatting,
@@ -792,8 +822,11 @@ fn resolve(name: &str, reaches: impl Fn(Feature) -> bool + Copy) -> Result<Featu
     if let Some((_, note)) = GRADUATED.iter().find(|(graduated, _)| *graduated == name) {
         return Err(eyre!("{note}"));
     }
+    if name == Feature::PhononRefiner.name() && !Feature::PhononRefiner.supported() {
+        return Err(eyre!("`{name}` requires Apple silicon macOS"));
+    }
     Feature::from_name(name)
-        .filter(|feature| feature.on_this_os() && reaches(*feature))
+        .filter(|feature| feature.supported() && reaches(*feature))
         .ok_or_else(|| {
             eyre!(
                 "unknown Labs feature {name:?}; this Hex has: {}",
@@ -928,6 +961,43 @@ mod tests {
         assert_ne!(state & TYPE_DICTATION, 0);
         assert_eq!(state & COPY_ONLY, 0);
         assert_eq!(state >> MINUTES_SHIFT, 24 * 60);
+    }
+
+    #[test]
+    fn phonon_refiner_is_off_by_default_and_has_an_independent_bit() {
+        let mut labs = LabsSettings::default();
+        assert!(!labs.phonon_refiner);
+        assert_eq!(encode_where(&labs, |_| true) & PHONON_REFINER, 0);
+
+        labs.phonon_refiner = true;
+        let state = encode_where(&labs, |_| true);
+        assert_ne!(state & PHONON_REFINER, 0);
+        assert_eq!(state & TYPE_DICTATION, 0);
+        assert_eq!(state & COPY_ONLY, 0);
+
+        labs.type_dictation = true;
+        labs.copy_only = true;
+        labs.unload_idle_minutes = 24 * 60;
+        let state = encode_where(&labs, |_| true);
+        assert_ne!(state & PHONON_REFINER, 0);
+        assert_ne!(state & TYPE_DICTATION, 0);
+        assert_ne!(state & COPY_ONLY, 0);
+        assert_eq!(state >> MINUTES_SHIFT, 24 * 60);
+    }
+
+    #[test]
+    fn phonon_refiner_cli_is_apple_silicon_macos_only() {
+        let result = resolve("phonon-refiner", Feature::shipped);
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert!(result.is_ok());
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Apple silicon macOS")
+            );
+        }
     }
 
     #[test]

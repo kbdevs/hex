@@ -229,6 +229,16 @@ fn rows(ui: &Ui) -> Vec<Row> {
             tr("Type each character and keep the clipboard unchanged; turn off to paste"),
         ));
     }
+    // Headless pane fixtures run on Linux but can represent macOS. The
+    // production row is limited to the target supported by `Feature`.
+    if caps.os == super::platform::Os::Macos && (Feature::PhononRefiner.supported() || cfg!(test)) {
+        rows.push(row(
+            Feature::PhononRefiner,
+            &HINTS,
+            "Local refiner (Phonon)",
+            "Requires installed Phonon and its downloaded refiner; cleans final dictations after recording, entirely locally",
+        ));
+    }
     if caps.os == super::platform::Os::Macos {
         rows.push(row(
             Feature::MouseShortcuts,
@@ -389,6 +399,7 @@ fn row_key(feature: Feature) -> &'static str {
         Feature::KeepOnClipboard => "lab-keep-on-clipboard",
         Feature::CopyOnly => "lab-copy-only",
         Feature::TypeDictation => "lab-type-dictation",
+        Feature::PhononRefiner => "lab-phonon-refiner",
         Feature::SpokenFormatting => "lab-spoken-formatting",
         Feature::FillerWords => "lab-filler-words",
         Feature::SubtitleExport => "lab-subtitle-export",

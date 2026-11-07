@@ -34,6 +34,7 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Restore shortcut default no labs.restore_shortcut_default   Paste last dictation's row offers its default back (#613)
 ├── Keep dictation on clipboard no labs.keep_on_clipboard (macOS) a pasted dictation stays on the clipboard; the previous one is not restored (#200)
 ├── Copy dictation only no labs.copy_only (macOS)    a dictation goes to the clipboard and is never pasted; Paste last dictation still pastes (#629)
+├── Local refiner (Phonon) no labs.phonon_refiner (Apple silicon macOS) requires installed Phonon and its downloaded refiner; it cleans final dictations locally after recording
 ├── Spoken formatting no labs.spoken_formatting      spoken "new line"/"line break", "new paragraph", "open/close quote" become line breaks and quotation marks (#630)
 ├── Spoken symbols  no    labs.spoken_symbols          spoken "hashtag", "underscore", "comma", … become symbols joined to their words: "#release", "my_variable", "done, thanks" (#678)
 ├── Remove filler words no labs.filler_words          um, umm, uh, uhh, erm, er, ah leave dictations, with no model (#631)
@@ -148,6 +149,25 @@ not copy the result even when Keep dictation on clipboard is on. Checks:
 `contributed_options_are_labs_toggles_off_by_default` in
 [panes.rs](../../src/rune_ui/tests/panes.rs). The keyboard-event checks do
 not prove insertion into another app. See [dictation](dictation.md).
+
+Local refiner (Phonon) (`phonon-refiner`, `labs.phonon_refiner`, Apple silicon
+macOS) is off by default. It requires an installed Phonon app and its
+downloaded refiner. When on, Hex cleans the final dictation after recording
+with Phonon's local text sidecar. This replaces the OpenCode rewrite while the
+toggle is on; transformations still run after it. A missing refiner, timeout,
+empty or unsafe result, or cancellation keeps the corrected transcript, then
+the remaining transformations run. Hex does not ship Phonon's GPL source or
+models; it talks only to the downloaded text refiner, does not load a second
+speech model, and provides no streaming output. The option does not change
+typed-output or clipboard-output paths. See
+[PHONON_REFINER.md](../../PHONON_REFINER.md) for setup and protocol details.
+
+Checks: `phonon_refiner_is_off_by_default_and_has_an_independent_bit` and
+`phonon_refiner_cli_is_apple_silicon_macos_only` in
+[labs.rs](../../src/labs.rs), `phonon_refiner_setting_requires_apple_silicon_macos`
+in [control/settings.rs](../../src/control/settings.rs), and the toggle and
+unsupported-OS cases in
+[`contributed_options_are_labs_toggles_off_by_default`](../../src/rune_ui/tests/panes.rs).
 
 Keep dictation on clipboard (`keep-on-clipboard`, issue 200, macOS): while
 on, a pasted dictation stays on the clipboard. `paste::Paster` reads

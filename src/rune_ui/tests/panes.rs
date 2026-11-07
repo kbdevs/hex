@@ -377,6 +377,7 @@ fn contributed_options_are_labs_toggles_off_by_default() {
         "lab-keep-on-clipboard",
         "lab-copy-only",
         "lab-type-dictation",
+        "lab-phonon-refiner",
         "lab-spoken-formatting",
         "lab-filler-words",
         "lab-spoken-symbols",
@@ -407,6 +408,11 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     assert!(rt.state.settings.labs.type_dictation);
     tap(&mut rt, "lab-type-dictation");
     assert!(!rt.state.settings.labs.type_dictation);
+    assert!(!rt.state.settings.labs.phonon_refiner);
+    tap(&mut rt, "lab-phonon-refiner");
+    assert!(rt.state.settings.labs.phonon_refiner);
+    tap(&mut rt, "lab-phonon-refiner");
+    assert!(!rt.state.settings.labs.phonon_refiner);
 
     let mut rt = runtime("windows-settings", true, (980.0, 1600.0));
     open_advanced(&mut rt, Pane::General);
@@ -416,11 +422,19 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     assert!(rt.find("lab-keep-on-clipboard").is_none(), "macOS only");
     assert!(rt.find("lab-copy-only").is_none(), "macOS only");
     assert!(rt.find("lab-type-dictation").is_none(), "macOS only");
+    assert!(
+        rt.find("lab-phonon-refiner").is_none(),
+        "Apple silicon macOS only"
+    );
     assert!(rt.find("lab-spoken-formatting").is_some(), "every OS");
     assert!(rt.find("lab-filler-words").is_some(), "every OS");
     assert!(rt.find("lab-spoken-symbols").is_some(), "every OS");
     tap(&mut rt, "lab-share-shortcut");
     assert!(rt.state.settings.share_dictation_shortcut);
+
+    let mut rt = runtime("portal", true, (980.0, 1600.0));
+    tap(&mut rt, "nav-labs");
+    assert!(rt.find("lab-phonon-refiner").is_none(), "macOS only");
 }
 
 #[test]

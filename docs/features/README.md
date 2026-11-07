@@ -929,7 +929,8 @@ Foreground context -> Select processing
 
 Selected mode                            // replaces Global, does not layer over it
   -> Corrections
-  -> OpenCode transformation             // optional provider-backed rewrite
+  -> Labs › Local refiner (Phonon)        // optional final-only local cleanup on Apple silicon macOS
+     or OpenCode transformation           // the configured provider when the refiner is off
   -> Transformations                     // ordered text chain
   -> Paste or Send
 

@@ -313,6 +313,11 @@ const KEYS: &[Key] = &[
         "Labs: type each character and keep the clipboard unchanged; turn off to paste (macOS)",
     ),
     key(
+        "labs.phonon_refiner",
+        Kind::Bool,
+        "Labs: clean final dictations after recording with installed Phonon and its downloaded refiner, entirely locally (Apple silicon macOS)",
+    ),
+    key(
         "labs.spoken_formatting",
         Kind::Bool,
         "Labs: turn spoken \"new line\", \"new paragraph\", and \"open/close quote\" into line breaks and quotation marks",
@@ -584,15 +589,26 @@ fn needs(key: &str) -> Option<&'static str> {
         .map(|(_, capability)| *capability)
 }
 
+fn setting_available(key: &str) -> bool {
+    (key != "labs.phonon_refiner" || crate::labs::Feature::PhononRefiner.supported())
+        && needs(key).is_none_or(crate::rune_ui::capability)
+}
+
 /// Why `hex settings set` refuses `name` on this OS, if it does.
 pub fn unavailable(name: &str) -> Option<ControlError> {
-    if let Some(feature) = crate::labs::Feature::for_settings_key(name)
-        && !feature.shipped()
-    {
-        return Some(ControlError::new(
-            "unsupported",
-            format!("`{name}` belongs to a Labs feature that only dev builds have"),
-        ));
+    if let Some(feature) = crate::labs::Feature::for_settings_key(name) {
+        if feature == crate::labs::Feature::PhononRefiner && !feature.supported() {
+            return Some(ControlError::new(
+                "unsupported",
+                "`labs.phonon_refiner` requires Apple silicon macOS",
+            ));
+        }
+        if !feature.shipped() {
+            return Some(ControlError::new(
+                "unsupported",
+                format!("`{name}` belongs to a Labs feature that only dev builds have"),
+            ));
+        }
     }
     let capability = needs(name).filter(|capability| !crate::rune_ui::capability(capability))?;
     Some(ControlError::new(
@@ -733,7 +749,7 @@ fn value_of(key: &Key, json: &Value) -> SettingValue {
         },
         writable: key.read_only.is_none(),
         about: key.about.into(),
-        available: needs(key.key).is_none_or(crate::rune_ui::capability),
+        available: setting_available(key.key),
     }
 }
 
@@ -1326,6 +1342,22 @@ mod tests {
         assert_eq!(
             unavailable("labs.type_dictation").is_none(),
             cfg!(target_os = "macos")
+        );
+    }
+
+    #[test]
+    fn phonon_refiner_setting_requires_apple_silicon_macos() {
+        assert_eq!(
+            unavailable("labs.phonon_refiner").is_none(),
+            cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        );
+        let setting = list(&AppSettings::default())
+            .into_iter()
+            .find(|setting| setting.key == "labs.phonon_refiner")
+            .expect("the Phonon setting is registered");
+        assert_eq!(
+            setting.available,
+            cfg!(all(target_os = "macos", target_arch = "aarch64"))
         );
     }
 

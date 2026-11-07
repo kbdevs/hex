@@ -492,6 +492,7 @@ impl DictationWorker {
     }
 
     fn shutdown(&mut self) {
+        crate::dictation::phonon_refiner::stop();
         // Accepted jobs still finish: the inference worker drains its queue.
         self.inference_jobs.take();
         join_worker(self.inference_worker.take(), "dictation inference");
@@ -500,6 +501,7 @@ impl DictationWorker {
         }
         self.output_jobs.take();
         join_worker(self.output_worker.take(), "dictation output");
+        crate::dictation::phonon_refiner::stop();
     }
 }
 

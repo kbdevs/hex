@@ -1386,6 +1386,7 @@ pub struct LabsSettings {
     pub copy_only: bool,
     /// Type dictations with keyboard events instead of clipboard paste (macOS).
     pub type_dictation: bool,
+    pub phonon_refiner: bool,
     /// Spoken "new line", "new paragraph", and "open/close quote" become
     /// line breaks and quotation marks (issue 630).
     pub spoken_formatting: bool,
@@ -1440,6 +1441,7 @@ impl Default for LabsSettings {
             keep_on_clipboard: false,
             copy_only: false,
             type_dictation: false,
+            phonon_refiner: false,
             spoken_formatting: false,
             filler_words: false,
             subtitle_export: false,
@@ -2283,6 +2285,10 @@ impl AppSettings {
             Ordering::Release,
         );
         crate::labs::apply(&self.labs);
+        #[cfg(target_os = "macos")]
+        if !crate::labs::phonon_refiner() {
+            crate::dictation::phonon_refiner::stop();
+        }
         #[cfg(hex_capture)]
         {
             *CAPTURE_SETTINGS
