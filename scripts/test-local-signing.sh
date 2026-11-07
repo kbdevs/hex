@@ -123,4 +123,4 @@ if output=$(HEX_SIGNING_FIXTURE_COMPLETE=1 HEX_SIGNING_FIXTURE_SIGNED_TEAM=WRONG
 fi
 printf '%s\n' "$output" | grep -Fq 'does not match hex.localSigningTeam'
 [ ! -e "$temporary/repo/target/app/Hex.app" ]
-echo 'Local signing selection and release guards passed; no app was built.'
+echo 'Local signing and release guards passed with mocked build tools.'
