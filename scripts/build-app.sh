@@ -7,7 +7,8 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # name and bundle ID so it installs beside the released Hex and never
 # touches its permissions; it never checks for updates.
 # HEX_LOCAL_BUILD=1 marks a build made from a checkout for its owner's own
-# machine (Developer ID signed as usual): it shows "Local build · updates off"
+# machine, using its saved signing profile or the normal Developer ID path:
+# it shows "Local build · updates off"
 # with its commit and never checks for or offers updates.
 # HEX_RELEASE_UNSIGNED=1 builds the release app (Hex, anomaly.hex) ad-hoc
 # signed: the Release workflow's build job, which holds no credentials. Its
@@ -141,6 +142,7 @@ codesign --verify --deep --strict --verbose=2 "$bundle"
 if [ -n "$local_signing_identity" ]; then
   signed_team=$(codesign -d --verbose=4 "$bundle" 2>&1 | sed -n 's/^TeamIdentifier=//p')
   if [ "$signed_team" != "$local_signing_team" ]; then
+    rm -rf "$bundle"
     echo "The signed app's team does not match hex.localSigningTeam." >&2
     exit 1
   fi

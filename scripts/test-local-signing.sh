@@ -7,6 +7,15 @@ temporary=$(mktemp -d "${TMPDIR:-/tmp}/hex-local-signing.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 mkdir -p "$temporary/bin" "$temporary/repo/scripts"
 cp "$root/scripts/build-app.sh" "$root/scripts/macos-signing.sh" "$temporary/repo/scripts/"
+mkdir -p "$temporary/repo/app"
+cp "$root/app/Info.plist" "$temporary/repo/app/Info.plist"
+touch "$temporary/repo/LICENSE" "$temporary/repo/THIRD_PARTY_NOTICES.md"
+cat > "$temporary/repo/scripts/build-hex-microphone-driver.sh" <<'SH'
+#!/bin/sh
+printf '%s:%s\n' "$HEX_TEAM_ID" "$HEX_CODESIGN_IDENTITY" > "$HEX_SIGNING_FIXTURE_DRIVER_PROFILE"
+mkdir -p "$1/HexMicrophone.driver"
+SH
+chmod +x "$temporary/repo/scripts/build-hex-microphone-driver.sh"
 
 cat > "$temporary/bin/security" <<'SH'
 #!/bin/sh
@@ -30,9 +39,35 @@ SH
 cat > "$temporary/bin/cargo" <<'SH'
 #!/bin/sh
 touch "$HEX_SIGNING_FIXTURE_CARGO_CALLED"
+if [ "${HEX_SIGNING_FIXTURE_COMPLETE:-}" = 1 ]; then
+  mkdir -p "$HEX_SIGNING_FIXTURE_ROOT/target/release"
+  touch "$HEX_SIGNING_FIXTURE_ROOT/target/release/hex" "$HEX_SIGNING_FIXTURE_ROOT/target/release/scrawl-helper"
+  exit 0
+fi
 exit 70
 SH
-chmod +x "$temporary/bin/security" "$temporary/bin/git" "$temporary/bin/cargo"
+cat > "$temporary/bin/xcrun" <<'SH'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --compile ]; then
+    shift
+    mkdir -p "$1"
+    touch "$1/AppIcon.icns" "$1/Assets.car"
+    exit 0
+  fi
+  shift
+done
+exit 1
+SH
+cat > "$temporary/bin/codesign" <<'SH'
+#!/bin/sh
+if [ "$1" = -d ]; then
+  echo "TeamIdentifier=${HEX_SIGNING_FIXTURE_SIGNED_TEAM:-TESTTEAM00}" >&2
+else
+  printf '%s\n' "$*" >> "$HEX_SIGNING_FIXTURE_SIGN_CALLS"
+fi
+SH
+chmod +x "$temporary/bin/security" "$temporary/bin/git" "$temporary/bin/cargo" "$temporary/bin/xcrun" "$temporary/bin/codesign"
 PATH="$temporary/bin:$PATH"
 export PATH
 
@@ -47,6 +82,9 @@ done
 
 export HEX_LOCAL_BUILD=1 HEX_VERSION=3.3.0
 export HEX_SIGNING_FIXTURE_CARGO_CALLED="$temporary/cargo-called"
+export HEX_SIGNING_FIXTURE_ROOT="$temporary/repo"
+export HEX_SIGNING_FIXTURE_DRIVER_PROFILE="$temporary/driver-profile"
+export HEX_SIGNING_FIXTURE_SIGN_CALLS="$temporary/sign-calls"
 unset HEX_CODESIGN_IDENTITY HEX_TEAM_ID HEX_TEST_BUILD HEX_RELEASE_UNSIGNED
 expect_rejection() {
   if output=$("$@" 2>&1); then
@@ -74,4 +112,15 @@ set -e
 rm "$HEX_SIGNING_FIXTURE_CARGO_CALLED"
 expected='Signing identity is not a Developer ID Application identity'
 expect_rejection env -u HEX_LOCAL_BUILD HEX_TEAM_ID=TESTTEAM00 HEX_CODESIGN_IDENTITY='Apple Development: Fixture (PERSON0000)' bash "$temporary/repo/scripts/build-app.sh"
+
+HEX_SIGNING_FIXTURE_COMPLETE=1 bash "$temporary/repo/scripts/build-app.sh" >/dev/null 2>&1
+[ -d "$temporary/repo/target/app/Hex.app" ]
+[ "$(cat "$HEX_SIGNING_FIXTURE_DRIVER_PROFILE")" = TESTTEAM00:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ]
+[ "$(grep -c -- '--sign AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' "$HEX_SIGNING_FIXTURE_SIGN_CALLS")" -eq 3 ]
+if output=$(HEX_SIGNING_FIXTURE_COMPLETE=1 HEX_SIGNING_FIXTURE_SIGNED_TEAM=WRONGTEAM0 bash "$temporary/repo/scripts/build-app.sh" 2>&1); then
+  echo 'Unexpectedly accepted a bundle signed by another team.' >&2
+  exit 1
+fi
+printf '%s\n' "$output" | grep -Fq 'does not match hex.localSigningTeam'
+[ ! -e "$temporary/repo/target/app/Hex.app" ]
 echo 'Local signing selection and release guards passed; no app was built.'
