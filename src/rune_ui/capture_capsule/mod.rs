@@ -426,10 +426,11 @@ impl CapsuleState {
         // An Undo ring two seconds in, so a still shows it draining.
         if let Pres::Done(Done {
             countdown: Some(end),
+            window,
             ..
         }) = &state.surface.pres
         {
-            let now = end - flow::undo_s() + 2.0;
+            let now = end - window + 2.0;
             undo_ring::sync(&mut state.live.ring, &state.surface.pres, now, false);
         }
         state.live.meter.publish(0.4);
@@ -468,10 +469,6 @@ impl CapsuleState {
             self.recording_since = Some(now);
             self.replace = true;
             self.live.thumb = None;
-        }
-        // Send to… bringing a closed capsule back: under the pointer.
-        if input == Input::OpenList && !self.shown {
-            self.replace = true;
         }
         let actions = self.flow.input(input, now);
         self.dispatch(actions);
@@ -513,6 +510,19 @@ impl CapsuleState {
         } else {
             tx.live_only();
         }
+    }
+
+    /// The pointer moved on the list's `row` (`on`) or left it: a Shift
+    /// pick goes there.
+    fn point(&mut self, row: usize, on: bool, tx: &mut Tx) {
+        if !self.flow.point(row, on) {
+            tx.live_only();
+            return;
+        }
+        let now = self.now;
+        self.present(now);
+        self.live.sync(&self.surface);
+        tx.wake_after(Duration::ZERO);
     }
 
     /// Moves the surface to what the flow shows. True when it changed.
@@ -668,6 +678,7 @@ fn poll(s: &mut CapsuleState, now: f64, tx: &mut Tx) -> bool {
         s.shown = shown;
         if let Some(overlay) = &s.overlay {
             if shown {
+                float_on_xwayland(overlay);
                 overlay.show();
             } else {
                 overlay.hide();
@@ -849,6 +860,16 @@ fn take_keys(s: &mut CapsuleState) {
             }
         }
     }
+}
+
+/// Linux: lets the capsule's next show float on XWayland where Wayland has
+/// no layer-shell, only by Labs › Annotate on GNOME. Off, Rune can't open it
+/// there and a capture records with no capsule.
+fn float_on_xwayland(overlay: &OverlayHandle<CapsuleState>) {
+    #[cfg(target_os = "linux")]
+    overlay.set_xwayland_input(crate::linux::annotate_overlays::on_xwayland());
+    #[cfg(not(target_os = "linux"))]
+    let _ = overlay;
 }
 
 fn key_input(key: crate::capture_host::CapsuleKey) -> Input {

@@ -1,4 +1,4 @@
-use crate::durable::{sync_directory, sync_file};
+use crate::durable::{lock_contended, sync_directory, sync_file};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use super::artifacts::{
     COHERE_ARTIFACT, COHERE_LANGUAGES, GIGAAM_V3_E2E_RNNT_ARTIFACT, GRANITE_SPEECH_5_ARTIFACT,
     GRANITE_SPEECH_5_LANGUAGES, IVRIT_WHISPER_ARTIFACT, NB_WHISPER_MEDIUM_ARTIFACT,
-    NEMOTRON_3_5_ASR_ARTIFACT, NEMOTRON_3_5_LANGUAGES, NEMOTRON_3_5_LOCALES,
+    NEMOTRON_3_5_ASR_ARTIFACT, NEMOTRON_3_5_LANGUAGES, NEMOTRON_3_5_LOCALES, ORUKEET_ARTIFACT,
     PARAKEET_ULTRA_ARTIFACT, PARAKEET_UNIFIED_ENGLISH_ARTIFACT, PARAKEET_V2_ARTIFACT,
     PARAKEET_V3_ARTIFACT, PARAKEET_V3_LANGUAGES, QWEN_ARTIFACT, QWEN_LANGUAGES, QWENCLEO_ARTIFACT,
     SENSEVOICE_ARTIFACT, UNDERDOG_BARK_3_CLEAN_ARTIFACT, UNDERDOG_BARK_3_PRO_ARTIFACT,
@@ -36,6 +36,7 @@ pub enum TranscriptionModelId {
     ParakeetUnifiedEnglish,
     ParakeetV2,
     ParakeetV3,
+    Orukeet,
     WhisperLargeV3Turbo,
     Qwen3Asr06B,
     QwenCleoAsr17B,
@@ -72,6 +73,7 @@ impl TranscriptionModelId {
             Self::ParakeetUnifiedEnglish => "parakeet_unified_en",
             Self::ParakeetV2 => "parakeet_v2",
             Self::ParakeetV3 => "parakeet_v3",
+            Self::Orukeet => "orukeet",
             Self::WhisperLargeV3Turbo => "whisper_large_v3_turbo",
             Self::Qwen3Asr06B => "qwen3_asr06_b",
             Self::QwenCleoAsr17B => "qwencleo_asr_1_7b",
@@ -110,6 +112,7 @@ impl FromStr for TranscriptionModelId {
             "parakeet_unified_en" => Ok(Self::ParakeetUnifiedEnglish),
             "parakeet_v2" => Ok(Self::ParakeetV2),
             "parakeet_v3" => Ok(Self::ParakeetV3),
+            "orukeet" => Ok(Self::Orukeet),
             "whisper_large_v3_turbo" => Ok(Self::WhisperLargeV3Turbo),
             "qwen3_asr06_b" => Ok(Self::Qwen3Asr06B),
             "qwencleo_asr_1_7b" => Ok(Self::QwenCleoAsr17B),
@@ -247,10 +250,17 @@ impl GgufArtifact {
 impl ModelDefinition {
     /// A catalog GGUF model, or an import that is on, present, and unchanged.
     pub fn available(&self) -> bool {
+        self.available_where(crate::labs::k_quant_models())
+    }
+
+    /// [`available`] against `k_quants` rather than this process's Labs
+    /// switch, so a test can run either side of Labs › Smaller model files.
+    pub(crate) fn available_where(&self, k_quants: bool) -> bool {
         match (self.runtime, self.id) {
             (ModelRuntime::AppleSpeech, _) => false,
             (ModelRuntime::Gguf(_), TranscriptionModelId::Custom(id)) => {
                 super::custom_models::usable(id)
+                    && (!super::custom_models::uses_k_quants(id) || k_quants)
             }
             (ModelRuntime::Gguf(_), TranscriptionModelId::ParakeetUltra) => {
                 crate::labs::parakeet_ultra()
@@ -428,9 +438,28 @@ pub const MODELS: &[ModelDefinition] = &[
         streams: false,
         runtime: ModelRuntime::Gguf(&PARAKEET_V3_ARTIFACT),
         languages: PARAKEET_V3_LANGUAGES,
-        // The pinned v3 artifact detects language from audio and has no prompt input.
+        // The pinned v3 artifact detects the language from audio and has no
+        // prompt input, so it is offered under Auto.
         accepts_language_hint: false,
-        supports_language_detection: false,
+        supports_language_detection: true,
+    },
+    ModelDefinition {
+        id: TranscriptionModelId::Orukeet,
+        name: "Orukeet",
+        // The card says it runs as fast as Parakeet v3, and transcribe.cpp's
+        // catalog puts its Q8_0 file beside v3's on the same machines, so it
+        // keeps v3's figure.
+        realtime: "~33x",
+        // LibriSpeech test-clean, transcribe.cpp's published conversion
+        // benchmark (`catalog/orukeet.json`); not measured in Hex.
+        word_error_rate: Some(1.86),
+        streams: false,
+        runtime: ModelRuntime::Gguf(&ORUKEET_ARTIFACT),
+        languages: PARAKEET_V3_LANGUAGES,
+        // Like v3, its base: it detects the language from the audio and has
+        // no language input, so it is offered under Auto.
+        accepts_language_hint: false,
+        supports_language_detection: true,
     },
     ModelDefinition {
         id: TranscriptionModelId::WhisperLargeV3Turbo,
@@ -540,9 +569,9 @@ pub const MODELS: &[ModelDefinition] = &[
         runtime: ModelRuntime::Gguf(&PARAKEET_ULTRA_ARTIFACT),
         languages: PARAKEET_V3_LANGUAGES,
         // Like v3, its base: it detects the language from the audio and has
-        // no language input.
+        // no language input, so it is offered under Auto.
         accepts_language_hint: false,
-        supports_language_detection: false,
+        supports_language_detection: true,
     },
     ModelDefinition {
         id: TranscriptionModelId::Nemotron35Asr,
@@ -608,9 +637,10 @@ pub const MODELS: &[ModelDefinition] = &[
         runtime: ModelRuntime::Gguf(&GRANITE_SPEECH_5_ARTIFACT),
         languages: GRANITE_SPEECH_5_LANGUAGES,
         // A CTC head with no language input: it transcribes whichever of
-        // its seven languages it hears.
+        // its seven languages it hears, so it is offered under Auto even
+        // though its pinned file leaves stt.capability.lang_detect off.
         accepts_language_hint: false,
-        supports_language_detection: false,
+        supports_language_detection: true,
     },
     ModelDefinition {
         id: TranscriptionModelId::AppleSpeech,
@@ -797,11 +827,20 @@ pub fn validate_saved(selection: &TranscriptionSelection) -> Result<()> {
 }
 
 pub fn validate(selection: &TranscriptionSelection) -> Result<&'static ModelDefinition> {
+    validate_where(selection, crate::labs::k_quant_models())
+}
+
+/// [`validate`] against `k_quants` rather than this process's Labs switch, so
+/// a test can run either side of Labs › Smaller model files.
+pub(crate) fn validate_where(
+    selection: &TranscriptionSelection,
+    k_quants: bool,
+) -> Result<&'static ModelDefinition> {
     if !is_known_language(&selection.language) {
         bail!("unsupported transcription language: {}", selection.language);
     }
     let model = definition(selection.model);
-    if !model.available() {
+    if !model.available_where(k_quants) {
         bail!("{} is unavailable", model.name);
     }
     if !model.supports_language(&selection.language) {
@@ -835,9 +874,14 @@ pub(crate) fn set_test_models_dir(directory: Option<PathBuf>) {
 pub fn max_audio_chunk_samples(architecture: &str, max_audio_ms: i64) -> Option<usize> {
     // Cohere's encoder capacity is not its recommended transcription window.
     // The pinned model's reference processor chunks long audio at 35 seconds.
+    // Whisper decodes one 30-second window at a time; handed a longer clip its
+    // own long-form loop also decodes a near-silent remainder, which it fills
+    // with invented text (#1770).
     let maximum_ms = match (architecture, max_audio_ms) {
         ("cohere_asr", limit) if limit > 0 => limit.min(35_000),
         ("cohere_asr", _) => 35_000,
+        ("whisper", limit) if limit > 0 => limit.min(30_000),
+        ("whisper", _) => 30_000,
         (_, limit) => limit,
     };
     usize::try_from(maximum_ms)
@@ -925,7 +969,7 @@ fn verify_installed_at(path: &Path, model: &ModelDefinition, canceled: &AtomicBo
             model.name
         );
     }
-    let _lock = lock_downloads(path.parent().expect("model directory"), canceled)?;
+    let _lock = lock_downloads(path.parent().expect("model directory"), canceled, || {})?;
     if !verification_receipt_matches(path, model) {
         verify_file_with_cancel(path, model, canceled)?;
         write_verification_receipt(path, model)?;
@@ -958,7 +1002,7 @@ pub(crate) fn remove_installed_at(path: &Path) -> Result<()> {
     let lock = File::create(directory.join(".download.lock"))?;
     match lock.try_lock_exclusive() {
         Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+        Err(error) if lock_contended(&error) => {
             bail!("A model download is in progress. Try again when it finishes.")
         }
         Err(error) => return Err(error.into()),
@@ -1038,13 +1082,17 @@ fn delete_set_aside_in(directory: &Path) {
     }
 }
 
-fn lock_downloads(directory: &Path, canceled: &AtomicBool) -> Result<File> {
+/// Takes the models folder's download lock. While another process holds it
+/// (`hex model install` in a terminal, or another Hex), `waiting` hears every
+/// attempt, so a caller can report that process's progress.
+fn lock_downloads(directory: &Path, canceled: &AtomicBool, waiting: impl Fn()) -> Result<File> {
     let lock = File::create(directory.join(".download.lock"))?;
     loop {
         check_canceled(canceled)?;
         match lock.try_lock_exclusive() {
             Ok(()) => return Ok(lock),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+            Err(error) if lock_contended(&error) => {
+                waiting();
                 thread::sleep(Duration::from_millis(100));
             }
             Err(error) => return Err(error.into()),
@@ -1074,6 +1122,8 @@ fn artifact_receipt_matches(path: &Path, artifact: &GgufArtifact) -> bool {
         && modified_ns(&metadata).is_some_and(|modified| modified == receipt.modified_ns)
 }
 
+/// `hex model install` on Linux and Windows, and tests.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn download_with_progress(
     model: &ModelDefinition,
     canceled: &AtomicBool,
@@ -1150,10 +1200,17 @@ fn download_artifact(
     check_canceled(canceled)?;
     let directory = models_dir()?;
     fs::create_dir_all(&directory)?;
-    let _lock = lock_downloads(&directory, canceled)?;
+    let destination = directory.join(artifact.filename);
+    let partial = destination.with_extension("gguf.partial");
+    // Another process may be writing this same partial file: its bytes are
+    // this download's progress too, so waiting shows them instead of 0.
+    let _lock = lock_downloads(&directory, canceled, || {
+        if let Ok(metadata) = fs::metadata(&partial) {
+            downloaded_bytes.store(metadata.len().min(artifact.bytes), Ordering::Relaxed);
+        }
+    })?;
     check_canceled(canceled)?;
     delete_set_aside_in(&directory);
-    let destination = directory.join(artifact.filename);
     if destination.exists() {
         if artifact_receipt_matches(&destination, artifact) {
             downloaded_bytes.store(artifact.bytes, Ordering::Relaxed);
@@ -1172,7 +1229,6 @@ fn download_artifact(
             }
         }
     }
-    let partial = destination.with_extension("gguf.partial");
     let mut partial_len = fs::metadata(&partial).ok().map(|metadata| metadata.len());
     if partial_len > Some(artifact.bytes) {
         fs::remove_file(&partial)?;
@@ -1401,19 +1457,42 @@ mod tests {
     static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
     /// A five-byte artifact whose checksum is `sha256("hello")`.
+    const FIXTURE_ARTIFACT: GgufArtifact = GgufArtifact {
+        filename: "fixture.gguf",
+        revision: "fixture",
+        repository: "fixture",
+        bytes: 5,
+        sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        architecture: "fixture",
+        variant: "fixture",
+    };
+
     fn fixture_model() -> ModelDefinition {
-        const FIXTURE_ARTIFACT: GgufArtifact = GgufArtifact {
-            filename: "fixture.gguf",
-            revision: "fixture",
-            repository: "fixture",
-            bytes: 5,
-            sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
-            architecture: "fixture",
-            variant: "fixture",
-        };
         ModelDefinition {
             runtime: ModelRuntime::Gguf(&FIXTURE_ARTIFACT),
             ..*definition(TranscriptionModelId::ParakeetV2)
+        }
+    }
+
+    #[test]
+    fn orukeet_is_offered_for_exactly_parakeet_v3s_languages_and_never_badged() {
+        let orukeet = definition(TranscriptionModelId::Orukeet);
+        let v3 = definition(TranscriptionModelId::ParakeetV3);
+        assert_eq!(orukeet.languages, PARAKEET_V3_LANGUAGES);
+        assert_eq!(orukeet.language_choices(), v3.language_choices());
+        assert!(!orukeet.streams);
+        assert!(!orukeet.accepts_language_hint);
+        assert!(orukeet.supports_language_detection);
+        assert!(!orukeet.id.is_labs_gated());
+        assert!(orukeet.available());
+        assert!(super::super::model_details::details(orukeet.id).is_some());
+        for language in v3.languages.iter().copied().chain([AUTO_LANGUAGE]) {
+            assert!(
+                choices_for_runtime(language)
+                    .iter()
+                    .all(|choice| choice.model.id != orukeet.id),
+                "Orukeet is never recommended ({language})"
+            );
         }
     }
 
@@ -1704,6 +1783,7 @@ mod tests {
             ),
             (TranscriptionModelId::ParakeetV2, "parakeet_v2"),
             (TranscriptionModelId::ParakeetV3, "parakeet_v3"),
+            (TranscriptionModelId::Orukeet, "orukeet"),
             (
                 TranscriptionModelId::WhisperLargeV3Turbo,
                 "whisper_large_v3_turbo",
@@ -1782,6 +1862,24 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    #[test]
+    fn models_that_detect_language_without_a_hint_offer_auto() {
+        for model in [
+            TranscriptionModelId::ParakeetV3,
+            TranscriptionModelId::GraniteSpeech5,
+        ] {
+            let definition = definition(model);
+            assert!(!definition.accepts_language_hint, "{model:?}");
+            assert!(definition.supports_language_detection, "{model:?}");
+            assert!(definition.language_choices().contains(&AUTO_LANGUAGE));
+            assert_eq!(definition.language_for(AUTO_LANGUAGE), AUTO_LANGUAGE);
+        }
+        let v2 = definition(TranscriptionModelId::ParakeetV2);
+        assert!(!v2.supports_language_detection);
+        assert!(!v2.language_choices().contains(&AUTO_LANGUAGE));
+        assert_eq!(v2.language_for(AUTO_LANGUAGE), "en");
     }
 
     #[test]
@@ -2066,6 +2164,7 @@ mod tests {
                 ParakeetUnifiedEnglish,
                 ParakeetV2,
                 ParakeetV3,
+                Orukeet,
                 UnderdogBark3Pro,
                 UnderdogBark3Clean,
                 ParakeetUltra,
@@ -2226,7 +2325,7 @@ mod tests {
         for artifact in &artifacts {
             fs::write(artifact, b"model").unwrap();
         }
-        let download = lock_downloads(&directory, &AtomicBool::new(false)).unwrap();
+        let download = lock_downloads(&directory, &AtomicBool::new(false), || {}).unwrap();
         let error = remove_installed_at(&path).unwrap_err().to_string();
         assert!(error.contains("download is in progress"), "{error}");
         assert!(artifacts.iter().all(|artifact| artifact.exists()));
@@ -2242,6 +2341,77 @@ mod tests {
         assert!(artifacts.iter().all(|artifact| !artifact.exists()));
         remove_installed_at(&path).unwrap();
         remove_installed_at(&directory.join("missing").join("fixture.gguf")).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn waiting_for_another_processs_download_reports_its_partial_bytes() {
+        use std::sync::Arc;
+
+        /// Holds the lock only until the worker is told to stop: a panic
+        /// anywhere in the test cancels it before the lock can be released,
+        /// so it never reaches the real download.
+        struct Held {
+            canceled: Arc<AtomicBool>,
+            lock: Option<File>,
+        }
+
+        impl Drop for Held {
+            fn drop(&mut self) {
+                self.canceled.store(true, Ordering::Relaxed);
+                drop(self.lock.take());
+            }
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "hex-external-download-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir(&directory).unwrap();
+        let partial = directory
+            .join("fixture.gguf")
+            .with_extension("gguf.partial");
+        fs::write(&partial, b"hel").unwrap();
+        let canceled = Arc::new(AtomicBool::new(false));
+        // Another process (`hex model install` in a terminal) owns the lock
+        // and is still writing the partial file.
+        let held = Held {
+            canceled: canceled.clone(),
+            lock: Some(lock_downloads(&directory, &AtomicBool::new(false), || {}).unwrap()),
+        };
+
+        let worker_canceled = canceled.clone();
+        let downloaded = Arc::new(AtomicU64::new(0));
+        let worker_downloaded = downloaded.clone();
+        let worker_directory = directory.clone();
+        let worker = std::thread::spawn(move || {
+            // The fixture's models folder is thread-local.
+            set_test_models_dir(Some(worker_directory));
+            download_artifact(
+                &FIXTURE_ARTIFACT,
+                "the fixture",
+                &worker_canceled,
+                &worker_downloaded,
+                &AtomicU8::new(ModelPreparationStage::Downloading as u8),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while downloaded.load(Ordering::Relaxed) != 3 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "waiting never reported the other process's bytes"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Canceled while still waiting: it never fetched a piece or promoted
+        // a file, so the test never touches the network.
+        canceled.store(true, Ordering::Relaxed);
+        let result = worker.join().unwrap();
+        drop(held);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("canceled"), "{error}");
+        assert!(!directory.join("fixture.gguf").exists());
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2358,7 +2528,14 @@ mod tests {
         );
         assert_eq!(max_audio_chunk_samples("cohere_asr", 0), Some(560_000));
         assert_eq!(max_audio_chunk_samples("cohere_asr", 10_000), Some(160_000));
-        assert_eq!(max_audio_chunk_samples("whisper", 0), None);
         assert_eq!(max_audio_chunk_samples("parakeet", 60_000), Some(960_000));
+    }
+
+    #[test]
+    fn whisper_chunks_at_its_thirty_second_window() {
+        assert_eq!(max_audio_chunk_samples("whisper", 0), Some(480_000));
+        assert_eq!(max_audio_chunk_samples("whisper", 30_000), Some(480_000));
+        assert_eq!(max_audio_chunk_samples("whisper", 45_000), Some(480_000));
+        assert_eq!(max_audio_chunk_samples("whisper", 20_000), Some(320_000));
     }
 }

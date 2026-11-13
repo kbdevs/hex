@@ -102,6 +102,13 @@ fn builtin_transformation(id: &str) -> Option<&'static BuiltinTransformation> {
         .find(|transformation| transformation.id == id)
 }
 
+/// The built-in transformations' ids, in the order they're listed.
+pub fn builtin_transformation_ids() -> impl Iterator<Item = &'static str> {
+    BUILTIN_TRANSFORMATIONS
+        .iter()
+        .map(|transformation| transformation.id)
+}
+
 pub fn is_builtin_transformation(id: &str) -> bool {
     builtin_transformation(id).is_some()
 }
@@ -284,6 +291,27 @@ fn find_config(workspace: &Path) -> Result<Option<&'static str>> {
 pub fn workspace_configured() -> bool {
     crate::app_paths::personal_commands_workspace()
         .is_ok_and(|workspace| matches!(find_config(&workspace), Ok(Some(_)) | Err(_)))
+}
+
+/// Built-ins run natively and never need the script host.
+pub fn custom_transformations_selected(
+    processing: &crate::app_settings::DictationProcessingSettings,
+) -> bool {
+    std::iter::once(&processing.default_mode)
+        .chain(&processing.modes)
+        .flat_map(|mode| &mode.transformations)
+        .any(|id| !is_builtin_transformation(id))
+}
+
+/// Every OS discovers a newly initialized workspace before a transformation
+/// is selected. Call on the host's coarse refresh, not an audio callback.
+pub fn host_needed(custom_selected: bool) -> bool {
+    let allowed = !crate::policy::Policy::current().locks(crate::policy::Lock::Transforms);
+    host_required(custom_selected, allowed && workspace_configured(), allowed)
+}
+
+fn host_required(custom_selected: bool, configured: bool, allowed: bool) -> bool {
+    allowed && (custom_selected || configured)
 }
 
 /// Creates the config folder with Hex's typings and agent notes, and a
@@ -629,7 +657,7 @@ impl Worker {
         request: &TransformationRequest,
         stop: &AtomicBool,
     ) -> std::result::Result<String, String> {
-        let context = json(&invocation_context(&request.context));
+        let context = json(&invocation_context(&request.context, request.source));
         let allowed = self.allowed(&loaded.script);
         let mut text = request.text.clone();
         for id in &request.ids {
@@ -770,6 +798,7 @@ struct TransformationRequest {
     ids: Vec<String>,
     text: String,
     context: ContextSnapshot,
+    source: crate::dictation::processor::Source,
     response: SyncSender<std::result::Result<String, String>>,
 }
 
@@ -780,6 +809,7 @@ impl TransformationClient {
         text: &str,
         context: &ContextSnapshot,
         cancelled: &AtomicBool,
+        source: crate::dictation::processor::Source,
     ) -> std::result::Result<String, String> {
         if ids.is_empty() {
             return Ok(text.into());
@@ -795,7 +825,7 @@ impl TransformationClient {
         for id in ids {
             if let Some(builtin) = builtin_transformation(id) {
                 if !custom.is_empty() {
-                    output = self.transform_custom(&custom, &output, context, cancelled)?;
+                    output = self.transform_custom(&custom, &output, context, cancelled, source)?;
                     custom.clear();
                 }
                 output = (builtin.apply)(&output);
@@ -804,7 +834,7 @@ impl TransformationClient {
             }
         }
         if !custom.is_empty() {
-            output = self.transform_custom(&custom, &output, context, cancelled)?;
+            output = self.transform_custom(&custom, &output, context, cancelled, source)?;
         }
         Ok(output)
     }
@@ -815,6 +845,7 @@ impl TransformationClient {
         text: &str,
         context: &ContextSnapshot,
         cancelled: &AtomicBool,
+        source: crate::dictation::processor::Source,
     ) -> std::result::Result<String, String> {
         let active = self
             .active
@@ -838,6 +869,7 @@ impl TransformationClient {
                 ids: ids.to_vec(),
                 text: text.into(),
                 context: context.clone(),
+                source,
                 response: sender,
             })))
             .map_err(|error| match error {
@@ -925,6 +957,8 @@ fn remove_trailing_punctuation(text: &str) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InvocationContext {
+    /// Where the text came from: a dictation or typed text.
+    source: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     application: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -935,8 +969,12 @@ struct InvocationContext {
     window_title: Option<String>,
 }
 
-fn invocation_context(context: &ContextSnapshot) -> InvocationContext {
+fn invocation_context(
+    context: &ContextSnapshot,
+    source: crate::dictation::processor::Source,
+) -> InvocationContext {
     InvocationContext {
+        source: source.as_str(),
         application: context.application.clone(),
         browser_host: context.browser_host().map(Into::into),
         browser_url: context.browser_url.as_ref().map(ToString::to_string),
@@ -1020,9 +1058,88 @@ fn bounded_status_error(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::UNIX_EPOCH;
+    use std::sync::atomic::AtomicU64;
 
     mod host_apis;
+
+    /// A temp path no other test, nextest process, or later run shares.
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{id}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn host_startup_discovers_a_config_without_selecting_a_transformation() {
+        for selected in [false, true] {
+            for configured in [false, true] {
+                assert!(!host_required(selected, configured, false), "policy wins");
+            }
+        }
+        assert!(!host_required(false, false, true));
+        assert!(
+            host_required(false, true, true),
+            "Set up discovers the new config"
+        );
+        assert!(
+            host_required(true, false, true),
+            "a missing selected script still reports its status"
+        );
+        assert!(host_required(true, true, true));
+
+        let mut processing = crate::app_settings::DictationProcessingSettings::default();
+        processing.default_mode.transformations =
+            builtin_transformation_ids().map(str::to_owned).collect();
+        assert!(!custom_transformations_selected(&processing));
+        processing.modes.push(crate::app_settings::DictationMode {
+            transformations: vec!["my-script".into()],
+            ..Default::default()
+        });
+        assert!(custom_transformations_selected(&processing));
+        processing.modes.clear();
+        processing
+            .default_mode
+            .transformations
+            .push("another-script".into());
+        assert!(custom_transformations_selected(&processing));
+    }
+
+    #[test]
+    fn transformation_context_names_its_source() {
+        use crate::dictation::processor::Source;
+        let context = ContextSnapshot::default();
+        let read = |source| -> serde_json::Value {
+            serde_json::from_str(&json(&invocation_context(&context, source))).unwrap()
+        };
+        assert_eq!(read(Source::Dictation)["source"], "dictation");
+        assert_eq!(read(Source::TypedText)["source"], "typed-text");
+        assert!(read(Source::Dictation).get("application").is_none());
+    }
+
+    #[test]
+    fn transformations_see_the_source_that_produced_the_text() {
+        let harness = Harness::new(
+            r#"export default { transformations: { source: { name: "Source", transform: (text, context) => `${text}:${context.source}` } } }"#,
+        );
+        assert_eq!(
+            harness.transform(&["source"], "hi").unwrap(),
+            "hi:dictation"
+        );
+        assert_eq!(
+            harness
+                .transform_with(
+                    crate::dictation::processor::Source::TypedText,
+                    &["source"],
+                    "hi",
+                )
+                .unwrap(),
+            "hi:typed-text"
+        );
+    }
 
     #[test]
     fn transformation_client_dispatches_only_registered_ids() {
@@ -1054,6 +1171,7 @@ mod tests {
                 "HELLO",
                 &ContextSnapshot::default(),
                 &AtomicBool::new(false),
+                crate::dictation::processor::Source::Dictation,
             )
             .unwrap();
 
@@ -1065,6 +1183,7 @@ mod tests {
                     "HELLO",
                     &ContextSnapshot::default(),
                     &AtomicBool::new(false),
+                    crate::dictation::processor::Source::Dictation,
                 )
                 .is_err()
         );
@@ -1084,6 +1203,7 @@ mod tests {
                     "Hello, WORLD!",
                     &context,
                     &cancelled,
+                    crate::dictation::processor::Source::Dictation,
                 )
                 .unwrap(),
             "hello, world!"
@@ -1095,6 +1215,7 @@ mod tests {
                     "Sponge Bob!",
                     &context,
                     &cancelled,
+                    crate::dictation::processor::Source::Dictation,
                 )
                 .unwrap(),
             "sPoNgE bOb!"
@@ -1140,6 +1261,7 @@ mod tests {
                     "abcd",
                     &context,
                     &cancelled,
+                    crate::dictation::processor::Source::Dictation,
                 )
                 .unwrap()
         };
@@ -1159,6 +1281,7 @@ mod tests {
                     "abcd.",
                     &context,
                     &cancelled,
+                    crate::dictation::processor::Source::Dictation,
                 )
                 .unwrap(),
             "abcd"
@@ -1210,12 +1333,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn workspace_fingerprint_does_not_follow_symlinks_or_excessive_depth() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("hex-watch-{unique}"));
-        let outside = std::env::temp_dir().join(format!("hex-watch-outside-{unique}.ts"));
+        let root = unique_temp_dir("hex-watch");
+        let outside = unique_temp_dir("hex-watch-outside").with_extension("ts");
         fs::create_dir_all(&root).unwrap();
         fs::write(&outside, "first").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("linked.ts")).unwrap();
@@ -1237,11 +1356,7 @@ mod tests {
 
     #[test]
     fn status_snapshot_roundtrips_atomically() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("hex-status-{unique}"));
+        let root = unique_temp_dir("hex-status");
         let path = root.join("personal-commands.json");
         let status = StatusSnapshot {
             active_generation: Some(4),
@@ -1278,11 +1393,7 @@ mod tests {
 
     impl Harness {
         fn new(config: &str) -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root = std::env::temp_dir().join(format!("hex-scripts-{unique}"));
+            let root = unique_temp_dir("hex-scripts");
             let workspace = root.join("hex");
             fs::create_dir_all(&workspace).unwrap();
             fs::write(workspace.join("hex.config.ts"), config).unwrap();
@@ -1330,6 +1441,15 @@ mod tests {
         }
 
         fn transform(&self, ids: &[&str], text: &str) -> std::result::Result<String, String> {
+            self.transform_with(crate::dictation::processor::Source::Dictation, ids, text)
+        }
+
+        fn transform_with(
+            &self,
+            source: crate::dictation::processor::Source,
+            ids: &[&str],
+            text: &str,
+        ) -> std::result::Result<String, String> {
             let (response, result) = mpsc::sync_channel(1);
             self.worker.transform(
                 TransformationRequest {
@@ -1337,6 +1457,7 @@ mod tests {
                     ids: ids.iter().map(ToString::to_string).collect(),
                     text: text.into(),
                     context: ContextSnapshot::default(),
+                    source,
                     response,
                 },
                 &AtomicBool::new(false),
@@ -1556,6 +1677,7 @@ export default defineHexConfig({
                 ids: vec!["echo".into()],
                 text: "a".into(),
                 context: ContextSnapshot::default(),
+                source: crate::dictation::processor::Source::Dictation,
                 response,
             },
             &AtomicBool::new(false),
@@ -1603,11 +1725,7 @@ export default defineHexConfig({
 
     #[test]
     fn initialization_writes_typings_and_a_starter_config_but_keeps_the_users() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let workspace = std::env::temp_dir().join(format!("hex-init-{unique}"));
+        let workspace = unique_temp_dir("hex-init");
         initialize_workspace_at(&workspace).unwrap();
         assert!(
             check_workspace_at(&workspace)

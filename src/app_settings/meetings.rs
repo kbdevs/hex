@@ -68,6 +68,11 @@ pub struct MeetingSettings {
     /// while unchosen: a build from before it can't read `null` (#744).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<MeetingRetention>,
+    /// How long finished meetings keep their WAV tracks, apart from their
+    /// text (Labs › Expire meeting audio separately). `None` follows
+    /// `retention`, and is left out of the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_retention: Option<MeetingRetention>,
     /// The OpenCode `provider/model` that writes meeting notes when
     /// `summaries` is OpenCode; left out of the file while unset, when Hex
     /// picks a fast model.
@@ -307,6 +312,8 @@ fn legacy_never_offer() -> MeetingPolicy {
     MeetingPolicy::NeverOffer
 }
 
+pub(super) const DEFAULT_SHOW_RECORDING_INDICATOR: bool = true;
+
 impl Default for MeetingSettings {
     fn default() -> Self {
         Self {
@@ -315,11 +322,12 @@ impl Default for MeetingSettings {
             summaries: MeetingSummaries::platform_default(),
             summarize_with_apple_intelligence: None,
             summarize_with_opencode: None,
-            show_recording_indicator: true,
+            show_recording_indicator: DEFAULT_SHOW_RECORDING_INDICATOR,
             recording_indicator_corner: MeetingIndicatorCorner::TopRight,
             providers: Vec::new(),
             calendar: CalendarSettings::default(),
             retention: None,
+            audio_retention: None,
             opencode_model: None,
         }
     }
@@ -395,9 +403,35 @@ pub fn meeting_retention() -> Option<MeetingRetention> {
 }
 
 fn stored_meeting_retention() -> Option<MeetingRetention> {
+    stored_retention("retention")
+}
+
+/// [`MeetingSettings::audio_retention`] for the running meeting controller:
+/// the chosen audio retention only while Labs › Expire meeting audio
+/// separately is on; `None` means audio follows `meetings.retention`. A
+/// process that never loaded settings reads it from `settings.json` without
+/// writing anything.
+pub fn meeting_audio_retention() -> Option<MeetingRetention> {
+    let chosen = match MEETING_AUDIO_RETENTION.load(Ordering::Acquire) {
+        RETENTION_UNSET if cfg!(test) => None,
+        RETENTION_UNSET => stored_retention("audio_retention"),
+        value => MeetingRetention::decode(value),
+    };
+    effective_audio_retention(crate::labs::expire_meeting_audio(), chosen)
+}
+
+fn stored_retention(field: &str) -> Option<MeetingRetention> {
     let data = fs::read(path().ok()?).ok()?;
     let settings: serde_json::Value = serde_json::from_slice(&data).ok()?;
-    serde_json::from_value(settings.get("meetings")?.get("retention")?.clone()).ok()
+    serde_json::from_value(settings.get("meetings")?.get(field)?.clone()).ok()
+}
+
+/// A separate audio retention applies only while its Labs feature is on.
+fn effective_audio_retention(
+    lab_on: bool,
+    chosen: Option<MeetingRetention>,
+) -> Option<MeetingRetention> {
+    if lab_on { chosen } else { None }
 }
 
 pub fn calendar_settings() -> CalendarSettings {
@@ -434,8 +468,9 @@ pub fn set_meeting_provider(meetings: &mut MeetingSettings, choice: MeetingProvi
 pub fn save_meeting_provider(choice: MeetingProviderChoice) {
     match AppSettings::load() {
         Ok(mut settings) => {
+            let base = settings.clone();
             if set_meeting_provider(&mut settings.meetings, choice)
-                && let Err(error) = settings.save()
+                && let Err(error) = base.update(&settings)
             {
                 tracing::warn!(%error, "could not save a meeting provider choice");
             }
@@ -451,8 +486,9 @@ pub fn save_meeting_indicator_corner(corner: MeetingIndicatorCorner) {
             if settings.meetings.recording_indicator_corner == corner {
                 return;
             }
+            let base = settings.clone();
             settings.meetings.recording_indicator_corner = corner;
-            if let Err(error) = settings.save() {
+            if let Err(error) = base.update(&settings) {
                 tracing::warn!(%error, "could not save the recording capsule's corner");
             }
         }
@@ -494,5 +530,18 @@ mod tests {
         assert!(on.contains(&("voice.google.com", "Google Voice")));
         assert!(on.contains(&("messenger.com", "Messenger")));
         assert!(on.contains(&("web.groupme.com", "GroupMe")));
+    }
+
+    #[test]
+    fn a_separate_audio_retention_needs_its_lab_and_a_choice() {
+        use MeetingRetention::{Day, Forever};
+        assert_eq!(effective_audio_retention(false, Some(Day)), None);
+        assert_eq!(effective_audio_retention(true, None), None);
+        assert_eq!(effective_audio_retention(true, Some(Day)), Some(Day));
+        assert_eq!(
+            effective_audio_retention(true, Some(Forever)),
+            Some(Forever)
+        );
+        assert_eq!(MeetingSettings::default().audio_retention, None);
     }
 }

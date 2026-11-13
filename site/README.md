@@ -8,8 +8,11 @@ both Workers. CI deploys them, never a laptop: Site builds without secrets and
 `.github/release/deploy-site.sh` deploys the verified Build Output
 (`cf deploy --prebuilt --mode <mode>`), refusing any Worker, route, or binding
 other than this config's (docs/releasing.md). `worker.ts` serves the
-site and, at `/hex/files/`, the environment's R2 bucket of release files, and
-301s other hosts and plain HTTP to the canonical host.
+site and, at `/hex/files/`, the release files: the installers and legacy
+appcast built with the site, the dev notes from the Release workflow's
+`dev-notes` branch, and the frozen 2.3.1 feeds and artifacts read from
+`hex-production-files`. It 301s other hosts and plain HTTP to the canonical
+host.
 
 The download section (`src/Download.tsx`) is one install switcher and nothing
 else: macOS, Windows, and Linux tabs of equal width with a sliding pill, each
@@ -63,7 +66,7 @@ HEX_SITE_URL=http://127.0.0.1:5531 bun run generate:poster
 
 ## Performance
 
-`perf/hex.bench.ts` is a [strobe](https://github.com/Hona/strobe) bench: load to
+`perf/hex.bench.ts` is a [strobe](https://github.com/anomalyco/strobe) bench: load to
 the live head, the idle head for 8 s, and the first 20 s of the show after a click
 on the key. `strobe.json` builds the site and serves the Build Output under `/hex/`
 with `perf/serve.ts`. strobe builds and serves both variants with this checkout's

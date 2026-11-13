@@ -15,10 +15,10 @@ use color_eyre::eyre::{Result, eyre};
 use crate::calendar::{CalendarMeeting, ReminderScheduler, ReminderUpdate};
 use crate::dictation::context::ContextSnapshot;
 use crate::meeting::detection::{
-    AutoStop, BrowserPageMemory, CallPresence, Detection, MeetingCandidate, MeetingDetector,
-    candidate_from_microphone,
+    AutoStop, BrowserPageMemory, CallPresence, CallSwitch, Detection, MeetingCandidate,
+    MeetingDetector, candidate_from_microphone,
 };
-use crate::meeting::{self, MeetingCalendar, MeetingRequest, MeetingStart};
+use crate::meeting::{self, MeetingCalendar, MeetingRequest, MeetingStart, TrackWarning};
 use crate::microphone_activity::{ActiveMicrophoneApplication, active_microphone_applications};
 
 pub(crate) enum ControllerCommand {
@@ -30,7 +30,6 @@ pub(crate) enum ControllerCommand {
     Stop,
     /// Import a local audio file as a meeting (macOS; Labs › Import audio).
     Import(PathBuf),
-    Open(String),
     Summarize(String),
     /// Record a calendar meeting from its reminder, first opening its call
     /// link when `join`.
@@ -75,7 +74,10 @@ pub(crate) enum ControllerEvent {
     },
     /// The recording's live chapters so far (Labs).
     Chapters(Vec<meeting::Chapter>),
-    OpenMeeting(String),
+    /// The microphone became digitally silent, or its audio returned.
+    SourceWarning {
+        warning: Option<TrackWarning>,
+    },
     Transcribing,
     /// `auto_stop` when the recording stops on its own after
     /// [`crate::meeting::detection::AUTO_STOP_GRACE`] (Labs › Stop when the
@@ -105,6 +107,14 @@ struct ActiveRecording {
     presence: CallPresence,
     /// Labs › Stop when the call ends, armed while the call is over.
     auto_stop: AutoStop,
+    /// The call's own code, watching the browser's page for another call
+    /// (Labs › Stop when the call ends, browsers that never release the
+    /// microphone between calls).
+    call_switch: CallSwitch,
+    /// Labs › Stop when the call ends, armed while the page names a different
+    /// call. Its own deadline: a browser still on the microphone keeps the
+    /// call app present, so the absence one is dropped every pass.
+    call_stop: AutoStop,
     stop: Arc<AtomicBool>,
     updates: Receiver<meeting::RecordingUpdate>,
     reported_started: bool,
@@ -122,8 +132,20 @@ pub enum MeetingMenuState {
         title: String,
         /// Live chapters, for Copy Section (Labs).
         chapters: Vec<meeting::Chapter>,
+        /// The microphone is digitally silent, as a call app holding it with
+        /// voice processing leaves it (#1518).
+        warning: Option<TrackWarning>,
     },
     Transcribing,
+}
+
+impl MeetingMenuState {
+    /// Sets the recording's microphone warning; other states have none.
+    pub(crate) fn source_warning(&mut self, warning: Option<TrackWarning>) {
+        if let Self::Recording { warning: shown, .. } = self {
+            *shown = warning;
+        }
+    }
 }
 
 pub struct ListenerConfig {
@@ -173,7 +195,7 @@ pub(crate) fn controller_loop(
             );
         }
 
-        poll_recording(&mut recording, &mut detector, &events)?;
+        poll_recording(&mut recording, &mut detector, &mut browser, &events)?;
         reminders.poll(enabled, recording.is_some(), &events);
         pending_finals.poll(enabled, recording.is_some(), &events);
         expiry.poll();
@@ -199,9 +221,10 @@ pub(crate) fn controller_loop(
                 }
                 Ok(None) => {}
             }
-        } else {
+        } else if !watching_call_switch(recording.as_ref(), crate::labs::stop_when_call_ends()) {
             // Nothing is watched now: no answer read before this may come
-            // back as fresh when detection resumes.
+            // back as fresh when detection resumes. A recording that watches
+            // its browser's page for another call keeps reading it.
             browser.reset();
         }
         thread::sleep(Duration::from_millis(500));
@@ -243,24 +266,33 @@ const EXPIRY_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Moves meetings past their retention to the Trash: at launch, then
 /// hourly, and soon after the setting changes. Meetings off still expires
-/// what was recorded, since kept meetings are a liability.
+/// what was recorded, since kept meetings are a liability. A separate audio
+/// retention runs after the whole-meeting pass, and only while its Labs
+/// feature is on.
 #[derive(Default)]
 struct MeetingExpiry {
-    last: Option<(Instant, Option<crate::app_settings::MeetingRetention>)>,
+    last: Option<(
+        Instant,
+        Option<crate::app_settings::MeetingRetention>,
+        Option<crate::app_settings::MeetingRetention>,
+    )>,
 }
 
 impl MeetingExpiry {
     fn poll(&mut self) {
         let retention = crate::app_settings::meeting_retention();
-        if self
-            .last
-            .is_some_and(|(at, last)| last == retention && at.elapsed() < EXPIRY_INTERVAL)
-        {
+        let audio = crate::app_settings::meeting_audio_retention();
+        if self.last.is_some_and(|(at, last, last_audio)| {
+            last == retention && last_audio == audio && at.elapsed() < EXPIRY_INTERVAL
+        }) {
             return;
         }
-        self.last = Some((Instant::now(), retention));
+        self.last = Some((Instant::now(), retention, audio));
         if let Err(error) = meeting::expire(retention) {
             tracing::warn!(%error, "could not expire old meetings");
+        }
+        if let Err(error) = meeting::expire_audio(audio) {
+            tracing::warn!(%error, "could not expire old meeting audio");
         }
     }
 }
@@ -426,14 +458,14 @@ fn handle_command(
             }
         }
         ControllerCommand::KeepRecording => {
-            if let Some(active) = recording.as_mut()
-                && active.auto_stop.disarm()
-            {
-                tracing::info!("kept recording after the call ended");
+            if let Some(active) = recording.as_mut() {
+                let changed = active.call_switch.changed();
+                let page_stop = active.call_stop.disarm();
+                active.call_switch.keep();
+                if active.auto_stop.disarm() || changed || page_stop {
+                    tracing::info!("kept recording after the call ended");
+                }
             }
-        }
-        ControllerCommand::Open(id) => {
-            let _ = events.send(ControllerEvent::OpenMeeting(id));
         }
         ControllerCommand::Summarize(id) => start_notes(id, events),
         ControllerCommand::OfferTimedOut => detector.offer_timed_out(),
@@ -449,6 +481,10 @@ struct Start {
     meeting: MeetingStart,
     title: String,
     app_label: String,
+    /// The call's own code, when its page named one: the recording watches
+    /// that browser's page for another call under Labs › Stop when the call
+    /// ends. Calendar and manual recordings have none.
+    call: Option<String>,
 }
 
 impl Start {
@@ -457,6 +493,7 @@ impl Start {
             meeting: candidate.recording_start(),
             title: candidate.title.clone(),
             app_label: candidate.source.label().into(),
+            call: candidate.call.clone(),
         }
     }
 }
@@ -478,6 +515,7 @@ fn calendar_start(meeting: &CalendarMeeting) -> Start {
         app_label: provider
             .map_or("Meeting", |provider| provider.label())
             .into(),
+        call: None,
     }
 }
 
@@ -753,6 +791,7 @@ fn start_recording(
     // Stop can send six updates before the controller next drains them.
     let (update_sender, updates) = mpsc::sync_channel(16);
     let application = start.meeting.application.clone();
+    let call_switch = CallSwitch::new(start.call);
     let meeting_start = start.meeting;
     let worker =
         thread::spawn(move || meeting::record(meeting_start, &worker_stop, Some(update_sender)));
@@ -764,6 +803,8 @@ fn start_recording(
         automatic,
         presence: CallPresence::default(),
         auto_stop: AutoStop::default(),
+        call_switch,
+        call_stop: AutoStop::default(),
         stop,
         updates,
         reported_started: false,
@@ -774,6 +815,7 @@ fn start_recording(
 fn poll_recording(
     recording: &mut Option<ActiveRecording>,
     detector: &mut MeetingDetector,
+    browser: &mut BrowserWatch,
     events: &SyncSender<ControllerEvent>,
 ) -> Result<()> {
     if let Some(active) = recording.as_mut() {
@@ -796,6 +838,9 @@ fn poll_recording(
                 }
                 meeting::RecordingUpdate::Chapters(chapters) => {
                     let _ = events.send(ControllerEvent::Chapters(chapters));
+                }
+                meeting::RecordingUpdate::SourceWarning { warning } => {
+                    let _ = events.send(ControllerEvent::SourceWarning { warning });
                 }
                 meeting::RecordingUpdate::Transcribing => {
                     if !active.stop.swap(true, Ordering::Relaxed) {
@@ -857,7 +902,8 @@ fn poll_recording(
     {
         // A failed query must not end the controller while it owns a recording.
         let auto_stop = stops_when_call_ends(active.automatic, crate::labs::stop_when_call_ends());
-        let on_microphone = match active_microphone_applications() {
+        let applications = active_microphone_applications();
+        let on_microphone = match &applications {
             Ok(applications) => applications
                 .iter()
                 .any(|candidate| candidate.canonical_bundle_id() == Some(application)),
@@ -898,8 +944,86 @@ fn poll_recording(
                 let _ = events.send(ControllerEvent::Transcribing);
             }
         }
+
+        // Labs › Stop when the call ends, in a browser that never releases
+        // the microphone between calls: the page naming another call ends
+        // this one (#1775). Only a positive read of a different code counts;
+        // a tab naming no call never does.
+        if watching_call_switch(Some(active), crate::labs::stop_when_call_ends()) {
+            let microphone = applications.as_ref().ok().and_then(|applications| {
+                applications
+                    .iter()
+                    .find(|candidate| candidate.canonical_bundle_id() == Some(application))
+            });
+            if let Some(microphone) = microphone {
+                let context = browser.recording_context(microphone);
+                let current =
+                    candidate_from_microphone(microphone, &context, crate::labs::more_call_apps())
+                        .and_then(|candidate| candidate.call);
+                if active.call_switch.observe(current.as_deref()) {
+                    tracing::info!(
+                        application,
+                        from = active.call_switch.recorded().unwrap_or_default(),
+                        to = current.as_deref().unwrap_or_default(),
+                        "the page named a different call; the recording stops after its grace unless kept"
+                    );
+                    active.call_stop.arm();
+                    let _ = events.send(ControllerEvent::CallEnded {
+                        app: active.app_label.clone(),
+                        auto_stop: true,
+                    });
+                }
+                // The page names the recorded call again (or one the user
+                // kept): whatever change was counting is over. A page that
+                // names no call neither starts nor ends a count.
+                if !active.call_switch.changed() {
+                    active.call_stop.disarm();
+                }
+            }
+            if active.call_stop.due() {
+                tracing::info!(
+                    application,
+                    "meeting recording stopped automatically after its page named another call"
+                );
+                if !active.stop.swap(true, Ordering::Relaxed) {
+                    let _ = events.send(ControllerEvent::Transcribing);
+                }
+            }
+        }
     }
+
+    // Labs › Stop when the call ends turned off while a page change was
+    // counting: the watch is gone, so its deadline goes with it instead of
+    // stopping the recording the moment the lab comes back on.
+    disarm_call_stop_unless_watching(recording, crate::labs::stop_when_call_ends());
     Ok(())
+}
+
+/// Drops an armed call-switch stop whenever nothing watches the page: a
+/// deadline counted under a lab that is now off must not carry over.
+fn disarm_call_stop_unless_watching(recording: &mut Option<ActiveRecording>, lab_on: bool) {
+    if let Some(active) = recording.as_mut()
+        && !watching_call_switch(Some(active), lab_on)
+        && active.call_stop.disarm()
+    {
+        tracing::info!("the page is no longer watched; its pending stop is dropped");
+    }
+}
+
+/// Whether a recording watches its browser's page for another call (Labs ›
+/// Stop when the call ends) instead of dropping the page while it records:
+/// only one Hex started on its own, for a call whose page named its code, in
+/// a browser, and that has not been told to stop yet. Every other recording
+/// keeps the browser watch reset.
+fn watching_call_switch(recording: Option<&ActiveRecording>, lab_on: bool) -> bool {
+    recording.is_some_and(|active| {
+        !active.stop.load(Ordering::Relaxed)
+            && active.call_switch.recorded().is_some()
+            && active.application.as_deref().is_some_and(|application| {
+                crate::microphone_activity::is_browser_id(Some(application))
+            })
+            && stops_when_call_ends(active.automatic, lab_on)
+    })
 }
 
 /// Whether a recording stops on its own once its call ends: only one Hex
@@ -928,8 +1052,21 @@ fn call_app_playing(application: &str) -> bool {
     }
 }
 
-/// How often a browser's tabs are queried while it holds the microphone.
+/// How often a browser's tabs are queried while it has just started holding
+/// the microphone: enough to find a call's site within the 20 s unknown-page
+/// threshold (`detection::BROWSER_STABLE_FOR`).
 const TAB_QUERY_INTERVAL: Duration = Duration::from_secs(1);
+/// How long that one-second burst lasts after a browser starts holding the
+/// microphone.
+const TAB_QUERY_BURST: Duration = Duration::from_secs(30);
+/// How often they are queried after the burst; `BrowserPageMemory` (60 s)
+/// carries the page between answers.
+const TAB_QUERY_BACKOFF: Duration = Duration::from_secs(30);
+/// How often they are queried while a recording watches its page for another
+/// call (Labs › Stop when the call ends): a switched call must be named well
+/// within `detection::CALL_CHANGED_AFTER`, and no answer older than
+/// [`TAB_QUERY_MAX_AGE`] says what the browser shows.
+const TAB_QUERY_WATCH: Duration = Duration::from_secs(2);
 /// A tab query that finished longer ago than this no longer says what the
 /// browser shows.
 const TAB_QUERY_MAX_AGE: Duration = Duration::from_secs(5);
@@ -956,6 +1093,13 @@ struct TabProbe {
     running: Option<InFlight>,
     generation: u64,
     started: Option<Instant>,
+    /// The browser this watch began for, and when: its first 30 s ask every
+    /// second, then every 30 s.
+    burst: Option<(String, Instant)>,
+    /// A recording watches this page (Labs › Stop when the call ends): ask
+    /// every [`TAB_QUERY_WATCH`], however long the browser has held the
+    /// microphone.
+    watching: bool,
     latest: Option<(String, ContextSnapshot, Instant)>,
 }
 
@@ -966,6 +1110,8 @@ impl TabProbe {
             running: None,
             generation: 0,
             started: None,
+            burst: None,
+            watching: false,
             latest: None,
         }
     }
@@ -988,10 +1134,11 @@ impl TabProbe {
             Some((_, Err(mpsc::TryRecvError::Disconnected))) => self.running = None,
             Some((_, Err(mpsc::TryRecvError::Empty))) | None => {}
         }
+        let interval = self.interval(bundle_id, now);
         if self.running.is_none()
             && self
                 .started
-                .is_none_or(|started| now.saturating_duration_since(started) >= TAB_QUERY_INTERVAL)
+                .is_none_or(|started| now.saturating_duration_since(started) >= interval)
         {
             self.started = Some(now);
             let (sender, receiver) = mpsc::sync_channel(1);
@@ -1030,10 +1177,38 @@ impl TabProbe {
     /// Nothing is watched: an answer, finished or still being read, must not
     /// outlive the call. A query in flight is not abandoned (it ends by its
     /// own timeout, and no second one starts beside it); its answer is
-    /// dropped.
+    /// dropped. The next call starts with a fresh one-second burst.
     fn reset(&mut self) {
         self.latest = None;
+        self.burst = None;
         self.generation += 1;
+    }
+
+    /// How far apart this browser's tab queries are: every two seconds while
+    /// a recording watches its page for another call, else one second through
+    /// the first 30 s it holds the microphone, then every 30 s.
+    fn interval(&mut self, bundle_id: &str, now: Instant) -> Duration {
+        if self.watching {
+            return TAB_QUERY_WATCH;
+        }
+        let bursting = match &self.burst {
+            Some((watching, since)) if watching.as_str() == bundle_id => {
+                now.saturating_duration_since(*since) < TAB_QUERY_BURST
+            }
+            _ => true,
+        };
+        if self
+            .burst
+            .as_ref()
+            .is_none_or(|(watching, _)| watching.as_str() != bundle_id)
+        {
+            self.burst = Some((bundle_id.to_string(), now));
+        }
+        if bursting {
+            TAB_QUERY_INTERVAL
+        } else {
+            TAB_QUERY_BACKOFF
+        }
     }
 }
 
@@ -1077,6 +1252,24 @@ impl BrowserWatch {
         let now = Instant::now();
         let page = self.probe.page(bundle_id, now);
         self.memory.recall(application, page, now)
+    }
+
+    /// The page while a recording watches it for another call (Labs › Stop
+    /// when the call ends): read every couple of seconds rather than backing
+    /// off, so a call switched to in the same browser is named. It is the
+    /// probe's newest answer, never `BrowserPageMemory`'s: a page seen once
+    /// must not name the call for 60 s while the reads fail.
+    fn recording_context(&mut self, application: &ActiveMicrophoneApplication) -> ContextSnapshot {
+        if !application.is_browser() {
+            return ContextSnapshot::default();
+        }
+        let Some(bundle_id) = application.canonical_bundle_id() else {
+            return ContextSnapshot::default();
+        };
+        self.probe.watching = true;
+        let page = self.probe.page(bundle_id, Instant::now());
+        self.probe.watching = false;
+        page
     }
 }
 
@@ -1188,6 +1381,8 @@ mod tests {
             automatic: true,
             presence: CallPresence::default(),
             auto_stop: AutoStop::default(),
+            call_switch: CallSwitch::new(None),
+            call_stop: AutoStop::default(),
             stop: Arc::new(AtomicBool::new(false)),
             updates,
             reported_started: true,
@@ -1210,6 +1405,177 @@ mod tests {
         assert!(!active.stop.load(Ordering::Relaxed));
     }
 
+    /// A recording as `start_recording` builds one, for the checks that only
+    /// read its state.
+    fn active_recording(
+        application: Option<&str>,
+        automatic: bool,
+        call: Option<&str>,
+    ) -> ActiveRecording {
+        let (_update_sender, updates) = mpsc::sync_channel(1);
+        ActiveRecording {
+            title: "Meet - Design sync".into(),
+            application: application.map(str::to_string),
+            app_label: "Google Meet".into(),
+            automatic,
+            presence: CallPresence::default(),
+            auto_stop: AutoStop::default(),
+            call_switch: CallSwitch::new(call.map(str::to_string)),
+            call_stop: AutoStop::default(),
+            stop: Arc::new(AtomicBool::new(false)),
+            updates,
+            reported_started: true,
+            worker: thread::spawn(|| Err(eyre!("not recording"))),
+        }
+    }
+
+    #[test]
+    fn keep_recording_disarms_the_call_switch_stop_too() {
+        let (events, _received) = mpsc::sync_channel(4);
+        let mut active = active_recording(
+            Some("company.thebrowser.Browser"),
+            true,
+            Some("abc-defg-hij"),
+        );
+        active.auto_stop.arm();
+        active.call_stop.arm();
+        let mut recording = Some(active);
+        handle_command(
+            &mut recording,
+            &mut None,
+            &mut MeetingDetector::default(),
+            &mut Reminders::default(),
+            ControllerCommand::KeepRecording,
+            true,
+            &events,
+        );
+        let active = recording.as_mut().unwrap();
+        assert!(!active.auto_stop.disarm(), "the absence stop was dropped");
+        assert!(
+            !active.call_stop.disarm(),
+            "the call switch stop was dropped"
+        );
+        assert!(!active.stop.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn keep_recording_keeps_the_code_that_was_counting() {
+        use crate::meeting::detection::CALL_CHANGED_AFTER;
+        let (events, _received) = mpsc::sync_channel(4);
+        let mut active = active_recording(
+            Some("company.thebrowser.Browser"),
+            true,
+            Some("abc-defg-hij"),
+        );
+        // Another code has shown long enough to be a different call.
+        let base = Instant::now();
+        assert!(!active.call_switch.observe_at(Some("xyz-wxyz-xyz"), base));
+        assert!(
+            active
+                .call_switch
+                .observe_at(Some("xyz-wxyz-xyz"), base + CALL_CHANGED_AFTER)
+        );
+        assert!(active.call_switch.changed());
+        active.call_stop.arm();
+        let mut recording = Some(active);
+        handle_command(
+            &mut recording,
+            &mut None,
+            &mut MeetingDetector::default(),
+            &mut Reminders::default(),
+            ControllerCommand::KeepRecording,
+            true,
+            &events,
+        );
+        let active = recording.as_mut().unwrap();
+        assert!(!active.call_switch.changed());
+        assert!(!active.call_stop.disarm());
+        // Keeping again with nothing counting never forgets the kept code.
+        handle_command(
+            &mut recording,
+            &mut None,
+            &mut MeetingDetector::default(),
+            &mut Reminders::default(),
+            ControllerCommand::KeepRecording,
+            true,
+            &events,
+        );
+        let active = recording.as_mut().unwrap();
+        let later = base + Duration::from_secs(120);
+        assert!(!active.call_switch.observe_at(Some("xyz-wxyz-xyz"), later));
+        assert!(
+            !active
+                .call_switch
+                .observe_at(Some("xyz-wxyz-xyz"), later + CALL_CHANGED_AFTER),
+            "the kept code ended the recording anyway"
+        );
+        assert!(!active.call_switch.changed());
+        assert!(!active.stop.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn only_an_automatic_browser_call_with_a_code_keeps_reading_its_page() {
+        let arc = Some("company.thebrowser.Browser");
+        assert!(watching_call_switch(
+            Some(&active_recording(arc, true, Some("abc-defg-hij"))),
+            true
+        ));
+        // Labs › Stop when the call ends off: the page is dropped as before.
+        assert!(!watching_call_switch(
+            Some(&active_recording(arc, true, Some("abc-defg-hij"))),
+            false
+        ));
+        // Manual/offered recordings never watch.
+        assert!(!watching_call_switch(
+            Some(&active_recording(arc, false, Some("abc-defg-hij"))),
+            true
+        ));
+        // A page that named no code has nothing to compare.
+        assert!(!watching_call_switch(
+            Some(&active_recording(arc, true, None)),
+            true
+        ));
+        // A call app is ended by its microphone, not by a page.
+        assert!(!watching_call_switch(
+            Some(&active_recording(
+                Some("us.zoom.xos"),
+                true,
+                Some("abc-defg-hij")
+            )),
+            true
+        ));
+        // Calendar and manual recordings have no application.
+        assert!(!watching_call_switch(
+            Some(&active_recording(None, true, Some("abc-defg-hij"))),
+            true
+        ));
+        assert!(!watching_call_switch(None, true));
+        // Once told to stop (transcribing), the page is dropped and detection
+        // resumes with a fresh burst.
+        let stopped = active_recording(arc, true, Some("abc-defg-hij"));
+        stopped.stop.store(true, Ordering::Relaxed);
+        assert!(!watching_call_switch(Some(&stopped), true));
+    }
+
+    #[test]
+    fn turning_the_lab_off_drops_an_armed_call_switch_stop() {
+        let arc = Some("company.thebrowser.Browser");
+        let mut active = active_recording(arc, true, Some("abc-defg-hij"));
+        active.call_stop.arm();
+        let mut recording = Some(active);
+        disarm_call_stop_unless_watching(&mut recording, false);
+        let active = recording.as_mut().unwrap();
+        assert!(!active.call_stop.disarm(), "the armed stop was kept");
+        assert!(!active.stop.load(Ordering::Relaxed));
+
+        // While the lab is on and the page watched, the deadline stays.
+        let mut active = active_recording(arc, true, Some("abc-defg-hij"));
+        active.call_stop.arm();
+        let mut recording = Some(active);
+        disarm_call_stop_unless_watching(&mut recording, true);
+        assert!(recording.as_mut().unwrap().call_stop.disarm());
+    }
+
     #[test]
     fn an_import_is_refused_while_a_recording_runs_or_another_import_does() {
         let (events, received) = mpsc::sync_channel(4);
@@ -1221,6 +1587,8 @@ mod tests {
             automatic: false,
             presence: CallPresence::default(),
             auto_stop: AutoStop::default(),
+            call_switch: CallSwitch::new(None),
+            call_stop: AutoStop::default(),
             stop: Arc::new(AtomicBool::new(false)),
             updates,
             reported_started: true,
@@ -1368,6 +1736,97 @@ mod tests {
         assert_eq!(
             probe.page("com.brave.Browser", polled),
             ContextSnapshot::default()
+        );
+    }
+
+    #[test]
+    fn tab_queries_back_off_after_the_first_thirty_seconds_and_reset() {
+        use std::sync::atomic::AtomicUsize;
+        static QUERIES: AtomicUsize = AtomicUsize::new(0);
+        fn counted(_: &str) -> Result<ContextSnapshot> {
+            QUERIES.fetch_add(1, Ordering::SeqCst);
+            Ok(banshee_tab())
+        }
+        // A query runs on its own thread, so wait with a deadline until its
+        // answer is received: polling at the query's own start time can never
+        // start another one, so this only drains the answer.
+        let settle = |probe: &mut TabProbe, at: Instant, expected: usize| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while QUERIES.load(Ordering::SeqCst) < expected || probe.running.is_some() {
+                assert!(Instant::now() < deadline, "the tab query never finished");
+                probe.page("com.brave.Browser", at);
+                thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(QUERIES.load(Ordering::SeqCst), expected);
+        };
+        let mut probe = TabProbe::new(counted);
+        let started = Instant::now();
+        // The first 30 s ask every second; `started` records the query
+        // synchronously, so a backed-off call is proven by it not moving.
+        probe.page("com.brave.Browser", started);
+        assert_eq!(probe.started, Some(started));
+        settle(&mut probe, started, 1);
+        let at_1 = started + Duration::from_secs(1);
+        probe.page("com.brave.Browser", at_1);
+        assert_eq!(probe.started, Some(at_1));
+        settle(&mut probe, at_1, 2);
+
+        // From then on they are 30 s apart; an answer waits that long.
+        let at_29 = started + Duration::from_secs(29);
+        probe.page("com.brave.Browser", at_29);
+        assert_eq!(probe.started, Some(at_29));
+        settle(&mut probe, at_29, 3);
+        probe.page("com.brave.Browser", started + Duration::from_secs(31));
+        assert_eq!(
+            probe.started,
+            Some(at_29),
+            "a backed-off query started early"
+        );
+        let at_59 = started + Duration::from_secs(59);
+        probe.page("com.brave.Browser", at_59);
+        assert_eq!(probe.started, Some(at_59));
+        settle(&mut probe, at_59, 4);
+
+        // A reset starts a fresh burst at once.
+        probe.reset();
+        let at_61 = started + Duration::from_secs(61);
+        probe.page("com.brave.Browser", at_61);
+        assert_eq!(probe.started, Some(at_61));
+        settle(&mut probe, at_61, 5);
+    }
+
+    #[test]
+    fn a_watched_page_is_queried_every_two_seconds_instead_of_backing_off() {
+        fn counted(_: &str) -> Result<ContextSnapshot> {
+            Ok(banshee_tab())
+        }
+        let mut probe = TabProbe::new(counted);
+        let started = Instant::now();
+        // A recording watches its page: two seconds, however long the browser
+        // has held the microphone.
+        probe.watching = true;
+        assert_eq!(
+            probe.interval("com.brave.Browser", started),
+            TAB_QUERY_WATCH
+        );
+        assert_eq!(
+            probe.interval("com.brave.Browser", started + Duration::from_secs(31)),
+            TAB_QUERY_WATCH
+        );
+        assert_eq!(
+            probe.interval("com.brave.Browser", started + Duration::from_secs(120)),
+            TAB_QUERY_WATCH
+        );
+        // Once nothing watches, detection resumes with a fresh burst, then
+        // backs off as before.
+        probe.watching = false;
+        assert_eq!(
+            probe.interval("com.brave.Browser", started + Duration::from_secs(120)),
+            TAB_QUERY_INTERVAL
+        );
+        assert_eq!(
+            probe.interval("com.brave.Browser", started + Duration::from_secs(150)),
+            TAB_QUERY_BACKOFF
         );
     }
 

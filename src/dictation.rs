@@ -17,12 +17,15 @@ pub(crate) mod modes;
 pub(crate) mod phonon_refiner;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 pub(crate) mod processor;
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) mod screen_vocabulary;
 pub(crate) mod service;
 pub(crate) mod spoken_formatting;
 pub(crate) mod spoken_symbols;
 pub(crate) mod text_replacements;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod vocabulary;
+pub(crate) mod voice_prompt;
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -41,24 +44,75 @@ use crate::audio::recording_environment::{
 const TIMELINE_BUFFER_DURATION: Duration = Duration::from_secs(10);
 const PRE_ROLL_DURATION: Duration = Duration::from_millis(450);
 
-/// How much audio a shortcut capture keeps from before its press. Muting or
-/// pausing other audio while dictating takes effect only after the press, so
-/// the audio before it holds whatever was playing (#1309): those captures
-/// keep none. Ducking and doing nothing keep [`PRE_ROLL_DURATION`].
+/// How much audio a shortcut capture keeps from before its press. Muting,
+/// pausing, or lowering other audio while dictating takes effect only after
+/// the press, so the audio before it holds whatever was playing (#1309,
+/// #1468): those captures keep none. Doing nothing keeps
+/// [`PRE_ROLL_DURATION`].
 pub fn hotkey_pre_roll(behavior: crate::app_settings::RecordingAudioBehavior) -> Duration {
     use crate::app_settings::RecordingAudioBehavior::{DoNothing, Duck, Mute, PauseMedia};
     match behavior {
-        Mute | PauseMedia => Duration::ZERO,
-        Duck | DoNothing => PRE_ROLL_DURATION,
+        Mute | PauseMedia | Duck => Duration::ZERO,
+        DoNothing => PRE_ROLL_DURATION,
     }
 }
+/// What started a dictation, and so how its transcript is handled: the
+/// dictation shortcut and a local API client dictate normally, Dictate
+/// without processing skips Output, and Labs › Terminal paste always pastes
+/// with Ctrl+Shift+V. Only the Windows and Linux listeners use it.
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DictationFlavour {
+    #[default]
+    Normal,
+    /// Dictate without processing: the transcript is pasted as heard.
+    Raw,
+    /// Labs › Terminal paste shortcut: processed like a normal dictation,
+    /// but pasted with Ctrl+Shift+V whatever Terminal paste says.
+    TerminalPaste,
+    /// Labs › Second dictation shortcut: another key that dictates exactly
+    /// like the dictation shortcut. It is its own owner, so neither
+    /// shortcut finishes or double-taps the other's capture.
+    Second,
+}
+
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
+impl DictationFlavour {
+    /// Whether Output's steps are skipped and History says Raw.
+    pub fn raw(self) -> bool {
+        self == Self::Raw
+    }
+
+    /// Whether this paste always sends Ctrl+Shift+V.
+    pub fn terminal_paste(self) -> bool {
+        self == Self::TerminalPaste
+    }
+
+    /// Whether the plain dictation shortcut owns the capture.
+    pub fn normal(self) -> bool {
+        self == Self::Normal
+    }
+}
+
 pub const MINIMUM_HOLD_DURATION: Duration = Duration::from_millis(300);
+/// A second press of the shortcut this soon after the first's release is a
+/// double tap. Equal to the hold threshold today, but its own setting.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(300);
 /// Audio kept after a shortcut release that finishes a capture, because a
 /// release often lands while the last word is still sounding.
 pub const POST_RELEASE_TAIL: Duration = Duration::from_millis(200);
 /// The longest a release tail grows while speech carries on past
 /// [`POST_RELEASE_TAIL`] (a word still being said as the shortcut goes up).
 pub const MAX_RELEASE_TAIL: Duration = Duration::from_millis(600);
+/// A step in the microphone timeline larger than this is a gap.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub(crate) const CHUNK_GAP_TOLERANCE: Duration = Duration::from_millis(50);
+/// On macOS, gaps up to this long (a Bluetooth stream's startup hiccup is
+/// ~140 ms) are filled with silence so the capture keeps going; longer ones
+/// fail it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) const MAX_PADDED_GAP: Duration = Duration::from_millis(250);
 /// Speech frames in a row (20 ms each) that count as still talking: a key
 /// click is far shorter.
 const TAIL_SPEECH_FRAMES: usize = 5;
@@ -80,7 +134,7 @@ const VOICE_HISTORY_FRAMES: usize = 150;
 pub const BOTH_SIDES_WINDOW: Duration = Duration::from_millis(80);
 const MINIMUM_PARAKEET_DURATION: Duration = Duration::from_millis(1500);
 const INITIAL_RECORDING_CAPACITY: Duration = Duration::from_secs(10);
-const PARAKEET_SAMPLE_RATE: u32 = 16_000;
+pub(crate) const PARAKEET_SAMPLE_RATE: u32 = 16_000;
 /// A capture whose loudest 30 ms window stays below this level is treated as
 /// empty rather than transcribed, because models hallucinate closing phrases
 /// such as "thank you" on silence. Deliberately conservative: whispered speech
@@ -411,7 +465,7 @@ impl DictationClip {
     /// Whether every sample through the release is exactly zero. A real
     /// microphone always carries some noise, so this is a stream still
     /// running but delivering digital silence (#1122), not a quiet room.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub fn is_digital_silence(&self) -> bool {
         let released = self.released();
         !released.is_empty() && released.iter().all(|&sample| sample == 0.0)
@@ -634,6 +688,13 @@ struct Recording {
     input_buffer: Vec<f32>,
     resampler: Option<Fft<f32>>,
     stream: Option<LiveStream>,
+    /// This capture already logged why it has no live stream, so the retry
+    /// on every audio chunk never repeats it.
+    stream_refusal_logged: bool,
+    /// Whether this recording's stream should show the live text plate,
+    /// decided once when the stream opens so toggling Labs › Live text
+    /// mid-capture changes nothing.
+    show_live_text: bool,
     voice: VoiceTrack,
     /// This recording's hold on the HUDs' live text, from its first text;
     /// dropping the recording clears it.
@@ -707,6 +768,8 @@ impl Recording {
             input_buffer: Vec::with_capacity(Self::CHUNK_SIZE),
             resampler,
             stream: None,
+            stream_refusal_logged: false,
+            show_live_text: false,
             voice: VoiceTrack::default(),
             live_text: None,
             #[cfg(target_os = "macos")]
@@ -1124,18 +1187,16 @@ impl DictationCapture {
         self.recording.as_mut()?.stream.as_mut()?.take_partial()
     }
 
-    /// Shows the live text on the HUDs when it changed, and logs at debug
-    /// how far it has got: word counts against the audio fed, never the
-    /// words (the engine logs each stream's count of changes). Every OS's
-    /// capture loop calls it after ingesting audio; it does nothing without
-    /// live text.
-    pub fn report_live_text(&mut self) {
-        let Some(partial) = self.take_partial() else {
-            return;
-        };
-        let Some(recording) = &mut self.recording else {
-            return;
-        };
+    /// Shows the live text on the HUDs when it changed and Labs › Live text
+    /// (or the first run's practice) wants it, and logs at debug how far it
+    /// has got: word counts against the audio fed, never the words (the
+    /// engine logs each stream's count of changes). Every OS's capture loop
+    /// calls it after ingesting audio; it does nothing without live text. The
+    /// change is also returned, so a host can send it to Live typing's input
+    /// method or a `/dictations` client without showing the plate.
+    pub fn report_live_text(&mut self) -> Option<Partial> {
+        let partial = self.take_partial()?;
+        let recording = self.recording.as_mut()?;
         tracing::debug!(
             fed_ms = recording
                 .stream
@@ -1145,10 +1206,13 @@ impl DictationCapture {
             tentative_words = partial.tentative.split_whitespace().count(),
             "live text"
         );
-        recording
-            .live_text
-            .get_or_insert_with(crate::dictation::live_text::Publisher::new)
-            .show(&partial);
+        if recording.show_live_text {
+            recording
+                .live_text
+                .get_or_insert_with(crate::dictation::live_text::Publisher::new)
+                .show(&partial);
+        }
+        Some(partial)
     }
 
     /// Opens a live stream for the active recording when the engine's model
@@ -1159,10 +1223,27 @@ impl DictationCapture {
         let Some(recording) = &mut self.recording else {
             return;
         };
-        if recording.stream.is_none() {
-            recording.stream = engine.begin();
-            recording.feed_stream();
+        if recording.stream.is_some() {
+            return;
         }
+        recording.stream = engine.begin();
+        // The capture retries the stream on each audio chunk; say once, and
+        // only when it would have shown live words, why there is none.
+        if recording.stream.is_none()
+            && !recording.stream_refusal_logged
+            && (crate::labs::live_text() || crate::dictation::live_text::demanded())
+        {
+            recording.stream_refusal_logged = true;
+            tracing::info!(
+                reason = engine
+                    .stream_refusal()
+                    .unwrap_or("no live stream is available"),
+                "no live stream has opened yet; provisional words show only if one opens later"
+            );
+        }
+        recording.show_live_text = recording.stream.is_some()
+            && (crate::labs::live_text() || crate::dictation::live_text::board_demanded());
+        recording.feed_stream();
     }
 
     #[cfg(test)]
@@ -1561,14 +1642,9 @@ mod tests {
     }
 
     #[test]
-    fn muting_or_pausing_while_dictating_keeps_no_pre_roll() {
+    fn suppressing_audio_while_dictating_keeps_no_pre_roll() {
         use crate::app_settings::RecordingAudioBehavior::{DoNothing, Duck, Mute, PauseMedia};
-        for (behavior, kept) in [
-            (Mute, 0),
-            (PauseMedia, 0),
-            (Duck, 7_200),
-            (DoNothing, 7_200),
-        ] {
+        for (behavior, kept) in [(Mute, 0), (PauseMedia, 0), (Duck, 0), (DoNothing, 7_200)] {
             let pre_roll = hotkey_pre_roll(behavior);
             let origin = capture_time();
             let mut warm = DictationCapture::new(16_000);
@@ -2085,6 +2161,50 @@ mod tests {
                 tentative: " is".into(),
             }
         }
+    }
+
+    #[test]
+    fn the_plate_follows_the_decision_made_when_the_stream_opened() {
+        use crate::transcription::engine::Command;
+        let (engine, commands) = TranscriptionEngine::for_test();
+        let engine = engine.with_live_text();
+        let start = capture_time();
+        let mut capture = DictationCapture::new(16_000);
+        capture.start(start);
+        assert!(capture.become_intentional(start + MINIMUM_HOLD_DURATION));
+        capture.begin_stream(&engine);
+        let partials = commands
+            .try_iter()
+            .find_map(|command| match command {
+                Command::Begin { partials, .. } => partials,
+                _ => None,
+            })
+            .expect("a stream");
+        capture.ingest(&[0.5; 16_000], start + Duration::from_secs(1));
+        // The decision is the recording's, captured when the stream opened;
+        // a later toggle never re-decides it.
+        capture
+            .recording
+            .as_mut()
+            .expect("recording")
+            .show_live_text = false;
+        partials.publish(Partial {
+            stable: "hello".into(),
+            tentative: String::new(),
+        });
+        assert_eq!(
+            capture.report_live_text().map(|partial| partial.stable),
+            Some("hello".into())
+        );
+        assert!(
+            capture
+                .recording
+                .as_ref()
+                .expect("recording")
+                .live_text
+                .is_none(),
+            "the plate needs the decision made when the stream opened"
+        );
     }
 
     #[test]

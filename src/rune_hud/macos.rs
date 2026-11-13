@@ -1,15 +1,20 @@
 //! The HUD on macOS: placed on the screen with the pointer, below the menu
 //! bar, in it, or out of the notch (`hud_placement`), from `NSScreen`'s
-//! metrics. The main thread's pump hands it the listener's events.
+//! metrics, and kept on every Space. The main thread's pump hands it the
+//! listener's events.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSEvent, NSScreen, NSStatusBar};
+use objc2::rc::Retained;
+use objc2_app_kit::{
+    NSApplication, NSEvent, NSScreen, NSStatusBar, NSWindow, NSWindowCollectionBehavior,
+};
 use objc2_foundation::{NSNumber, NSRect, NSString};
 use rune::{DisplayTarget, OverlayHandle, OverlayPlacement};
 
-use super::{Hud, HudEvent, HudSender, LIVE_TEXT_GAP, WINDOW, set_live_text};
+use super::{Hud, HudEvent, HudSender, LIVE_TEXT_GAP, WINDOW, rehome, set_live_text};
 use crate::app_settings::IndicatorPosition;
 use crate::rune_hud::hud_placement;
 use crate::rune_ui::live_text::Spot;
@@ -110,14 +115,77 @@ fn live_text_beside(
     }
 }
 
+/// An activation-policy change is waiting for the HUD's panel: changing it
+/// (the Dock icon follows Settings) can tie Rune's panel to one Space while
+/// AppKit still reports every Space (#1725). It outlives the call that made
+/// it, because the startup one can come before Rune makes the panel, and the
+/// first pump tick after that re-asserts it.
+static ACTIVATION_POLICY_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Records that the activation policy changed, so the pump's next tick
+/// re-asserts the HUD panel's collection behaviors.
+pub(crate) fn activation_policy_changed() {
+    ACTIVATION_POLICY_CHANGED.store(true, Ordering::Release);
+}
+
+/// Whether a change recorded by [`activation_policy_changed`] still waits for
+/// a panel to repair; a caller that repairs takes it.
+fn take_activation_policy_changed() -> bool {
+    ACTIVATION_POLICY_CHANGED.swap(false, Ordering::AcqRel)
+}
+
+/// Keeps a taken change for the next tick: there was no panel to repair yet.
+fn keep_activation_policy_changed() {
+    ACTIVATION_POLICY_CHANGED.store(true, Ordering::Release);
+}
+
+/// The collection behaviors Rune gives the HUD's panel when it makes it
+/// (`rune`'s `platform/macos.rs`): on every Space, ordered with it, out of the
+/// window cycle, and over another application's full-screen Space too (#75).
+fn intended_behavior() -> NSWindowCollectionBehavior {
+    NSWindowCollectionBehavior::CanJoinAllSpaces
+        | NSWindowCollectionBehavior::Stationary
+        | NSWindowCollectionBehavior::IgnoresCycle
+        | NSWindowCollectionBehavior::FullScreenAuxiliary
+        // macOS 13+; earlier versions ignore the bit.
+        | NSWindowCollectionBehavior::CanJoinAllApplications
+}
+
+/// Clears the panel's behaviors and sets the intended ones again. A read-back
+/// of a broken mask can equal the intended one, and AppKit then ignores the
+/// write, so the clear makes it a change again.
+fn apply_behavior(panel: &NSWindow) {
+    panel.setCollectionBehavior(NSWindowCollectionBehavior::Default);
+    panel.setCollectionBehavior(intended_behavior());
+}
+
+/// Orders the panel out, applies its behaviors, and orders it back in
+/// regardless, so the window server applies them to whichever Space is active.
+/// This reorders the panel but leaves Rune's presence state and alpha alone.
+fn rehome_panel(panel: &NSWindow) {
+    panel.orderOut(None);
+    apply_behavior(panel);
+    panel.orderFrontRegardless();
+}
+
 /// The pump's handle on the HUD (main thread).
 pub(crate) struct DictationIndicatorUi {
     hud: HudSender,
+    /// The HUD's panel and the window number it had when found: Rune makes a
+    /// new window, with a new number, when it remakes the overlay.
+    panel: Option<(u32, Retained<NSWindow>)>,
+    /// This show's re-home attempts: a stranding gets a bounded few, and a
+    /// panel seen on the active Space or a hide starts the budget over.
+    rehome: rehome::Rehome,
 }
 
 impl DictationIndicatorUi {
     pub(crate) fn new(hud: HudSender) -> Self {
-        Self { hud }
+        Self {
+            hud,
+            panel: None,
+            rehome: rehome::Rehome::default(),
+        }
     }
 
     pub(crate) fn handle(&mut self, event: HudEvent) {
@@ -130,18 +198,117 @@ impl DictationIndicatorUi {
         self.hud.animating.load(Ordering::Acquire)
     }
 
-    /// Keeps a showing HUD on the pointer's screen, and hides it when the
-    /// indicator is set to Hidden.
+    /// Keeps a showing HUD on the pointer's screen and the active Space, and
+    /// hides it when the indicator is set to Hidden.
     pub(crate) fn follow_pointer(&mut self) {
-        if !self.hud.animating.load(Ordering::Acquire) {
+        let animating = self.hud.animating.load(Ordering::Acquire);
+        let shown = self.hud.shown.load(Ordering::Acquire);
+        if !shown {
+            // Each show gets a fresh budget.
+            self.rehome.hide();
+        } else if let Some(mtm) = MainThreadMarker::new() {
+            self.rehome_on_active_space(mtm);
+        }
+        if !animating {
             return;
         }
         self.hud.overlay.update_if(|hud, _| {
-            if hud.shown {
+            if hud.shown.load(Ordering::Acquire) {
                 hud.show();
             }
             false
         });
+    }
+
+    /// The HUD's panel, found among the app's windows once per Rune window.
+    fn panel(&mut self, mtm: MainThreadMarker) -> Option<(u32, Retained<NSWindow>)> {
+        let Some(number) = self.hud.overlay.window_number() else {
+            self.panel = None;
+            return None;
+        };
+        if let Some((cached, panel)) = &self.panel
+            && *cached == number
+        {
+            return Some((number, panel.clone()));
+        }
+        let panel = NSApplication::sharedApplication(mtm)
+            .windows()
+            .iter()
+            .find(|window| window.windowNumber() == number as isize);
+        let Some(panel) = panel else {
+            self.panel = None;
+            return None;
+        };
+        self.panel = Some((number, panel.clone()));
+        Some((number, panel))
+    }
+
+    /// Re-asserts the HUD panel's collection behaviors after a Dock-icon
+    /// (activation policy) change, once per change. A hidden panel only gets
+    /// them written again, so a hide Rune has queued is not undone, and that
+    /// spends no repair attempt; a shown one is ordered out, written, and
+    /// ordered back in whatever AppKit says about the active Space, since the
+    /// change can leave that answer wrong (#1725). A change with no panel yet
+    /// waits for the first one.
+    pub(crate) fn reassert_after_activation_policy_change(&mut self) {
+        if !take_activation_policy_changed() {
+            return;
+        }
+        let Some(mtm) = MainThreadMarker::new() else {
+            keep_activation_policy_changed();
+            return;
+        };
+        let Some((number, panel)) = self.panel(mtm) else {
+            // Rune makes the panel when it first shows the overlay.
+            keep_activation_policy_changed();
+            return;
+        };
+        // A HUD on its way out stays visible until Rune applies the hide.
+        let visible = self.hud.shown.load(Ordering::Acquire) && panel.isVisible();
+        match self.rehome.reassert(Instant::now(), visible) {
+            rehome::Repair::None => {}
+            rehome::Repair::Mask => apply_behavior(&panel),
+            rehome::Repair::Rehome => rehome_panel(&panel),
+        }
+        tracing::info!(
+            window = number,
+            visible,
+            active_space = panel.isOnActiveSpace(),
+            "re-asserted the dictation HUD's collection behaviors after a Dock icon change"
+        );
+    }
+
+    /// Puts a shown HUD back on the active Space. Changing the activation
+    /// policy (the Dock icon follows Settings) can tie Rune's panel to one
+    /// Space while AppKit still reports `CanJoinAllSpaces`, and Rune repairs
+    /// that only as its panel shows (#1084). Clearing the mask and setting the
+    /// intended one back makes the window server apply it again; the panel is
+    /// ordered out and back in, so this reorders the panel but leaves Rune's
+    /// presence state and alpha alone. A stranding gets at most
+    /// [`rehome::MAX_REPAIRS`] attempts, [`rehome::REPAIR_SPACING`] apart,
+    /// reset when the panel is seen on the active Space or the HUD hides, so
+    /// a repair that did not take cannot loop.
+    fn rehome_on_active_space(&mut self, mtm: MainThreadMarker) {
+        let Some((number, panel)) = self.panel(mtm) else {
+            return;
+        };
+        // Rune applies the queued show later than `shown` flips.
+        let located = if !panel.isVisible() {
+            rehome::Located::Hidden
+        } else if panel.isOnActiveSpace() {
+            rehome::Located::Active
+        } else {
+            rehome::Located::Elsewhere
+        };
+        if self.rehome.decide(Instant::now(), located) != rehome::Repair::Rehome {
+            return;
+        }
+        rehome_panel(&panel);
+        tracing::info!(
+            window = number,
+            active_space = panel.isOnActiveSpace(),
+            "re-homed the dictation HUD on the active Space"
+        );
     }
 }
 
@@ -175,11 +342,14 @@ impl Hud {
         }
         let (width, height) = WINDOW;
         let content = content(tuning.island_spread);
-        // Labs' notch indicator takes the top position on a notched screen;
-        // anywhere else HUD Lab's placement stands.
-        let ears = (crate::labs::notch_indicator() && self.position == IndicatorPosition::Top)
-            .then(|| hud_placement::ears(&metrics, content))
-            .flatten();
+        // Labs' notch indicator takes any shown position on a notched screen;
+        // Hidden and flat screens leave HUD Lab's placement standing.
+        let ears = hud_placement::notch_placement(
+            crate::labs::notch_indicator(),
+            self.position,
+            &metrics,
+            content,
+        );
         let placed = ears.unwrap_or_else(|| {
             hud_placement::place(
                 tuning.placement,

@@ -24,6 +24,8 @@ use super::{Menu, Ui};
 use crate::desktop::file_dialog::{Dialog, Filter, Pending, Target};
 use crate::desktop::i18n::{tr, tr_fill, tr_named};
 
+mod fixture;
+
 static MORE_ICON: rune::Icon = rune::Icon {
     name: "hex-more",
     view: 16.0,
@@ -91,13 +93,18 @@ pub(super) struct Meeting {
     pub(super) app: Option<String>,
     pub(super) summary: Option<String>,
     pub(super) notes_running: bool,
-    /// What the overflow menu reveals: the exported Markdown while it still
-    /// exists, else the recording folder. Trash takes the Markdown too.
+    /// The exported Markdown while it still exists, which `Reveal Markdown`
+    /// selects and Trash takes too; otherwise the recording folder, which
+    /// only labels Trash.
     pub(super) reveal: crate::meeting::RevealTarget,
+    /// The meeting's recording folder, which `Reveal files` always opens.
+    pub(super) folder: std::path::PathBuf,
     pub(super) error: Option<String>,
     pub(super) export_error: Option<String>,
     pub(super) notes_error: Option<String>,
     pub(super) live_error: Option<String>,
+    /// The microphone was digitally silent for part of this recording.
+    pub(super) microphone_warning: Option<crate::meeting::TrackWarning>,
     pub(super) transcript: Transcript,
     pub(super) chapters: Vec<Chapter>,
     /// Imported from an audio file (Labs › Import audio): its one track is
@@ -298,204 +305,6 @@ impl MeetingsPane {
             self.action_error = None;
         }
         self.selected = Some(id);
-    }
-
-    /// One recording, one with notes, one without, and one that failed.
-    pub(super) fn fixture() -> Self {
-        let turn = |mine, seconds: u64, text: &str| Turn {
-            mine,
-            start_ms: seconds * 1_000,
-            text: text.into(),
-            pause_before_ms: None,
-        };
-        let mut conversation = vec![
-            turn(
-                false,
-                1,
-                "Basically, I want Anomaly Arcade to be one login where you add friends and jump into any game.",
-            ),
-            turn(false, 4, "I need to finish my StarCraft game, too."),
-            turn(true, 9, "Oh nice. How far along is it?"),
-            turn(
-                false,
-                13,
-                "Close. I feel like over a couple of months we could make twenty to thirty games.",
-            ),
-            turn(true, 20, "That's basically a new version of Steam."),
-            turn(
-                false,
-                24,
-                "If we're seeing Roblox, the idea should be to become Roblox.",
-            ),
-            turn(
-                true,
-                31,
-                "Apple has a new thing where you hold two phones together and there's this pulse and gravity well. Could be a nice mini gravity well for the transitions.",
-            ),
-            turn(false, 40, "Prototype it in WebGPU, whatever's faster."),
-            turn(
-                true,
-                95,
-                "The build screen looks rough, by the way. We need a proposal for it.",
-            ),
-            turn(
-                false,
-                101,
-                "Agreed. Write it up and I'll review it tomorrow.",
-            ),
-        ];
-        conversation[8].pause_before_ms = Some(55_000);
-        let meeting =
-            |id: &str, title: &str, status, day: &str, clock: &str, minutes: u64| Meeting {
-                id: id.into(),
-                title: title.into(),
-                status,
-                day: day.into(),
-                clock: clock.into(),
-                duration_ms: minutes * 60_000 + 20_000,
-                app: None,
-                summary: None,
-                notes_running: false,
-                reveal: crate::meeting::RevealTarget::Folder(
-                    format!("/Users/kit/Library/Application Support/hex/meetings/{id}").into(),
-                ),
-                error: None,
-                export_error: None,
-                notes_error: None,
-                live_error: None,
-                transcript: Transcript::Loaded(Vec::new()),
-                chapters: Vec::new(),
-                imported: false,
-                kept_for: Some("24 hours"),
-            };
-        let mut live = meeting(
-            "preview-live",
-            "Zoom call — 14:05",
-            Status::Recording,
-            "Today",
-            "14:05",
-            7,
-        );
-        live.app = Some("Zoom".into());
-        live.transcript = Transcript::Loaded(conversation[..6].to_vec());
-        let mut notes = meeting(
-            "preview-notes",
-            "Arcade launch plan",
-            Status::Complete,
-            "Today",
-            "11:12",
-            38,
-        );
-        notes.app = Some("Zoom".into());
-        notes.reveal = crate::meeting::RevealTarget::Markdown(
-            "/Users/kit/Documents/Hex Meetings/Arcade launch plan.md".into(),
-        );
-        notes.summary = Some(
-            "One login for every Anomaly Arcade game, aiming for twenty to thirty games over the next couple of months. The build screen needs a proposal before more polish."
-                .into(),
-        );
-        notes.transcript = Transcript::Loaded(conversation.clone());
-        let mut design = meeting(
-            "preview-design",
-            "Design review",
-            Status::Complete,
-            "Yesterday",
-            "16:30",
-            24,
-        );
-        design.app = Some("FaceTime".into());
-        design.transcript = Transcript::Loaded(conversation[2..6].to_vec());
-        let mut failed = meeting(
-            "preview-failed",
-            "Meeting — 09:58",
-            Status::Failed,
-            "Yesterday",
-            "09:58",
-            2,
-        );
-        failed.error = Some("ScreenCaptureKit stopped the capture.".into());
-        Self {
-            meetings: vec![live, notes, design, failed],
-            selected: Some("preview-notes".into()),
-            ..Self::default()
-        }
-    }
-
-    /// The fixture with recordings from more call services: a Zoom call, a
-    /// Google Meet tab, a Teams website call, a Slack huddle, FaceTime, and
-    /// one started by hand.
-    #[cfg(all(test, not(target_os = "macos")))]
-    pub(super) fn platforms_fixture() -> Self {
-        let mut pane = Self::fixture();
-        let mut more = Vec::new();
-        for (id, title, app) in [
-            ("preview-meet", "Weekly sync", "Google Meet"),
-            ("preview-teams", "Vendor check-in", "teams.microsoft.com"),
-            ("preview-huddle", "Release huddle", "Slack Huddle"),
-        ] {
-            let mut meeting = pane.meetings[2].clone();
-            meeting.id = id.into();
-            meeting.title = title.into();
-            meeting.app = Some(app.into());
-            more.push(meeting);
-        }
-        pane.meetings.splice(2..2, more);
-        pane
-    }
-
-    /// The fixture with live chapters (Labs) on the
-    /// meeting with notes, its title extended by them.
-    pub(super) fn chapters_fixture() -> Self {
-        let mut pane = Self::fixture();
-        let chapters = [
-            (
-                "One login",
-                "One login for every Arcade game, twenty to thirty games in a couple of months.",
-                0,
-            ),
-            (
-                "Gravity well",
-                "A pulse and gravity well for transitions, prototyped in WebGPU.",
-                31_000,
-            ),
-            (
-                "Build screen",
-                "The build screen needs a written proposal.",
-                95_000,
-            ),
-        ];
-        if let Some(notes) = pane.meetings.iter_mut().find(|m| m.id == "preview-notes") {
-            notes.title = "Arcade launch plan: One login, Gravity well, Build screen".into();
-            let turns = notes.turns().to_vec();
-            let imported = notes.imported;
-            notes.chapters = chapters
-                .iter()
-                .enumerate()
-                .map(|(index, &(title, summary, start_ms))| {
-                    let end_ms = chapters.get(index + 1).map(|next| next.2);
-                    let inside = turns
-                        .iter()
-                        .filter(|turn| {
-                            turn.start_ms >= start_ms
-                                && end_ms.is_none_or(|end| turn.start_ms < end)
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    Chapter {
-                        title: title.into(),
-                        summary: summary.into(),
-                        start_ms,
-                        markdown: format!(
-                            "## {title}\n\n{summary}\n\n{}",
-                            transcript_markdown(&inside, imported)
-                        )
-                        .trim_end()
-                        .into(),
-                    }
-                })
-                .collect();
-        }
-        pane
     }
 }
 
@@ -838,6 +647,7 @@ fn recordings(ui: &Ui, p: Paint, layer: &mut Vec<El>, action: El) -> (Vec<El>, E
             "meetings-error",
             tr("Meetings could not be loaded."),
             error,
+            Tone::Danger,
         ));
     }
     if let Some(error) = &pane.runtime_error {
@@ -1042,11 +852,10 @@ fn detail(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> El {
         clock_offset(meeting.duration_ms),
     ];
     meta_line.extend(meeting.app.clone());
-    if !meeting.status.is_active()
-        && let Some(kept_for) = meeting.kept_for
-    {
-        meta_line.push(tr_fill("Deleted after {}", tr(kept_for)));
-    }
+    let retention = meeting
+        .kept_for
+        .filter(|_| !meeting.status.is_active())
+        .map(|kept_for| ld::meta_note(p, "retention", &tr_fill("Deleted after {}", tr(kept_for))));
     let mut meta: Vec<El> = status_tag(p, meeting.status, pane.stop_pending)
         .into_iter()
         .collect();
@@ -1077,7 +886,16 @@ fn detail(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> El {
     ];
     let mut body = col().key("detail-body").gap(24.0).pb(8.0);
     for (key, title, error) in errors.into_iter().flatten() {
-        body = body.child(error_panel(p, key, title, error));
+        body = body.child(error_panel(p, key, title, error, Tone::Danger));
+    }
+    if !active && meeting.microphone_warning == Some(crate::meeting::TrackWarning::DigitalSilence) {
+        body = body.child(error_panel(
+            p,
+            "microphone-silence",
+            tr("Microphone is silent"),
+            tr("Your microphone was silent for part of this call. Another app may have been using it with voice processing, so your side may be missing."),
+            Tone::Warning,
+        ));
     }
     if let Some(summary) = &meeting.summary {
         let summary = summary.trim();
@@ -1131,6 +949,7 @@ fn detail(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> El {
         .grow(1.0)
         .shrink()
         .child(ld::card_header(title, meta, actions))
+        .children(retention)
         .children(confirm)
         .child(ld::card_scroll_sticky(
             p,
@@ -1249,18 +1068,26 @@ fn overflow(ui: &Ui, p: Paint, meeting: &Meeting, layer: &mut Vec<El>) -> Option
         items += 1;
     }
     if !active {
-        // The label and the file it reveals are one value, so they can't
-        // disagree.
-        let reveal = meeting.reveal.clone();
+        // Reveal Markdown appears only while the export exists; the
+        // recording folder stays one item away either way.
+        if meeting.reveal.is_markdown() {
+            let reveal = meeting.reveal.clone();
+            menu = menu.item(
+                MenuItem::new(tr("Reveal Markdown")).on_select(move |ui: &mut Ui| {
+                    ui.open = None;
+                    ask(ui, MeetingRequest::Reveal(reveal.clone()));
+                }),
+            );
+            items += 1;
+        }
+        let folder = meeting.folder.clone();
         menu = menu.item(
-            MenuItem::new(if reveal.is_markdown() {
-                tr("Reveal Markdown")
-            } else {
-                tr("Reveal files")
-            })
-            .on_select(move |ui: &mut Ui| {
+            MenuItem::new(tr("Reveal files")).on_select(move |ui: &mut Ui| {
                 ui.open = None;
-                ask(ui, MeetingRequest::Reveal(reveal.clone()));
+                ask(
+                    ui,
+                    MeetingRequest::Reveal(crate::meeting::RevealTarget::Folder(folder.clone())),
+                );
             }),
         );
         items += 1;
@@ -1318,7 +1145,13 @@ fn transcript(p: Paint, meeting: &Meeting, stop_pending: bool) -> El {
     };
     let turns = match &meeting.transcript {
         Transcript::Unavailable(error) => {
-            return error_panel(p, "transcript-error", tr("Transcript unavailable."), error);
+            return error_panel(
+                p,
+                "transcript-error",
+                tr("Transcript unavailable."),
+                error,
+                Tone::Danger,
+            );
         }
         Transcript::Loaded(turns) => turns,
     };

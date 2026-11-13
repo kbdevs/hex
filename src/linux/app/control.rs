@@ -14,6 +14,7 @@ use crate::linux::service::{self as linux_service, Control, Published, ShortcutR
 use super::{HostHandle, HostRequest};
 
 pub(super) struct LinuxControl {
+    pub(super) dictations: crate::dictation::service::DictationQueue,
     pub(super) host: HostHandle,
     pub(super) published: std::sync::Weak<Published>,
     pub(super) window: mpsc::SyncSender<Control>,
@@ -68,13 +69,20 @@ impl crate::control::host::Host for LinuxControl {
             listener.warning = status.desktop.operation_error.clone();
         }
         Ok(crate::control::host::HostState {
-            capture: crate::control::host::capture_from_state(status.desktop.activity.state),
             listener,
             transcription: status.desktop.transcription,
             update: status.desktop.update_status,
             settings: status.settings,
             window_open: status.window_open,
         })
+    }
+
+    fn capture(&self) -> std::result::Result<crate::control::CaptureSnapshot, ControlError> {
+        if self.state()?.listener.running {
+            self.dictations.snapshot(|| {})
+        } else {
+            Ok(Default::default())
+        }
     }
 
     fn dictation(
@@ -104,9 +112,32 @@ impl crate::control::host::Host for LinuxControl {
         self.shortcut(ShortcutCommand::PasteLast)
     }
 
-    fn save(&self, settings: AppSettings) -> std::result::Result<(), ControlError> {
+    fn typed_text(&self) -> std::result::Result<(), ControlError> {
+        let settings = self.state()?.settings;
+        if !settings.labs.typed_text {
+            return Err(ControlError::new(
+                "disabled",
+                "Labs › Transform typed text is off; turn it on with `hex labs on typed-text`",
+            ));
+        }
+        if settings.paste_with_shift {
+            return Err(ControlError::new(
+                "disabled",
+                "Terminal paste is on, so typed text would send Ctrl+Shift+V; turn it \
+                 off in Settings › General first",
+            ));
+        }
+        self.shortcut(ShortcutCommand::TypedText)
+    }
+
+    fn save(
+        &self,
+        base: &AppSettings,
+        settings: AppSettings,
+    ) -> std::result::Result<(), ControlError> {
         self.host
-            .save_settings(settings)
+            .save_settings(base, &settings)
+            .map(|_| ())
             .map_err(|error| ControlError::new("internal", format!("couldn't save: {error:#}")))
     }
 

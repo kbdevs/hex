@@ -1,21 +1,23 @@
 //! Running-app dictation a local API client owns (`/dictations`): the
 //! controls the API sends a capture loop, owner tokens, lease expiry, level
-//! metering, and the bounded record of how each dictation ended. The macOS
-//! recognition loop drives these controls itself; Linux drives them through
-//! [`ServiceDictations`].
+//! metering, live text, and the bounded record of how each dictation ended.
+//! The macOS recognition loop drives these controls itself; the Linux and
+//! Windows listeners drive them through [`ServiceDictations`].
 
 use std::collections::VecDeque;
 use std::sync::mpsc::SyncSender;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 use std::sync::mpsc::TrySendError;
 use std::time::{Duration, Instant};
+
+use crate::transcription::engine::Partial;
 
 /// How long a dictation lives without a heartbeat from its owner.
 pub(crate) const LEASE: Duration = Duration::from_secs(10);
 pub(crate) const COMPLETION_LIMIT: usize = 16;
 /// `/finish` on a dictation the microphone ended before it finished.
 pub(crate) const MICROPHONE_LOST: &str = "microphone-lost";
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 const LEVEL_INTERVAL: Duration = Duration::from_millis(30);
 
 /// One `/dictations` request for the capture loop. Each carries the owner
@@ -26,6 +28,10 @@ pub enum DictationControl {
         source: String,
         owner_token: String,
         levels: SyncSender<DictationLevel>,
+        /// The text so far as the live stream hears it, when the client
+        /// asked for it (`"partials": true`). Provisional: only `/finish`
+        /// returns the transcript.
+        partials: Option<SyncSender<Partial>>,
         reply: SyncSender<Result<ProgrammaticDictationStart, String>>,
     },
     AttachAudio {
@@ -150,12 +156,91 @@ fn amplitude_db(amplitude: f32) -> f32 {
     (20.0 * amplitude.max(0.000_001).log10()).max(-120.0)
 }
 
-#[cfg(any(test, target_os = "linux"))]
-pub(crate) use owner::{Effect, ServiceDictations};
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "windows")),
+    allow(unused_imports)
+)]
+pub(crate) use owner::{DictationQueue, Effect, ServiceDictations};
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 mod owner {
+    use std::sync::mpsc::{self, Receiver};
+    use std::sync::{Arc, Mutex};
+
     use super::*;
+
+    /// The local API's `/dictations` controls. The host keeps one queue for
+    /// whichever listener runs; while none does, a control goes unanswered
+    /// and the API answers `service-capture-unavailable`.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+    #[derive(Clone)]
+    pub(crate) struct DictationQueue {
+        controls: Arc<Mutex<Receiver<DictationControl>>>,
+        queries: Arc<Mutex<Receiver<SyncSender<crate::control::CaptureSnapshot>>>>,
+        query: SyncSender<SyncSender<crate::control::CaptureSnapshot>>,
+    }
+
+    impl From<Receiver<DictationControl>> for DictationQueue {
+        fn from(receiver: Receiver<DictationControl>) -> Self {
+            let (query, queries) = mpsc::sync_channel(8);
+            Self {
+                controls: Arc::new(Mutex::new(receiver)),
+                queries: Arc::new(Mutex::new(queries)),
+                query,
+            }
+        }
+    }
+
+    /// A queue nothing sends to: a listener without the local API.
+    impl Default for DictationQueue {
+        fn default() -> Self {
+            mpsc::sync_channel(0).1.into()
+        }
+    }
+
+    impl DictationQueue {
+        #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+        pub(crate) fn drain(&self) -> Vec<DictationControl> {
+            self.controls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .try_iter()
+                .collect()
+        }
+
+        /// Ask the audio owner, never the event log. An absent or stalled
+        /// listener must not look idle to an unforced quit.
+        #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+        pub(crate) fn snapshot(
+            &self,
+            wake: impl FnOnce(),
+        ) -> Result<crate::control::CaptureSnapshot, crate::control::ControlError> {
+            let (reply, answer) = mpsc::sync_channel(1);
+            self.query.try_send(reply).map_err(|_| {
+                crate::control::ControlError::new("busy", "the listener's query queue is full")
+            })?;
+            wake();
+            answer.recv_timeout(Duration::from_secs(2)).map_err(|_| {
+                crate::control::ControlError::new(
+                    "unavailable",
+                    "the listener didn't answer in time",
+                )
+            })
+        }
+
+        #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+        pub(crate) fn answer_status(&self, snapshot: crate::control::CaptureSnapshot) {
+            for reply in self
+                .queries
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .try_iter()
+            {
+                let _ = reply.try_send(snapshot);
+            }
+        }
+    }
 
     /// What the capture loop does after [`ServiceDictations::control`].
     #[derive(Debug, Eq, PartialEq)]
@@ -178,6 +263,11 @@ mod owner {
         source: String,
         levels: SyncSender<DictationLevel>,
         audio: Option<SyncSender<DictationAudioChunk>>,
+        #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+        partials: Option<SyncSender<Partial>>,
+        /// Makes the recording's live stream publish its text while the
+        /// client wants it.
+        _live_text: Option<crate::dictation::live_text::ClientDemand>,
         last_level: Option<Instant>,
         lease_deadline: Instant,
         /// The start's answer, sent once the microphone's rate is known.
@@ -210,6 +300,26 @@ mod owner {
     }
 
     impl ServiceDictations {
+        /// The listener supplies its shortcut capture (including opening and
+        /// release tail) and accepted output jobs; this owner adds SDK work.
+        pub(crate) fn snapshot(
+            &self,
+            dictation: bool,
+            pending_jobs: usize,
+            microphone_unavailable: bool,
+        ) -> crate::control::CaptureSnapshot {
+            use crate::control::{CaptureKind, CaptureSnapshot};
+            CaptureSnapshot {
+                recording: if self.is_active() {
+                    Some(CaptureKind::Service)
+                } else {
+                    dictation.then_some(CaptureKind::Dictation)
+                },
+                pending_jobs: pending_jobs + self.finishing.len(),
+                microphone_unavailable,
+            }
+        }
+
         /// Whether a client's dictation records (or waits for the microphone).
         pub(crate) fn is_active(&self) -> bool {
             self.active.is_some()
@@ -235,6 +345,7 @@ mod owner {
                     source,
                     owner_token,
                     levels,
+                    partials,
                     reply,
                 } => {
                     if busy || self.active.is_some() {
@@ -253,6 +364,12 @@ mod owner {
                         source,
                         levels,
                         audio: None,
+                        // Asked before the recording's stream begins, which
+                        // decides whether it publishes text.
+                        _live_text: partials
+                            .is_some()
+                            .then(crate::dictation::live_text::client_demand),
+                        partials,
                         last_level: None,
                         lease_deadline: now + LEASE,
                         start_reply: Some(reply),
@@ -455,6 +572,20 @@ mod owner {
             }
         }
 
+        /// Forwards the recording's text so far to a client that asked for
+        /// it. A full queue drops it: the next one carries the whole text.
+        #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+        pub(crate) fn partial(&mut self, partial: &Partial) {
+            let Some(active) = self.active.as_mut() else {
+                return;
+            };
+            if let Some(partials) = &active.partials
+                && let Err(TrySendError::Disconnected(_)) = partials.try_send(partial.clone())
+            {
+                active.partials = None;
+            }
+        }
+
         /// The finished recording `id` is transcribing.
         pub(crate) fn transcribing(&mut self, id: u64, duration_ms: u64) {
             if let Some(finishing) = self
@@ -591,6 +722,7 @@ mod tests {
                 source: "test".into(),
                 owner_token: owner_token.into(),
                 levels,
+                partials: None,
                 reply,
             },
             busy,
@@ -622,6 +754,72 @@ mod tests {
             owner_token: token.into(),
             reply,
         })
+    }
+
+    #[test]
+    fn recording_query_covers_sdk_opening_recording_and_accepted_jobs() {
+        use crate::control::{CaptureKind, CaptureReport, CaptureState};
+        let mut owner = ServiceDictations::default();
+        let (_, client) = start(&mut owner, "hex_a", false, Instant::now());
+        // The event log is still idle during an SDK-only capture.
+        assert_eq!(
+            owner.snapshot(false, 0, false).recording,
+            Some(CaptureKind::Service)
+        );
+        assert!(owner.started(16_000));
+        assert_eq!(
+            owner.snapshot(false, 0, false).recording,
+            Some(CaptureKind::Service)
+        );
+        let (reply, _answer) = mpsc::sync_channel(1);
+        assert_eq!(
+            owner.control(
+                DictationControl::Finish {
+                    id: 1,
+                    owner_token: client.owner_token,
+                    reply,
+                },
+                false,
+                Instant::now()
+            ),
+            Effect::Finish(1)
+        );
+        owner.transcribing(1, 800);
+        let pending = owner.snapshot(false, 2, false);
+        assert_eq!(pending.recording, None);
+        assert_eq!(pending.pending_jobs, 3);
+        assert_eq!(
+            CaptureReport::from(pending).state,
+            CaptureState::Transcribing
+        );
+        owner.complete(1, Ok("words".into()));
+        assert_eq!(owner.snapshot(false, 0, false).pending_jobs, 0);
+        // The listener counts both a pending microphone start and a release tail.
+        assert_eq!(
+            owner.snapshot(true, 0, false).recording,
+            Some(CaptureKind::Dictation)
+        );
+        assert!(owner.snapshot(false, 0, true).microphone_unavailable);
+    }
+
+    #[test]
+    fn recording_query_requires_an_owner_answer_and_recovers_after_timeout() {
+        let queue = DictationQueue::default();
+        assert!(queue.snapshot(|| {}).is_err());
+        let owner = ServiceDictations::default();
+        let answer = queue
+            .snapshot(|| queue.answer_status(owner.snapshot(true, 2, false)))
+            .unwrap();
+        assert_eq!(
+            answer.recording,
+            Some(crate::control::CaptureKind::Dictation)
+        );
+        assert_eq!(answer.pending_jobs, 2);
+        let idle = queue
+            .snapshot(|| queue.answer_status(owner.snapshot(false, 0, false)))
+            .unwrap();
+        assert!(idle.recording.is_none());
+        assert_eq!(idle.pending_jobs, 0);
     }
 
     #[test]

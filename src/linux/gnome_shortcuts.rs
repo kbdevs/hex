@@ -15,7 +15,12 @@ const LIST_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
 const ENTRY_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
 const BASE: &str = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/";
 /// Every entry Hex may write, by path name.
-const ENTRIES: [&str; 3] = ["hex-dictation", "hex-paste-last", "hex-annotate"];
+const ENTRIES: [&str; 4] = [
+    "hex-dictation",
+    "hex-paste-last",
+    "hex-typed-text",
+    "hex-annotate",
+];
 
 /// One custom shortcut: its path name, its name in GNOME Settings, the `hex`
 /// arguments it runs, and its GTK accelerator.
@@ -123,6 +128,15 @@ fn entries(settings: &AppSettings) -> Vec<Entry> {
         "paste-last",
         settings.paste_last_hotkey.as_ref(),
     );
+    // Only while Labs › Transform typed text is on and its key is bound.
+    if settings.labs.typed_text {
+        add(
+            "hex-typed-text",
+            "Hex: transform typed text",
+            "typed-text",
+            settings.active_typed_text_hotkey(),
+        );
+    }
     #[cfg(hex_capture)]
     if settings.capture.enabled {
         add(
@@ -151,46 +165,8 @@ fn accelerator(binding: &HotkeyBinding) -> Option<String> {
             accelerator.push_str(name);
         }
     }
-    accelerator.push_str(&keysym(&key.name()));
+    accelerator.push_str(&crate::linux::input::keysym(&key.name())?.name);
     Some(accelerator)
-}
-
-/// A key's lowercase name as the X keysym GTK reads.
-fn keysym(name: &str) -> String {
-    if let Some(named) = named_keysym(name) {
-        return named.into();
-    }
-    match name.strip_prefix('f') {
-        Some(number) if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) => {
-            format!("F{number}")
-        }
-        _ => name.into(),
-    }
-}
-
-/// The X keysym of a named (non-character) key, by its lowercase name as
-/// Settings records it. GNOME's accelerators and the shortcuts portal's
-/// triggers share it, so both Linux paths accept the same keys.
-pub(crate) fn named_keysym(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "return" | "enter" => "Return",
-        "tab" => "Tab",
-        "escape" => "Escape",
-        "backspace" => "BackSpace",
-        "delete" => "Delete",
-        "insert" => "Insert",
-        "home" => "Home",
-        "end" => "End",
-        "pageup" => "Page_Up",
-        "pagedown" => "Page_Down",
-        "up" => "Up",
-        "down" => "Down",
-        "left" => "Left",
-        "right" => "Right",
-        "print" => "Print",
-        "pause" => "Pause",
-        _ => return None,
-    })
 }
 
 /// `word` as one argument for GNOME, which splits the command as a shell
@@ -272,5 +248,36 @@ mod tests {
             "/home/a/.local/bin/hex"
         );
         assert_eq!(shell_word("/home/a b/hex"), "'/home/a b/hex'");
+    }
+
+    /// Transform typed text gets a `hex typed-text` entry only while its lab
+    /// is on and its shortcut is bound; paste-last stays as it was.
+    #[test]
+    fn typed_text_joins_the_commands_only_while_its_lab_is_on() {
+        let mut settings = AppSettings {
+            dictation_hotkey: chord(HotkeyModifiers::control(), "space"),
+            paste_last_hotkey: Some(chord(HotkeyModifiers::control_option(), "v")),
+            typed_text_hotkey: Some(chord(HotkeyModifiers::control_option(), "t")),
+            ..AppSettings::default()
+        };
+        let off = entries(&settings);
+        assert!(off.iter().all(|entry| entry.id != "hex-typed-text"));
+        assert!(off.iter().any(|entry| entry.id == "hex-paste-last"));
+
+        settings.labs.typed_text = true;
+        let on = entries(&settings);
+        let typed = on
+            .iter()
+            .find(|entry| entry.id == "hex-typed-text")
+            .expect("typed text entry");
+        assert_eq!(typed.arguments, "typed-text");
+        assert_eq!(typed.accelerator, "<Control><Alt>t");
+
+        settings.typed_text_hotkey = None;
+        assert!(
+            entries(&settings)
+                .iter()
+                .all(|entry| entry.id != "hex-typed-text")
+        );
     }
 }
