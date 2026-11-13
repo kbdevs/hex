@@ -131,7 +131,9 @@ Transcribes what's left and answers with the final, as the `final` event:
 `?process=global` (Labs › Process API transcripts) adds the text after Hex's
 Global-mode output processing, exactly as a paste with no matching app or
 website mode gets it: global replacements, Global mode corrections, the
-optional OpenCode rewrite, and Global's selected transformations. `true` and
+optional OpenCode rewrite or local Phonon refiner, and Global's selected
+transformations. An enabled Voice prompt can replace the rewrite with its
+spoken instruction. `true` and
 `1` are aliases for `global`; any other value, or a repeated parameter,
 answers `400 invalid-request`. Without the parameter the response is exactly
 as above.
