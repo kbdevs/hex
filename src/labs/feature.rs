@@ -174,4 +174,9 @@ impl Feature {
         Self::VoicePrompt,
         Self::CopyCaptureZip,
     ];
+
+    /// Whether this target can run the feature.
+    pub(crate) fn supported(self) -> bool {
+        self.on_this_os()
+    }
 }

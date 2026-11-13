@@ -1,7 +1,7 @@
 # Hex typing fork
 
-The `main` branch includes our changes and upstream Hex 3.3.0 at
-commit `49de3e167598c3e1548c2438a0f4a8597e685346`.
+The `main` branch includes our changes and upstream Hex 3.4.0 at
+commit `ba8b5698ace26631d0ca0e8fe5caea48d5f91a3c`.
 
 On macOS, Settings > Labs > Type dictation selects actual keyboard typing
 for primary and raw dictation. Turn it off to use clipboard paste and restore.

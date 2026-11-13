@@ -1598,6 +1598,7 @@ mod tests {
                     recording: None,
                 })),
             },
+            PasteMode::Continue,
             &mut |_, _| Err(eyre!("clipboard changed while Hex was preserving it")),
             &mut last_transcript,
             None,
@@ -1654,6 +1655,7 @@ mod tests {
                         recording: None,
                     })),
                 },
+                PasteMode::Continue,
                 &mut |pasted_text, mode| {
                     pasted = Some((pasted_text.to_string(), mode));
                     Ok(())

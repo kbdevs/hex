@@ -4,11 +4,11 @@
 //! those bytes beside the original, including when a migration is first.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use color_eyre::eyre::{Result, eyre};
 use serde::Deserialize;
@@ -21,7 +21,8 @@ use crate::policy::Policy;
 
 // A settings editor and a background migration may save at the same time.
 static WRITER: Mutex<u64> = Mutex::new(0);
-static COMMITTED_REVISION: AtomicU64 = AtomicU64::new(0);
+static COMMITTED_REVISIONS: LazyLock<Mutex<HashMap<PathBuf, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Load provenance travels with a snapshot, but isn't a preference and never
 /// participates in settings equality or serialization.
@@ -267,7 +268,10 @@ impl AppSettings {
         merged.write_locked(path, policy)?;
         policy.enforce(&mut merged);
         stamp(&mut merged, path, true, &mut revision);
-        COMMITTED_REVISION.store(merged.source.revision, Ordering::Release);
+        COMMITTED_REVISIONS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(path.to_owned(), merged.source.revision);
         merged.apply_runtime();
         Ok(merged)
     }
@@ -280,10 +284,16 @@ impl AppSettings {
             return Ok(None);
         };
         let (settings, issue) = Self::load_checked_from(path)?;
+        let committed_revision = COMMITTED_REVISIONS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(path)
+            .copied()
+            .unwrap_or(0);
         if issue.is_none()
             && (!self.source.writable
                 || settings != *self
-                || self.source.revision < COMMITTED_REVISION.load(Ordering::Acquire))
+                || self.source.revision < committed_revision)
         {
             settings.apply_runtime();
             Ok(Some(settings))

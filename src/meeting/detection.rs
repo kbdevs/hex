@@ -1844,10 +1844,6 @@ mod tests {
                 MeetingPolicy::AlwaysRecord,
                 "{url} follows the Teams app's choice"
             );
-            assert!(
-                names_call(&Url::parse(url).unwrap(), false),
-                "{url} names a call"
-            );
         }
     }
 

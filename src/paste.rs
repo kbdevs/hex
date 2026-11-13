@@ -255,7 +255,7 @@ impl Paster {
                 self.continuation = None;
             }
             tracing::debug!("typing instead of pasting into Chromium 155 or 156");
-            keyboard::type_text(&text)?;
+            keyboard::type_text(&text, Duration::ZERO)?;
             if crate::labs::keep_on_clipboard() {
                 self.clipboard_restore
                     .lock()
