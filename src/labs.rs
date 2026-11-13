@@ -2301,10 +2301,16 @@ mod tests {
         assert!(!type_dictation_enabled(&labs));
         labs.type_dictation = true;
         labs.unload_idle_minutes = 24 * 60;
-        assert_eq!(type_dictation_enabled(&labs), Feature::TypeDictation.supported());
+        assert_eq!(
+            type_dictation_enabled(&labs),
+            Feature::TypeDictation.supported()
+        );
         assert!(!labs.copy_only);
         assert_eq!(labs.unload_idle_minutes, 24 * 60);
-        assert_eq!(Feature::TypeDictation.on_this_os(), cfg!(target_os = "macos"));
+        assert_eq!(
+            Feature::TypeDictation.on_this_os(),
+            cfg!(target_os = "macos")
+        );
         assert_eq!(Feature::TypeDictation.group(), Group::Output);
     }
 

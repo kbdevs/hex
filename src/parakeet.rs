@@ -1467,7 +1467,10 @@ mod tests {
                 );
                 assert_eq!(emitted, [text]);
                 assert_eq!(last.as_deref(), Some(text));
-                assert!(matches!(event, WorkerEvent::Completed { result: Ok(_), .. }));
+                assert!(matches!(
+                    event,
+                    WorkerEvent::Completed { result: Ok(_), .. }
+                ));
             }
         }
     }
