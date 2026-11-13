@@ -5,6 +5,7 @@
 //! card's corner.
 
 use rune::{Align, El, Icon, col, el, icon, row, text};
+use rune_kit::ScrollBar;
 
 use super::Ui;
 use super::controls::{DESCRIPTION, METRICS, Paint, raised};
@@ -18,6 +19,11 @@ const LIST_W: f32 = 316.0;
 const LIST_FADE: (f32, f32) = (18.0, 28.0);
 /// Room the card's text leaves for its scroll bar.
 const SCROLL_BAR: f32 = 12.0;
+
+/// The pane bar's thumb: 8 pt at rest and 10 under the pointer, so it stays
+/// inside the card's 12 pt scroll-bar room.
+const PANE_THUMB: f32 = 8.0;
+const PANE_THUMB_HOVER: f32 = 10.0;
 
 pub(super) static COPY_ICON: &Icon = &rune_theme_opencode::icons::OUTLINE_COPY;
 pub(super) static TRASH_ICON: &Icon = &rune_theme_opencode::icons::TRASH;
@@ -110,24 +116,35 @@ pub(super) struct Item {
     pub(super) selected: bool,
 }
 
-/// A selectable list row hung past the gutter: a hover fill (and the row's
-/// action in the time's place), a quiet fill when selected. Nothing on it
-/// animates.
-pub(super) fn item(p: Paint, item: Item, select: impl Fn(&mut Ui) + 'static) -> El {
-    item_with_icon(p, item, None, select)
-}
-
 /// The size of a row's leading icon, about the meta line's height.
 const LEADING_ICON: f32 = 14.0;
 
-/// [`item`] with a small faint icon before its title when `leading` is
-/// set; assistive technology hears the title alone.
+/// One selectable list row with a small faint icon before its title when
+/// `leading` is set; assistive technology hears the title alone.
 pub(super) fn item_with_icon(
     p: Paint,
     item: Item,
     leading: Option<&'static Icon>,
     select: impl Fn(&mut Ui) + 'static,
 ) -> El {
+    let selected = item.selected;
+    let row = item_body(p, item, leading);
+    super::lists::source_item(
+        super::lists::select_at_once(row, selected, select),
+        selected,
+    )
+}
+
+/// [`item_with_icon`] whose press its pane wires itself, for a list that
+/// selects several (History's Shift-, Command-, and drag-selection): `press`
+/// gets the finished row, which it draws and gives its gesture.
+pub(super) fn item_with_press(p: Paint, item: Item, press: impl Fn(El) -> El) -> El {
+    let selected = item.selected;
+    super::lists::source_item(press(item_body(p, item, None)), selected)
+}
+
+/// One row's box, words, and selected fill, before any press handling.
+fn item_body(p: Paint, item: Item, leading: Option<&'static Icon>) -> El {
     let c = &p.k.c;
     // A row of the list: its title names it and its meta and time describe
     // it, so their texts stay out of the tree.
@@ -201,8 +218,7 @@ pub(super) fn item_with_icon(
     if item.selected {
         row_el = row_el.fill(c.layer_02);
     }
-    let row_el = super::lists::select_at_once(row_el, item.selected, select);
-    super::lists::source_item(row_el, item.selected)
+    row_el
 }
 
 /// The card's title block: the title over its meta line, actions at the
@@ -250,6 +266,17 @@ pub(super) fn meta_text(p: Paint, meta: &str) -> El {
         .truncate()
 }
 
+/// A meta line of its own under the card header, wrapping rather than
+/// truncating, for text too long to share the header's meta row.
+pub(super) fn meta_note(p: Paint, key: &str, note: &str) -> El {
+    text(note)
+        .key(key)
+        .font(DESCRIPTION)
+        .color(p.muted())
+        .wrap()
+        .mt(3.0)
+}
+
 /// The card's scrolling content under its header, clear of the scroll bar.
 pub(super) fn card_scroll(p: Paint, key: &str, content: El) -> El {
     card_scroll_sticky(p, key, content, false)
@@ -272,13 +299,18 @@ pub(super) fn faded_body_sticky(
     stick_bottom: bool,
 ) -> El {
     // Both shrink below their content in a fixed-height parent (#906).
-    let viewport = col().grow(1.0).shrink().min_h(0.0);
+    let viewport = col().key(key).grow(1.0).shrink().min_h(0.0);
     let viewport = viewport
         .clip_fade(0.0, top, 0.0, bottom)
         .scroll(super::ScrollSpec { stick_bottom })
         .child(col().key("inset").pt(top).pb(bottom).child(content));
-    let area = format!("{key}-area");
-    rune_kit::scroll_bar(k, &area, key, viewport)
+    let style = rune_kit::ScrollBarStyle::from_kit(k)
+        .thumb(k.c.text_faint)
+        .thumb_hover(k.c.text_muted)
+        .width(PANE_THUMB)
+        .hover_width(PANE_THUMB_HOVER);
+    viewport
+        .scroll_bar_styled(style)
         .grow(1.0)
         .shrink()
         .min_h(0.0)

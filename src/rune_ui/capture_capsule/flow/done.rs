@@ -41,20 +41,6 @@ pub(super) fn permission_lines(need: CaptureNeed, grant: Grant) -> Done {
     }
 }
 
-/// A closed list that still waits for a pick: a guess, or one offered
-/// again after an Undo; a rule's was sent, as was one too late to take
-/// back, and an unreachable one lists nothing.
-pub(super) fn waits(routed: Routed) -> Option<Routed> {
-    let (suggested, recent) = sections(&routed.route);
-    (!matches!(routed.route, Route::Rule { .. })
-        && routed.already_with.is_none()
-        && !(suggested.is_empty() && recent.is_empty()))
-    .then_some(Routed {
-        open: None,
-        ..routed
-    })
-}
-
 pub(super) fn hold_until(phase: &Phase) -> Option<f64> {
     match phase {
         Phase::Routed(r)
@@ -143,8 +129,13 @@ pub(super) fn list(route: &Route, open: &Open) -> List {
     };
     let always = site.map(|site| (site, open.shift));
     let every = || suggested.iter().chain(recent);
+    let rows = matching(every(), &open.query.text);
+    let target = open
+        .pointed
+        .or(open.typing.then_some(open.selected))
+        .filter(|row| *row < rows.len());
     let mut list = List {
-        rows: matching(every(), &open.query.text),
+        rows,
         title: if open.typing {
             tr("All sessions")
         } else {
@@ -158,6 +149,7 @@ pub(super) fn list(route: &Route, open: &Open) -> List {
             0
         },
         selected: open.selected,
+        target,
         footer: if open.typing {
             Footer::Search {
                 remember: always.is_some(),
@@ -167,9 +159,9 @@ pub(super) fn list(route: &Route, open: &Open) -> List {
         },
         always,
     };
-    // Shift down, the highlighted row is where the rule would send it.
+    // Shift down, the target row is where the rule would send it.
     if list.always.as_ref().is_some_and(|(_, shift)| *shift)
-        && let Some(row) = list.rows.get_mut(list.selected)
+        && let Some(row) = list.target.and_then(|row| list.rows.get_mut(row))
     {
         row.why = tr("always").into();
     }
@@ -339,6 +331,7 @@ pub(super) fn offered_again(route: Route, from: &Dest, too_late: bool, now: f64)
         already_with: too_late.then(|| from.name.clone()),
         taken_from: Some(from.clone()),
         delivered: false,
+        sending: false,
     })
 }
 
@@ -368,12 +361,16 @@ pub(super) fn lone_back(from: &Dest, now: f64) -> Routed {
         already_with: None,
         taken_from: Some(from.clone()),
         delivered: false,
+        sending: false,
     }
 }
 
 pub(super) fn routed_done(routed: &Routed, now: f64) -> Done {
-    let undo = now - routed.at < undo_s();
-    let countdown = undo.then(|| routed.at + undo_s());
+    // A rule's Undo stops its send, so it lasts until the router posts it:
+    // the ring counts the router's hold, and Undo goes once the send has.
+    let going = routed.delivered || routed.sending;
+    let window = send_hold_s();
+    let countdown = (!going && now - routed.at < window).then_some(routed.at + window);
     let base = match &routed.route {
         // Sent nowhere, it waits for a pick: a click on Send to… reopens the list.
         _ if routed.taken_back => Done {
@@ -388,8 +385,9 @@ pub(super) fn routed_done(routed: &Routed, now: f64) -> Done {
             )
         },
         Route::Rule { to, .. } => Done {
-            undo: undo || !routed.delivered,
+            undo: !going,
             countdown,
+            window,
             ..Done::plain(
                 Lead::Check,
                 if routed.delivered {
@@ -400,8 +398,9 @@ pub(super) fn routed_done(routed: &Routed, now: f64) -> Done {
             )
         },
         Route::ResolvingRule { name } => Done {
-            undo: true,
+            undo: !going,
             countdown,
+            window,
             ..Done::plain(Lead::Check, tr_fill("Sending to {}", &short(name)))
         },
         // The suggestions are the ask (closed, Send to… opens them).

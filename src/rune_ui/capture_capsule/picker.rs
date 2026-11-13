@@ -976,15 +976,42 @@ impl PickerOverlay {
         self.overlay.set_exclude_from_capture(!shown);
     }
 
+    /// Changes the whole display's badge from the next time it shows, as
+    /// the screenshot picker does to record rather than shoot.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn set_screen_label(&self, label: &'static str) {
+        self.overlay.update(move |s, _| s.screen_label = label);
+    }
+
     /// Shows the picker for `mode`, or closes it; safe from any thread.
     pub(crate) fn set(&self, mode: Option<Mode>) {
+        self.set_if(mode, || true);
+    }
+
+    /// Check request ownership when the queued update reaches the UI too.
+    pub(crate) fn set_if(
+        &self,
+        mode: Option<Mode>,
+        current: impl FnOnce() -> bool + Send + 'static,
+    ) {
         // Wayland lists no windows to pick from: the portal's picker does.
         #[cfg(target_os = "linux")]
         if mode == Some(Mode::Window) {
             (self.act)(Action::Start(CaptureTarget::Window { id: 0 }));
             return;
         }
+        // On Wayland without layer-shell (GNOME) the picker takes clicks, so
+        // it floats on XWayland only by Labs › Annotate on GNOME, decided at
+        // each show like the capsule's.
+        #[cfg(target_os = "linux")]
+        if mode.is_some() {
+            self.overlay
+                .set_xwayland_input(crate::linux::annotate_overlays::on_xwayland());
+        }
         self.overlay.update(move |s, tx| {
+            if !current() {
+                return;
+            }
             s.want = mode;
             tx.wake_after(Duration::ZERO);
         });
@@ -1253,7 +1280,7 @@ pub(crate) mod tests {
             Window {
                 id: 1,
                 frame: [120.0, 90.0, 520.0, 340.0],
-                label: "Brave Browser — problems.kitlangton.com".into(),
+                label: "Brave Browser — example.com".into(),
             },
             Window {
                 id: 2,
@@ -1395,7 +1422,7 @@ pub(crate) mod tests {
         );
         assert!(window.camera);
         let badge = window.badge.unwrap();
-        assert_eq!(badge.text, "Brave Browser — problems.kitlangton.com");
+        assert_eq!(badge.text, "Brave Browser — example.com");
         // Centred on the window.
         assert!((badge.rect[0] + badge.rect[2] * 0.5 - 380.0).abs() < 0.5);
 

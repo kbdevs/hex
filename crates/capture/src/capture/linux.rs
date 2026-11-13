@@ -253,6 +253,11 @@ pub fn recorded_screen() -> Option<(u32, u32)> {
 /// shows the screen is scaled.
 static RECORDED_POINTS: std::sync::Mutex<Option<(f64, f64)>> = std::sync::Mutex::new(None);
 
+/// The output the portal says it records, by its connector name (`mapping_id`, such as
+/// `DP-3`), while a screen recording runs. Only some portals name it, and only for a monitor
+/// pick; a window has no output.
+static RECORDED_OUTPUT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// The size of the screen being recorded in the desktop's logical points, as the screen-cast
 /// portal reported it (Wayland). A host drawing over the screen uses it rather than dividing
 /// the pixels by its own scale, which a fractional scale (1.5, 1.33) rounds up to a whole
@@ -261,6 +266,15 @@ pub fn recorded_screen_points() -> Option<(f64, f64)> {
     *RECORDED_POINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The Wayland output the portal records, by connector name, while a screen recording runs.
+/// `None` when the portal didn't name one.
+pub fn recorded_output() -> Option<String> {
+    RECORDED_OUTPUT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// The screen's logical size from the portal's stream `size`, when it is smaller than the
@@ -285,18 +299,19 @@ pub(super) fn run_sampler(sampler: Sampler) -> Option<super::Movie> {
     *RECORDED_POINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    *RECORDED_OUTPUT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     match recorded {
         Ok(movie) => movie,
         Err(error) => {
             scrawl_log(format!("Screen capture failed: {error:#}"));
-            // The host ends the capture: nothing more of the screen will come.
-            if !sampler.stopping.load(Ordering::Acquire) {
-                *sampler
-                    .failure
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(format!("{error:#}"));
-            }
+            // The host ends the capture only when the screen fails before the stop; at the
+            // stop this becomes the no-screen reason written with the voice and marks.
+            *sampler
+                .failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("{error:#}"));
             None
         }
     }
@@ -348,12 +363,15 @@ fn record(sampler: &Sampler) -> Result<Option<super::Movie>> {
             Some((format.width, format.height));
         let points = logical_screen(cast.size, (format.width, format.height));
         scrawl_log(format!(
-            "Screen size from the portal: {:?}, in points: {points:?}",
-            cast.size
+            "Screen size from the portal: {:?}, in points: {points:?}, output: {:?}",
+            cast.size, cast.mapping_id
         ));
         *RECORDED_POINTS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = points;
+        *RECORDED_OUTPUT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = cast.mapping_id.clone();
     }
     let edge = if source == Source::Window {
         WINDOW_EDGE
@@ -499,6 +517,7 @@ fn record(sampler: &Sampler) -> Result<Option<super::Movie>> {
             start.elapsed().as_millis()
         ));
     }
+    let ended = stream.ended();
     drop(stream);
     drop(cast);
     let movie = match encoding {
@@ -508,10 +527,17 @@ fn record(sampler: &Sampler) -> Result<Option<super::Movie>> {
         }
         Encoding::Software { movie, .. } => movie,
     };
-    if first.is_none() && path.is_some() {
+    let no_frames = first.is_none();
+    if no_frames && path.is_some() {
         scrawl_log("The screen stream gave no frame to record");
     }
     let (Some(movie), Some(path), Some((_, offset_ms))) = (movie, path, first) else {
+        if no_frames {
+            match ended {
+                Some(why) => bail!("the screen sharing stream sent no frames ({why})"),
+                None => bail!("the screen sharing stream sent no frames"),
+            }
+        }
         return Ok(None);
     };
     movie.finish()?;

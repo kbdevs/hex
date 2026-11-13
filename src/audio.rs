@@ -10,11 +10,15 @@ pub(crate) mod input_level;
 pub(crate) mod instant;
 #[cfg(target_os = "macos")]
 mod lid;
+pub(crate) mod linger;
 #[cfg(any(target_os = "windows", test))]
 mod mix_format;
 pub(crate) mod output_ducking;
+pub(crate) mod output_route;
+mod overloads;
 #[cfg(target_os = "macos")]
 pub(crate) mod recording_environment;
+mod recovery;
 mod transport;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 pub(crate) mod voice_filter;
@@ -26,9 +30,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryR
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use recovery::{MICROPHONE_RETRY_INITIAL, MICROPHONE_RETRY_MAX, MicrophoneRecovery};
+
 static AUDIO_SERVICE_RESTART_GENERATION: AtomicU64 = AtomicU64::new(0);
 static INPUT_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(0);
-static STREAM_GLITCHED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static AVOID_BLUETOOTH_MICROPHONE: AtomicBool = AtomicBool::new(true);
 
 /// Whether `HEX_AUDIO_FIXTURE` names a WAV file that stands in for every
@@ -53,10 +58,7 @@ fn avoid_bluetooth_microphone() -> bool {
 /// How long ago a microphone stream last reported an overload it continued
 /// through, for diagnosing captures.
 pub fn since_last_stream_glitch() -> Option<Duration> {
-    STREAM_GLITCHED_AT
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .map(|at| at.elapsed())
+    overloads::since_last()
 }
 
 pub fn notify_audio_service_restarted() {
@@ -215,6 +217,9 @@ pub struct AudioInput {
     chunks: Receiver<(Vec<f32>, CaptureInstant)>,
     pub sample_rate: u32,
     pub device_name: String,
+    /// The device's stable OS identifier, when it has one, which is what a
+    /// call app's reported inputs are compared by.
+    pub uid: Option<String>,
     /// Whether this input stands in for the saved microphone until it can
     /// be opened again.
     pub selection: Selection,
@@ -227,12 +232,21 @@ pub struct AudioInput {
     stall_after: Option<Duration>,
     /// When the stream opened or last delivered a chunk.
     last_delivery: Mutex<Instant>,
+    /// Whether this stream's first chunk has reported how often it delivers
+    /// audio.
+    reported_period: AtomicBool,
 }
 
 /// A running stream delivers audio every few milliseconds, even silence. One
 /// that has delivered nothing for this long has stopped without reporting an
 /// error (seen after a burst of overruns, #1206) and is reopened.
-const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(4);
+pub(crate) const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// A stream that has delivered chunks for this long since its first one has
+/// proven that it works: its failure reopens it at once. One that fails
+/// sooner never proved steady delivery, so its reopen backs off instead of
+/// looping every stall timeout (#1681).
+const STREAM_PROVEN_UPTIME: Duration = STREAM_STALL_TIMEOUT.saturating_mul(2);
 
 pub enum AudioInputEvent {
     Chunk {
@@ -283,6 +297,9 @@ struct OpenRequest {
     avoids_bluetooth: bool,
     /// The UID of the input a meeting's call app records from, tried first.
     call_input: Option<String>,
+    /// Whether the open makes the device renegotiate its sample rate first: a
+    /// silence recovery's device can stay on a stale clock (#1575).
+    renegotiate_rate: bool,
 }
 
 impl OpenRequest {
@@ -299,6 +316,12 @@ type Opener = Arc<dyn Fn(&OpenRequest) -> Result<Opened> + Send + Sync>;
 
 pub struct RecoveringAudioInput {
     input: Option<AudioInput>,
+    /// When the installed stream first delivered a chunk, and whether it has
+    /// since delivered for [`STREAM_PROVEN_UPTIME`] without stopping. A stream
+    /// that fails before that never proved steady delivery, so its reopen
+    /// backs off instead of repeating the stall timeout forever (#1681).
+    first_delivery: Option<Instant>,
+    proven: bool,
     device_override: Option<String>,
     selected_device: Option<String>,
     active_revision: u64,
@@ -338,8 +361,6 @@ pub enum RecoveringAudioInputEvent {
     OpenFailed(String),
 }
 
-const MICROPHONE_RETRY_INITIAL: Duration = Duration::from_millis(250);
-const MICROPHONE_RETRY_MAX: Duration = Duration::from_secs(5);
 /// An on-demand open retries the selected microphone briefly before falling
 /// back, because a device that has idled for minutes can fail its first open.
 const SELECTED_MICROPHONE_ATTEMPTS: usize = 3;
@@ -356,90 +377,6 @@ enum SelectedFallback {
     AfterRetries,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MicrophoneRecoveryReason {
-    /// The default input or the list of inputs changed, or a missing saved
-    /// microphone is due another look. The open input keeps running.
-    RouteChanged,
-    SelectionChanged,
-    StreamFailed,
-}
-
-struct MicrophoneRecovery {
-    next_attempt: Option<Instant>,
-    delay: Duration,
-    reason: Option<MicrophoneRecoveryReason>,
-    target_revision: Option<u64>,
-}
-
-impl Default for MicrophoneRecovery {
-    fn default() -> Self {
-        Self {
-            next_attempt: None,
-            delay: MICROPHONE_RETRY_INITIAL,
-            reason: None,
-            target_revision: None,
-        }
-    }
-}
-
-impl MicrophoneRecovery {
-    fn request_selection_change(&mut self, revision: u64, now: Instant) {
-        if self.target_revision != Some(revision) {
-            self.next_attempt = Some(now);
-            self.delay = MICROPHONE_RETRY_INITIAL;
-            self.target_revision = Some(revision);
-            if self.reason != Some(MicrophoneRecoveryReason::StreamFailed) {
-                self.reason = Some(MicrophoneRecoveryReason::SelectionChanged);
-            }
-        }
-    }
-
-    /// Resolves the input again at `at`. A pending reopen or selection
-    /// change resolves it anyway, so it is left alone.
-    fn request_route_check(&mut self, at: Instant) {
-        match self.reason {
-            None => {
-                self.reason = Some(MicrophoneRecoveryReason::RouteChanged);
-                self.next_attempt = Some(at);
-                self.delay = MICROPHONE_RETRY_INITIAL;
-            }
-            Some(MicrophoneRecoveryReason::RouteChanged) => {
-                self.next_attempt = Some(self.next_attempt.map_or(at, |next| next.min(at)));
-            }
-            Some(_) => {}
-        }
-    }
-
-    fn request_stream_recovery(&mut self, now: Instant) {
-        if self.reason != Some(MicrophoneRecoveryReason::StreamFailed) {
-            self.next_attempt = Some(now);
-            self.delay = MICROPHONE_RETRY_INITIAL;
-            self.reason = Some(MicrophoneRecoveryReason::StreamFailed);
-        }
-    }
-
-    fn blocks_audio(&self) -> bool {
-        self.reason == Some(MicrophoneRecoveryReason::StreamFailed)
-    }
-
-    fn should_attempt(&self, now: Instant) -> bool {
-        self.next_attempt.is_some_and(|next| now >= next)
-    }
-
-    fn failed(&mut self, now: Instant) {
-        self.next_attempt = Some(now + self.delay);
-        self.delay = self.delay.saturating_mul(2).min(MICROPHONE_RETRY_MAX);
-    }
-
-    fn recovered(&mut self) {
-        self.next_attempt = None;
-        self.delay = MICROPHONE_RETRY_INITIAL;
-        self.reason = None;
-        self.target_revision = None;
-    }
-}
-
 impl AudioInput {
     #[cfg(test)]
     pub fn channel_for_test() -> (Self, Sender<(Vec<f32>, CaptureInstant)>) {
@@ -452,12 +389,14 @@ impl AudioInput {
                 stream_errors,
                 sample_rate: 48_000,
                 device_name: "Test microphone".into(),
+                uid: None,
                 selection: Selection::InUse,
                 watch_service_restarts: false,
                 restart_generation: audio_service_restart_generation(),
                 hex_microphone: crate::audio::hex_microphone::capture_feed(48_000).1,
                 stall_after: None,
                 last_delivery: Mutex::new(Instant::now()),
+                reported_period: AtomicBool::new(false),
             },
             sender,
         )
@@ -489,6 +428,7 @@ impl AudioInput {
             keep: None,
             avoids_bluetooth: true,
             call_input: None,
+            renegotiate_rate: false,
         })? {
             Opened::Input(input) => Ok(*input),
             Opened::Unchanged { .. } => unreachable!("nothing to keep"),
@@ -504,20 +444,31 @@ impl AudioInput {
             .iter()
             .position(|name| name.to_lowercase().contains(&query_lower))
             .ok_or_else(|| eyre!("microphone is unavailable: {query}"))?;
-        Self::open_device(devices[index].clone(), names[index].clone(), false)
+        Self::open_device(devices[index].clone(), names[index].clone(), false, false)
     }
 
     /// Opens `device`. `follows_default` marks cpal's default-input handle,
     /// whose Windows stream reports a default change as invalidation while
-    /// it keeps running on the old device.
-    fn open_device(device: Device, device_name: String, follows_default: bool) -> Result<Self> {
+    /// it keeps running on the old device. `renegotiate_rate` makes the
+    /// device change its sample rate before the stream opens (#1575).
+    fn open_device(
+        device: Device,
+        device_name: String,
+        follows_default: bool,
+        renegotiate_rate: bool,
+    ) -> Result<Self> {
         #[cfg(target_os = "macos")]
         watch_input_devices();
+        let uid = device.id().ok().map(|id| id.id().to_owned());
         let restart_generation = audio_service_restart_generation();
+        // Taken before the stream runs, so CoreAudio's real-time thread reads
+        // an initialized clock.
+        overloads::start_clock();
         let started = input_format::start_stream_with_fallback(
             &device,
             &device_name,
             follows_default.then(|| device_name.clone()),
+            renegotiate_rate,
         )?;
 
         Ok(Self {
@@ -525,6 +476,7 @@ impl AudioInput {
             chunks: started.chunks,
             sample_rate: started.sample_rate,
             device_name,
+            uid,
             selection: Selection::InUse,
             stream_errors: started.stream_errors,
             watch_service_restarts: true,
@@ -532,6 +484,7 @@ impl AudioInput {
             hex_microphone: started.hex_microphone,
             stall_after: Some(STREAM_STALL_TIMEOUT),
             last_delivery: Mutex::new(Instant::now()),
+            reported_period: AtomicBool::new(false),
         })
     }
 
@@ -543,6 +496,10 @@ impl AudioInput {
     }
 
     pub fn recv_timeout(&self, timeout: Duration) -> AudioInputEvent {
+        // The one place a stream's overloads reach the log, whoever reported
+        // them: the error callback only counts them, and this poll writes the
+        // count.
+        overloads::report();
         if self.watch_service_restarts
             && audio_service_restart_generation() != self.restart_generation
         {
@@ -564,6 +521,7 @@ impl AudioInput {
         }
         match received {
             Ok((samples, captured_through)) => {
+                self.report_period(samples.len());
                 if self.stall_after.is_some() {
                     *self
                         .last_delivery
@@ -594,6 +552,37 @@ impl AudioInput {
             }
         }
     }
+
+    /// Reports how much audio the stream's callbacks deliver, once per open.
+    /// cpal exposes no readback of the period it picks for `BufferSize::Default`
+    /// and overloads arrive sooner on a smaller one, so the first chunk says
+    /// what the device actually does. A fixture input's chunks are its WAV
+    /// file's, not a device's, so it says nothing.
+    fn report_period(&self, frames: usize) {
+        let first = !self.reported_period.swap(true, Ordering::Relaxed);
+        #[cfg(target_os = "macos")]
+        if first && !uses_fixture() {
+            tracing::info!(
+                device = %self.device_name,
+                sample_rate = self.sample_rate,
+                frames,
+                period_us = duration_for_frames(frames, self.sample_rate).as_micros() as u64,
+                "microphone stream opened"
+            );
+        }
+        // Only macOS logs the period; every platform keeps the same open state.
+        #[cfg(not(target_os = "macos"))]
+        let _ = (frames, first);
+    }
+}
+
+impl Drop for AudioInput {
+    fn drop(&mut self) {
+        // Stop the stream before the count is taken, so a closing stream's last
+        // burst is written here instead of beside the next open's lines.
+        self._stream = None;
+        overloads::flush();
+    }
 }
 
 impl RecoveringAudioInput {
@@ -610,6 +599,7 @@ impl RecoveringAudioInput {
             keep: None,
             avoids_bluetooth: true,
             call_input: None,
+            renegotiate_rate: false,
         })
         .and_then(|opened| match opened {
             Opened::Input(input) => Ok(*input),
@@ -641,6 +631,8 @@ impl RecoveringAudioInput {
     ) -> Self {
         Self {
             input: None,
+            first_delivery: None,
+            proven: false,
             device_override: device_override.map(str::to_owned),
             selected_device: selected_device.map(str::to_owned),
             active_revision: selection_revision,
@@ -705,27 +697,54 @@ impl RecoveringAudioInput {
         self.recovery.request_stream_recovery(Instant::now());
     }
 
+    /// A finished dictation was digital silence (#1122): reopen the stream and
+    /// make that open renegotiate the device's sample rate first, which clears
+    /// a device left on a stale clock (#1575).
+    pub fn request_silence_recovery(&mut self) {
+        self.recovery.request_silence_recovery(Instant::now());
+    }
+
     pub fn is_recovering(&self) -> bool {
         self.recovery.blocks_audio()
+    }
+
+    /// A dictation press asks for the microphone now instead of waiting out a
+    /// failed stream's backoff. The grown backoff stays, so pressing again
+    /// cannot restore the fast reopen loop; the press itself still cannot
+    /// capture until the stream opens.
+    pub fn retry_now(&mut self) {
+        if self.replacement.is_none() {
+            self.recovery.retry_now(Instant::now());
+        }
     }
 
     /// Makes `input` the listener's microphone and the only stream feeding
     /// Hex Microphone, stopping the previous stream first.
     fn install(&mut self, input: AudioInput) {
-        if let Some(previous) = self.input.take() {
-            previous.feed_hex_microphone(false);
-            drop(previous);
-        }
+        self.retire_input();
         input.feed_hex_microphone(true);
         self.input = Some(input);
         self.outage = None;
         self.retry_warning = None;
     }
 
+    /// Stops the open stream and drops it, so no stream of Hex's is left on
+    /// the device.
+    fn retire_input(&mut self) {
+        self.first_delivery = None;
+        self.proven = false;
+        if let Some(previous) = self.input.take() {
+            previous.feed_hex_microphone(false);
+            drop(previous);
+        }
+    }
+
     pub fn close(&mut self) {
         if let Some(previous) = self.input.take() {
             previous.feed_hex_microphone(false);
         }
+        self.first_delivery = None;
+        self.proven = false;
         self.replacement = None;
         self.recovery.recovered();
         self.outage = None;
@@ -790,19 +809,38 @@ impl RecoveringAudioInput {
             }
             match result {
                 Ok(Opened::Unchanged { selection }) => {
-                    if let Some(input) = &mut self.input {
-                        input.selection = selection;
+                    let Some(input) = self.input.as_mut() else {
+                        // Nothing was open to keep; open a fresh input.
+                        self.recovery.request_stream_recovery(now);
+                        return RecoveringAudioInputEvent::Timeout;
+                    };
+                    // A stream that failed while this open was in flight is
+                    // dead; open it again rather than keeping it.
+                    if self.recovery.blocks_audio() {
+                        self.recovery.next_attempt = Some(now);
+                        return RecoveringAudioInputEvent::Timeout;
                     }
+                    input.selection = selection;
                     self.active_revision = opened_revision;
-                    self.recovery.recovered();
+                    // The stream itself kept running, so a failed stream's
+                    // backoff it still owes is kept too.
+                    self.recovery.reopened();
                     self.after_resolving(now);
                 }
                 Ok(Opened::Input(replacement)) if capture_idle || self.input.is_none() => {
                     self.install(*replacement);
                     self.active_revision = opened_revision;
-                    self.recovery.recovered();
+                    // A failed stream keeps the backoff it grew until this
+                    // one delivers steadily.
+                    self.recovery.reopened();
                     self.after_resolving(now);
-                    tracing::info!(device = %self.device_name(), "dictation microphone reopened");
+                    let reopened = self.input.as_ref().expect("just installed");
+                    tracing::info!(
+                        device = %reopened.device_name,
+                        uid = reopened.uid.as_deref().unwrap_or("none"),
+                        sample_rate = reopened.sample_rate,
+                        "dictation microphone reopened"
+                    );
                     return RecoveringAudioInputEvent::Reopened;
                 }
                 Ok(Opened::Input(_)) => {
@@ -827,8 +865,13 @@ impl RecoveringAudioInput {
                 }
             }
         }
-        // A change while an open is in flight is seen once it finishes.
-        if self.input.is_some() && self.device_override.is_none() && self.replacement.is_none() {
+        // A change while an open is in flight is seen once it finishes. A
+        // failed stream with nothing open is resolved again as well: a lid
+        // opening must reach the built-in microphone at once.
+        if self.device_override.is_none()
+            && self.replacement.is_none()
+            && (self.input.is_some() || self.recovery.blocks_audio())
+        {
             let generation = (self.route_generation_source)();
             if generation != self.route_generation {
                 self.route_generation = generation;
@@ -853,16 +896,41 @@ impl RecoveringAudioInput {
             AudioInputEvent::Chunk {
                 samples,
                 captured_through,
-            } => RecoveringAudioInputEvent::Chunk {
-                samples,
-                captured_through,
-            },
+            } => {
+                self.note_delivery(Instant::now());
+                RecoveringAudioInputEvent::Chunk {
+                    samples,
+                    captured_through,
+                }
+            }
             AudioInputEvent::Timeout => RecoveringAudioInputEvent::Timeout,
             AudioInputEvent::StreamFailed(error) => {
+                let failed_at = Instant::now();
                 tracing::warn!(%error, device = %input.device_name, "microphone stream stopped; reopening it");
-                self.recovery.request_stream_recovery(Instant::now());
+                if self.proven {
+                    self.recovery.request_stream_recovery(failed_at);
+                } else {
+                    // Release the dead stream before the wait starts: Hex
+                    // holds no microphone while it backs off.
+                    self.retire_input();
+                    self.recovery.back_off_stream_recovery(failed_at);
+                }
                 RecoveringAudioInputEvent::Interrupted
             }
+        }
+    }
+
+    /// Records that the installed stream delivered a chunk. A stream that has
+    /// delivered across [`STREAM_PROVEN_UPTIME`] has proven it works: the
+    /// failed streams before it no longer count against it.
+    fn note_delivery(&mut self, now: Instant) {
+        if self.proven {
+            return;
+        }
+        let first = *self.first_delivery.get_or_insert(now);
+        if now.saturating_duration_since(first) >= STREAM_PROVEN_UPTIME {
+            self.proven = true;
+            self.recovery.stream_proved();
         }
     }
 
@@ -893,6 +961,12 @@ impl RecoveringAudioInput {
             .as_ref()
             .filter(|_| !self.recovery.blocks_audio())
             .map(|input| input.device_name.clone());
+        // A failed or silent stream lets go of the device before its
+        // replacement opens, so the replacement starts cold, as at launch. A
+        // live stream stays until its replacement is ready to install.
+        if self.recovery.blocks_audio() {
+            self.retire_input();
+        }
         let request = OpenRequest {
             device_override: self.device_override.clone(),
             selected_device: self.selected_device.clone(),
@@ -900,6 +974,7 @@ impl RecoveringAudioInput {
             keep,
             avoids_bluetooth: true,
             call_input: None,
+            renegotiate_rate: self.recovery.take_renegotiation(),
         };
         self.route_generation = (self.route_generation_source)();
         let opener = self.opener.clone();
@@ -971,7 +1046,8 @@ struct Route {
     avoid_bluetooth: bool,
 }
 
-const LID_CLOSED_ERROR: &str = "the built-in microphone is off while the lid is closed";
+pub(crate) const LID_CLOSED_ERROR: &str = "the built-in microphone is off while the lid is closed";
+pub(crate) const NO_MICROPHONE_ERROR: &str = "no microphone is available";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InputPlan {
@@ -1061,7 +1137,7 @@ fn resolve_input(
             if (0..names.len()).any(off) {
                 LID_CLOSED_ERROR.into()
             } else {
-                "no microphone is available".into()
+                NO_MICROPHONE_ERROR.into()
             }
         })
 }
@@ -1194,7 +1270,8 @@ fn open_configured_input(request: &OpenRequest) -> Result<Opened> {
                 "the saved microphone is off while the lid is closed; using the system default"
             ),
         }
-        let mut input = AudioInput::open_device(device, name, follows_default)?;
+        let mut input =
+            AudioInput::open_device(device, name, follows_default, request.renegotiate_rate)?;
         input.selection = plan.selection;
         // The ALSA default cannot name another PipeWire source, so Linux
         // moves the opened stream off a Bluetooth default instead.
@@ -1241,10 +1318,12 @@ fn open_configured_input(request: &OpenRequest) -> Result<Opened> {
 /// from (`call_input`, a device UID) when that opens, else one resolved like
 /// dictation's but keeping a Bluetooth default a call app on a headset uses;
 /// or keeps the open one named `keep` when it resolves to that again.
+/// `renegotiate_rate` marks a silence recovery's open, like dictation's.
 pub fn open_meeting_input(
     selected_device: Option<&str>,
     call_input: Option<&str>,
     keep: Option<&str>,
+    renegotiate_rate: bool,
 ) -> Result<Opened> {
     open_configured_input(&OpenRequest {
         device_override: None,
@@ -1253,6 +1332,7 @@ pub fn open_meeting_input(
         keep: keep.map(str::to_owned),
         avoids_bluetooth: false,
         call_input: call_input.map(str::to_owned),
+        renegotiate_rate,
     })
 }
 
@@ -1416,21 +1496,19 @@ impl StreamErrorReporter {
 }
 
 fn report_stream_error(sender: &SyncSender<String>, error: cpal::Error) {
-    if matches!(
-        error.kind(),
-        cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied
-    ) {
-        // CoreAudio reports processor overloads, common while a cold device
-        // starts, without stopping the stream. Real sample gaps still surface as
+    match error.kind() {
+        // An overload or a refused real-time promotion is a glitch on a stream
+        // that keeps running, common while a cold device starts. Some hosts
+        // report it from the thread that runs the stream, where a log line or a
+        // lock blocks an already-late cycle, so only the counters move here and
+        // the audio owner writes the burst. Real sample gaps still surface as
         // capture discontinuities.
-        tracing::warn!(%error, "microphone stream glitched; continuing");
-        *STREAM_GLITCHED_AT
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(Instant::now());
-        return;
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied => overloads::record(),
+        _ => {
+            tracing::error!(%error, "microphone stream failed");
+            let _ = sender.try_send(error.to_string());
+        }
     }
-    tracing::error!(%error, "microphone stream failed");
-    let _ = sender.try_send(error.to_string());
 }
 
 fn build_stream<T: SizedSample>(
@@ -1639,6 +1717,7 @@ mod tests {
             keep: None,
             avoids_bluetooth,
             call_input: None,
+            renegotiate_rate: false,
         };
         let target = |request: OpenRequest| {
             resolve_input(
@@ -1767,7 +1846,7 @@ mod tests {
                 virtual_transports,
                 OPEN
             ),
-            Err("no microphone is available".into())
+            Err(NO_MICROPHONE_ERROR.into())
         );
         // A virtual default, saved microphone, or `--device` is used as named.
         assert_eq!(
@@ -1917,7 +1996,7 @@ mod tests {
         use InputTarget::{Named, StandIn, SystemDefault};
         let names = listed(&[
             "Hex Microphone",
-            "KIT PODS",
+            "ALEX PODS",
             "MacBook Pro Microphone",
             "USB Mic",
         ]);
@@ -1928,17 +2007,17 @@ mod tests {
 
         // A listed saved microphone wins over the default.
         assert_eq!(
-            plan(Some("USB Mic"), Some("KIT PODS")),
+            plan(Some("USB Mic"), Some("ALEX PODS")),
             found(Named(3), Selection::InUse)
         );
         // System default follows the OS default, even a Bluetooth headset.
         assert_eq!(
-            plan(None, Some("KIT PODS")),
+            plan(None, Some("ALEX PODS")),
             found(SystemDefault, Selection::InUse)
         );
         // A missing saved microphone stands in with the default.
         assert_eq!(
-            plan(Some("Studio Display Microphone"), Some("KIT PODS")),
+            plan(Some("Studio Display Microphone"), Some("ALEX PODS")),
             found(SystemDefault, Selection::Unlisted)
         );
         // A Hex Microphone default never loops back: the built-in mic stands in.
@@ -1956,7 +2035,7 @@ mod tests {
         assert_eq!(plan(None, None), found(StandIn(2), Selection::InUse));
         // A saved Hex Microphone is never captured from.
         assert_eq!(
-            plan(Some("Hex Microphone"), Some("KIT PODS")),
+            plan(Some("Hex Microphone"), Some("ALEX PODS")),
             found(SystemDefault, Selection::InUse)
         );
         // No real inputs at all.
@@ -1969,11 +2048,11 @@ mod tests {
                 &built_in,
                 OPEN
             ),
-            Err("no microphone is available".into())
+            Err(NO_MICROPHONE_ERROR.into())
         );
         assert_eq!(
             resolve_input(None, Some("USB Mic"), &[], None, &built_in, OPEN),
-            Err("no microphone is available".into())
+            Err(NO_MICROPHONE_ERROR.into())
         );
         assert_eq!(
             resolve_input(
@@ -1984,7 +2063,7 @@ mod tests {
                 &built_in,
                 OPEN
             ),
-            Err("no microphone is available".into())
+            Err(NO_MICROPHONE_ERROR.into())
         );
     }
 
@@ -2070,13 +2149,13 @@ mod tests {
 
     #[test]
     fn device_override_wins_and_never_falls_back() {
-        let names = listed(&["Hex Microphone", "KIT PODS", "USB Mic"]);
+        let names = listed(&["Hex Microphone", "ALEX PODS", "USB Mic"]);
         let plan = |device_override| {
             resolve_input(
                 device_override,
-                Some("KIT PODS"),
+                Some("ALEX PODS"),
                 &names,
-                Some("KIT PODS"),
+                Some("ALEX PODS"),
                 other,
                 OPEN,
             )
@@ -2106,6 +2185,14 @@ mod tests {
         TEST_ROUTE_GENERATION.load(Ordering::Acquire)
     }
 
+    /// A route generation only this test changes, so another test's route
+    /// change cannot open the stream it is about to fail.
+    static DEAD_STREAM_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    fn dead_stream_route_generation() -> u64 {
+        DEAD_STREAM_ROUTE_GENERATION.load(Ordering::Acquire)
+    }
+
     /// Polls until any open the input starts has finished, returning the
     /// last event.
     fn settle(input: &mut RecoveringAudioInput, capture_idle: bool) -> RecoveringAudioInputEvent {
@@ -2127,7 +2214,7 @@ mod tests {
 
     #[test]
     fn a_default_change_switches_only_while_capture_is_idle() {
-        let default = Arc::new(Mutex::new("KIT PODS".to_owned()));
+        let default = Arc::new(Mutex::new("ALEX PODS".to_owned()));
         let opener_default = default.clone();
         let mut input = RecoveringAudioInput::with_opener_for_test(
             None,
@@ -2142,7 +2229,7 @@ mod tests {
                 Ok(Opened::Input(Box::new(named_input(&name))))
             },
         );
-        input.finish_initial_open(Ok(named_input("KIT PODS")), Instant::now());
+        input.finish_initial_open(Ok(named_input("ALEX PODS")), Instant::now());
 
         // The OS default changes during a recording: nothing opens yet.
         *default.lock().unwrap() = "MacBook Pro Microphone".into();
@@ -2152,7 +2239,7 @@ mod tests {
             RecoveringAudioInputEvent::Timeout
         ));
         assert!(!input.is_opening());
-        assert_eq!(input.device_name(), "KIT PODS");
+        assert_eq!(input.device_name(), "ALEX PODS");
 
         // Once capture is idle, the new default replaces the old one.
         assert!(matches!(
@@ -2172,7 +2259,7 @@ mod tests {
     }
 
     /// An input saved as "USB Mic" that opens once `connected` is set and
-    /// until then stands in with "KIT PODS" for the given reason.
+    /// until then stands in with "ALEX PODS" for the given reason.
     fn standing_in(
         missing: Selection,
         reports_new_devices: bool,
@@ -2191,7 +2278,7 @@ mod tests {
                 let (name, selection) = if opener_connected.load(Ordering::Acquire) {
                     ("USB Mic", Selection::InUse)
                 } else {
-                    ("KIT PODS", missing)
+                    ("ALEX PODS", missing)
                 };
                 if request.keep.as_deref() == Some(name) {
                     return Ok(Opened::Unchanged { selection });
@@ -2202,7 +2289,7 @@ mod tests {
             },
         );
         input.reports_new_devices = reports_new_devices;
-        let mut stand_in = named_input("KIT PODS");
+        let mut stand_in = named_input("ALEX PODS");
         stand_in.selection = missing;
         let started = Instant::now();
         input.finish_initial_open(Ok(stand_in), started);
@@ -2223,7 +2310,7 @@ mod tests {
             settle(&mut input, true),
             RecoveringAudioInputEvent::Timeout
         ));
-        assert_eq!(input.device_name(), "KIT PODS");
+        assert_eq!(input.device_name(), "ALEX PODS");
         assert_eq!(input.selection_retry, MICROPHONE_RETRY_INITIAL * 4);
 
         connected.store(true, Ordering::Release);
@@ -2306,6 +2393,7 @@ mod tests {
         report_stream_error(&sender, cpal::ErrorKind::Xrun.into());
         report_stream_error(&sender, cpal::ErrorKind::RealtimeDenied.into());
         assert!(errors.try_recv().is_err());
+        assert!(since_last_stream_glitch().is_some());
 
         report_stream_error(&sender, cpal::ErrorKind::DeviceNotAvailable.into());
         assert!(errors.try_recv().is_ok());
@@ -2605,5 +2693,425 @@ mod tests {
             RecoveringAudioInputEvent::Interrupted
         ));
         assert!(input.is_recovering());
+    }
+
+    /// What the opener saw of the previous stream's feed switch when it ran.
+    fn recording_opener(
+        seen: &Arc<Mutex<Option<bool>>>,
+        switch: &hex_microphone::CaptureFeedSwitch,
+    ) -> impl Fn(&OpenRequest) -> Result<Opened> + Send + Sync + 'static {
+        let seen = seen.clone();
+        let switch = switch.clone();
+        move |_| {
+            *seen.lock().unwrap() = Some(switch.is_on());
+            Ok(Opened::Input(Box::new(named_input(
+                "Replacement microphone",
+            ))))
+        }
+    }
+
+    #[test]
+    fn a_dead_stream_is_stopped_before_its_replacement_opens() {
+        // A failed stream lets go of the device before its replacement opens.
+        let (failed, samples) = AudioInput::channel_for_test();
+        let failed_switch = failed.hex_microphone.clone();
+        let seen = Arc::new(Mutex::new(None));
+        let mut input = RecoveringAudioInput::with_opener_for_test(
+            None,
+            dead_stream_route_generation,
+            recording_opener(&seen, &failed_switch),
+        );
+        input.finish_initial_open(Ok(failed), Instant::now());
+        drop(samples);
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        // A stream that never delivered waits out its first backoff; let the
+        // wait pass.
+        input.recovery.next_attempt = Some(Instant::now());
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+        assert_eq!(*seen.lock().unwrap(), Some(false));
+        assert!(!failed_switch.is_on());
+
+        // A route change still keeps the old stream until the new one installs.
+        let (old, samples) = AudioInput::channel_for_test();
+        let old_switch = old.hex_microphone.clone();
+        let seen = Arc::new(Mutex::new(None));
+        let mut routed = RecoveringAudioInput::with_opener_for_test(
+            None,
+            dead_stream_route_generation,
+            recording_opener(&seen, &old_switch),
+        );
+        routed.finish_initial_open(Ok(old), Instant::now());
+        std::mem::forget(samples);
+        DEAD_STREAM_ROUTE_GENERATION.fetch_add(1, Ordering::AcqRel);
+        assert!(matches!(
+            settle(&mut routed, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+        assert_eq!(*seen.lock().unwrap(), Some(true));
+        assert!(!old_switch.is_on());
+    }
+
+    /// A route generation only the silence test changes, so another test's
+    /// route change cannot reopen its microphone.
+    static SILENCE_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    fn silence_route_generation() -> u64 {
+        SILENCE_ROUTE_GENERATION.load(Ordering::Acquire)
+    }
+
+    #[test]
+    fn a_silent_stream_reopens_with_a_rate_renegotiation() {
+        let renegotiations = Arc::new(Mutex::new(Vec::new()));
+        let seen = renegotiations.clone();
+        let mut input = RecoveringAudioInput::with_opener_for_test(
+            None,
+            silence_route_generation,
+            move |request| {
+                seen.lock().unwrap().push(request.renegotiate_rate);
+                Ok(Opened::Input(Box::new(named_input("Test microphone"))))
+            },
+        );
+        input.finish_initial_open(Ok(named_input("Test microphone")), Instant::now());
+
+        // A dictation of digital silence reopens the microphone, and that open
+        // renegotiates the device's sample rate first (#1575).
+        input.request_silence_recovery();
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+        // A stream failure reopens the same microphone without it.
+        input.request_recovery();
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+        // Only the silence open renegotiated; the next open took nothing.
+        assert_eq!(*renegotiations.lock().unwrap(), vec![true, false]);
+    }
+
+    /// A route generation only the stall tests change, so another test's
+    /// route change cannot end a stalled stream's wait.
+    static STALLED_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    fn stalled_route_generation() -> u64 {
+        STALLED_ROUTE_GENERATION.load(Ordering::Acquire)
+    }
+
+    /// A stream whose sender is gone: polling it reads as a failed stream,
+    /// with no device behind it.
+    fn stalling_input() -> AudioInput {
+        let (mut input, samples) = AudioInput::channel_for_test();
+        drop(samples);
+        input.device_name = "Stalling microphone".into();
+        input
+    }
+
+    /// A stream's chunk sender, kept so a test can stop the stream.
+    type ChunkSender = Sender<(Vec<f32>, CaptureInstant)>;
+
+    /// Opens a live stream and keeps its sender, so a test can stop it.
+    fn opener_keeping_sender(
+        sender: &Arc<Mutex<Option<ChunkSender>>>,
+    ) -> impl Fn(&OpenRequest) -> Result<Opened> + Send + Sync + 'static {
+        let sender = sender.clone();
+        move |_| {
+            let (mut input, samples) = AudioInput::channel_for_test();
+            input.device_name = "Reopened microphone".into();
+            *sender.lock().unwrap() = Some(samples);
+            Ok(Opened::Input(Box::new(input)))
+        }
+    }
+
+    #[test]
+    fn a_stream_that_keeps_stalling_backs_off_to_a_minute() {
+        let mut input = RecoveringAudioInput::with_opener_for_test(
+            None,
+            || 0,
+            |_| Ok(Opened::Input(Box::new(stalling_input()))),
+        );
+        input.finish_initial_open(Ok(stalling_input()), Instant::now());
+
+        let mut delays = Vec::new();
+        for _ in 0..10 {
+            assert!(matches!(
+                input.recv_timeout(Duration::ZERO, true),
+                RecoveringAudioInputEvent::Interrupted
+            ));
+            delays.push(input.recovery.delay);
+            // Let the wait pass without sleeping; the reopen keeps it.
+            input.recovery.next_attempt = Some(Instant::now());
+            assert!(matches!(
+                settle(&mut input, true),
+                RecoveringAudioInputEvent::Reopened
+            ));
+        }
+        assert_eq!(
+            delays,
+            [
+                500, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000
+            ]
+            .map(Duration::from_millis)
+        );
+
+        // The last wait is a full minute, not the next stall timeout.
+        let failed_at = Instant::now();
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        assert!(input.recovery.next_attempt.unwrap() >= failed_at + Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_reopened_stream_keeps_the_stall_backoff_its_predecessors_grew() {
+        let fails = Arc::new(AtomicBool::new(false));
+        let opener_fails = fails.clone();
+        let mut input = RecoveringAudioInput::with_opener_for_test(
+            None,
+            || 0,
+            move |_| {
+                if opener_fails.load(Ordering::Acquire) {
+                    return Err(eyre!("microphone is busy"));
+                }
+                Ok(Opened::Input(Box::new(stalling_input())))
+            },
+        );
+        input.finish_initial_open(Ok(stalling_input()), Instant::now());
+
+        // Six streams that never deliver take the wait to 16 s.
+        for expected in [500, 1_000, 2_000, 4_000, 8_000, 16_000] {
+            assert!(matches!(
+                input.recv_timeout(Duration::ZERO, true),
+                RecoveringAudioInputEvent::Interrupted
+            ));
+            assert_eq!(input.recovery.delay, Duration::from_millis(expected));
+            input.recovery.next_attempt = Some(Instant::now());
+            assert!(matches!(
+                settle(&mut input, true),
+                RecoveringAudioInputEvent::Reopened
+            ));
+            assert_eq!(input.recovery.delay, Duration::from_millis(expected));
+            assert!(input.recovery.next_attempt.is_none());
+        }
+
+        // The reopened stream stops too, and its failure waits the grown 16 s.
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        assert_eq!(input.recovery.delay, Duration::from_secs(32));
+        assert!(!input.recovery.should_attempt(Instant::now()));
+
+        // Let that wait pass into a failed open: it waits the grown 32 s and
+        // keeps growing to the minute, not back to the five-second open cap.
+        fails.store(true, Ordering::Release);
+        input.recovery.next_attempt = Some(Instant::now());
+        let before = Instant::now();
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Timeout
+        ));
+        assert!(input.is_opening());
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Timeout
+        ));
+        assert!(input.recovery.next_attempt.unwrap() >= before + Duration::from_secs(32));
+        assert_eq!(input.recovery.delay, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_stream_that_delivers_steadily_reopens_at_once_and_forgets_the_backoff() {
+        let sender = Arc::new(Mutex::new(None));
+        let mut input =
+            RecoveringAudioInput::with_opener_for_test(None, || 0, opener_keeping_sender(&sender));
+        input.finish_initial_open(Ok(stalling_input()), Instant::now());
+        // Two streams that never deliver take the wait to 1 s.
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        input.recovery.next_attempt = Some(Instant::now());
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+        // The reopened stream stops before it delivers anything either.
+        drop(sender.lock().unwrap().take());
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        input.recovery.next_attempt = Some(Instant::now());
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+        assert_eq!(input.recovery.delay, Duration::from_secs(1));
+
+        // Delivering across the proof window forgets that wait.
+        input.first_delivery = Some(Instant::now() - STREAM_PROVEN_UPTIME);
+        let at = CaptureInstant::from_nanos(30_000_000_000);
+        sender
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .send((vec![0.5; 240], at))
+            .unwrap();
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Chunk { .. }
+        ));
+        assert_eq!(input.recovery.delay, MICROPHONE_RETRY_INITIAL);
+
+        // Its failure reopens at once, as a working stream always has, with
+        // the backoff it no longer needs.
+        drop(sender.lock().unwrap().take());
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        assert!(input.recovery.should_attempt(Instant::now()));
+        assert_eq!(input.recovery.delay, MICROPHONE_RETRY_INITIAL);
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+    }
+
+    #[test]
+    fn a_stream_that_stops_before_proving_itself_backs_off() {
+        let sender = Arc::new(Mutex::new(None));
+        let mut input =
+            RecoveringAudioInput::with_opener_for_test(None, || 0, opener_keeping_sender(&sender));
+        input.finish_initial_open(Ok(stalling_input()), Instant::now());
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        input.recovery.next_attempt = Some(Instant::now());
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+
+        // One chunk is not proof: the stream stopped before delivering across
+        // the proof window, so its next reopen backs off instead of looping.
+        let at = CaptureInstant::from_nanos(1_000_000_000);
+        sender
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .send((vec![0.5; 240], at))
+            .unwrap();
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Chunk { .. }
+        ));
+        assert!(!input.proven);
+        let failed_at = Instant::now();
+        drop(sender.lock().unwrap().take());
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        assert!(!input.recovery.should_attempt(Instant::now()));
+        assert!(input.recovery.next_attempt.unwrap() >= failed_at + Duration::from_millis(500));
+        assert_eq!(input.recovery.delay, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_route_change_ends_a_stall_wait_without_resetting_its_backoff() {
+        let connected = Arc::new(AtomicBool::new(false));
+        let opener_connected = connected.clone();
+        let mut input =
+            RecoveringAudioInput::with_opener_for_test(None, stalled_route_generation, move |_| {
+                let opened = if opener_connected.load(Ordering::Acquire) {
+                    named_input("Next microphone")
+                } else {
+                    stalling_input()
+                };
+                Ok(Opened::Input(Box::new(opened)))
+            });
+        input.finish_initial_open(Ok(stalling_input()), Instant::now());
+        for _ in 0..2 {
+            assert!(matches!(
+                input.recv_timeout(Duration::ZERO, true),
+                RecoveringAudioInputEvent::Interrupted
+            ));
+            input.recovery.next_attempt = Some(Instant::now());
+            assert!(matches!(
+                settle(&mut input, true),
+                RecoveringAudioInputEvent::Reopened
+            ));
+        }
+
+        // The next failed stream waits out the grown backoff.
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        assert_eq!(input.recovery.delay, Duration::from_secs(2));
+        assert!(!input.recovery.should_attempt(Instant::now()));
+        // The dead stream was released when its wait began.
+        assert!(!input.is_open());
+
+        // The lid opening resolves the input at once, not in two seconds,
+        // and keeps the wait the stalled streams grew.
+        connected.store(true, Ordering::Release);
+        STALLED_ROUTE_GENERATION.fetch_add(1, Ordering::AcqRel);
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Timeout
+        ));
+        assert!(input.is_opening());
+        assert_eq!(input.recovery.delay, Duration::from_secs(2));
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+        assert_eq!(input.device_name(), "Next microphone");
+        assert_eq!(input.recovery.delay, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_dictation_press_retries_a_stalled_microphone_at_once() {
+        let mut input = RecoveringAudioInput::with_opener_for_test(
+            None,
+            || 0,
+            |_| Ok(Opened::Input(Box::new(stalling_input()))),
+        );
+        input.finish_initial_open(Ok(stalling_input()), Instant::now());
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Interrupted
+        ));
+        assert!(!input.recovery.should_attempt(Instant::now()));
+        let delay = input.recovery.delay;
+
+        input.retry_now();
+        assert!(input.recovery.should_attempt(Instant::now()));
+        assert!(matches!(
+            input.recv_timeout(Duration::ZERO, true),
+            RecoveringAudioInputEvent::Timeout
+        ));
+        assert!(input.is_opening());
+        // The press opens the microphone now; it does not start the backoff
+        // over for the streams that keep stalling.
+        assert_eq!(input.recovery.delay, delay);
+        assert!(matches!(
+            settle(&mut input, true),
+            RecoveringAudioInputEvent::Reopened
+        ));
+        assert_eq!(input.recovery.delay, delay);
     }
 }

@@ -17,7 +17,9 @@ Picker header -> "Add model file…" -> native dialog (GGUF, All files)   // set
 │   says the file was made for another program and needs a transcribe.cpp
 │   conversion, or the catalog's download; #1299);
 │   stt.variant; general.languages with a code Hex knows; only F32, F16, and
-│   Q8_0 tensors (the types every build runs on Metal and Vulkan); the tensor
+│   Q8_0 tensors (the types every build runs on Metal and Vulkan), plus
+│   Q4_K, Q5_K, and Q6_K while Labs › Smaller model files is on (macOS; the
+│   Vulkan builds embed no shaders for them); the tensor
 │   data fits the file. Anything else -> "<file> can't be imported: <reason>"
 ├── Copy -> models/custom/<16 hex>.gguf while hashing; the copy is checked again;
 │   receipt <16 hex>.gguf.verified.json (size, SHA-256, mtime, inode where
@@ -28,9 +30,10 @@ Picker header -> "Add model file…" -> native dialog (GGUF, All files)   // set
 │   copy; the same file again keeps the first import
 ├── ID custom-<first 16 hex of the SHA-256> (TranscriptionModelId::Custom)
 ├── Card -> name from general.name (Rename edits it), languages from the file,
-│   offline only (no streaming), Parakeet without language prompt or Auto,
-│   no benchmark; Use prepares it like a catalog model (verifies Hex's copy
-│   against its receipt instead of downloading). General's Language menu
+│   offline only (no streaming), no language prompt for a no-hint family,
+│   Auto when its header says it detects the language (as Parakeet v3-type
+│   files do), no benchmark; Use prepares it like a catalog model (verifies
+│   Hex's copy against its receipt instead of downloading). General's Language menu
 │   lists every language the file declares: Hex's usual list first, then the
 │   rest of Whisper's codes by English name (Norwegian `no`, Norwegian
 │   Nynorsk `nn`, …; #1148)
@@ -47,7 +50,9 @@ Picker header -> "Add model file…" -> native dialog (GGUF, All files)   // set
 └── Saved import missing or changed (size, mtime, or file ID) -> the choice
     stays saved; the listener runs a downloaded fallback (the system language's
     recommendation if downloaded, else the first downloaded catalog model;
-    custom_models::runnable); General's model row names the fallback and says
+    custom_models::runnable); launch and setup wait only for that fallback
+    (onboarding::model_ready), and `hex status` names it under
+    model.fallback with its reason; General's model row names the fallback and says
     to check it again in the picker (not "can't listen until downloaded",
     while the fallback is downloaded); the card warns
 ```
@@ -67,7 +72,11 @@ Picker header -> "Use model file where it is…" beside "Add model file…" -> t
 │   SHA-256, receipt and manifest (with the file's path, no Hugging Face origin)
 │   in models/custom/; nothing copied, nothing written near the file
 ├── The same file imported by copy before -> same ID, keeps its name; Hex's
-│   copy is removed
+│   copy is removed only when the OS shows the chosen file is a different
+│   file (links resolved, device and inode or volume and file index); when
+│   unsure, the copy stays
+├── Hex's own copy chosen (a linked folder, a hard link, another case) ->
+│   nothing changes; the import stays a copy
 ├── Card -> "Used where it is" · family · languages · the file's name; Use
 │   loads it from its path; later uses rehash only when size, mtime, or file ID
 │   change, and Check again accepts it when the contents still match
@@ -77,6 +86,51 @@ Picker header -> "Use model file where it is…" beside "Add model file…" -> t
 
 Off, the picker has no such button and Hex copies every added file as before.
 Shared folders and catalog models from a shared folder are not built.
+
+## Smaller Model Files (Labs, macOS)
+
+```ts
+Labs › Smaller model files on (labs.k_quant_models, off by default, macOS)  // labs.k-quant-models
+├── Add model file… and Use model file where it is… accept Q6_K, Q5_K, and
+│   Q4_K tensors too, beside F32, F16, and Q8_0; the header check is the same
+│   one (custom_models::profile, given the types this build can run), so a
+│   file is refused or accepted before anything loads
+├── The import's manifest records `k_quants: true`; manifests written before
+│   the field read as false
+├── The card stays in the picker with Rename and Remove, but no Use, while
+│   the lab is off, and says "Turn on Labs › Smaller model files to use it.";
+│   its availability folds in the lab (as Parakeet Ultra's does), so
+│   `hex model list`, the trays, and the menu bar leave it out
+├── Saving it as the model while the lab is off (or on Linux and Windows,
+│   where the lab does not exist) -> the choice stays saved and the listener
+│   runs the default model, as for a missing import: General says it needs
+│   Labs › Smaller model files, and `hex status` says "its Labs toggle is
+│   off" (custom_models::fallback_reason)
+├── `hex model use <custom-…>` while the lab is off -> refused, naming
+│   `hex labs on k-quant-models`
+└── Off -> exactly the F32, F16, and Q8_0 rule and its message, byte for byte
+```
+
+Metal has the K-quant kernels (mul_mat and get_rows); the Linux and Windows
+Vulkan builds embed shaders only for the catalog's types and ggml aborts a
+Vulkan run whose weights use another type, so those builds refuse these files
+whatever the setting says. A file another tool quantized may mix in types
+neither list holds — Q5_0 and Q4_0 are the common ones from old-style
+quantizers — and those are still refused with the type named. Turning the lab
+off while a K-quant model is selected falls back to the default model at once
+(the choice stays saved), and turning it back on runs the saved import again.
+Hex has not measured any import's accuracy; a Q6_K, Q5_K, or Q4_K file may
+transcribe worse than its Q8_0 source.
+
+Checks:
+`k_quants_are_known_only_where_the_caller_runs_them` and
+`k_quant_tensors_are_measured_in_their_ggml_block_sizes` in
+[transcription/gguf_header.rs](../../src/transcription/gguf_header.rs), and
+`a_k_quant_import_needs_the_lab_and_falls_back_without_it` in
+[transcription/custom_models.rs](../../src/transcription/custom_models.rs);
+`smaller_model_files_is_its_own_switch_and_macos_only` in
+[labs.rs](../../src/labs.rs). Not observed: a real K-quant file on Metal, and
+the row on a Mac screen.
 
 The local digest identifies the file Hex copied; it is not a publisher
 checksum. The selection, recent models, and keyboard-language mappings keep an
@@ -177,3 +231,28 @@ downloaded, the full check refusing a mismatched file),
 `rune-onboarding-model-found-downloading-light`,
 `rune-onboarding-model-found-recommended-light`, and
 `rune-onboarding-model-found-back-light`.
+
+## A Download Another Process Runs
+
+```ts
+models/.download.lock held by `hex model install` (a terminal) or another Hex,
+writing models/<file>.gguf.partial  // transcription::models::lock_downloads
+├── Onboarding, Settings, or `hex model install` starts the same model -> it
+│   waits for that lock instead of failing or downloading a second copy
+├── While it waits, downloaded_bytes comes from the partial file's size, so
+│   `hex status --json`, the picker, and onboarding show that process's
+│   progress rather than 0%
+├── The lock covers the whole models folder, so the progress shown is this
+│   model's partial file; while the other process fetches a different model
+│   it stays flat
+├── Cancel stops only the wait; the other process's download continues
+└── The lock is released -> the finished file is verified against its
+    receipt and adopted, with no second download
+```
+
+Checks: `transcription::models::tests::waiting_for_another_processs_download_reports_its_partial_bytes`
+holds the lock and writes three bytes of the partial, then asserts a waiting
+download reports those bytes and stops canceled without fetching anything.
+That a foreign lock makes `hex model install`/onboarding show it in the real
+service has **not** been run; the Linux app's snapshot was checked by reading
+`linux::app::snapshot`.

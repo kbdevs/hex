@@ -21,6 +21,20 @@ pub const LEFT_OPTION_MASK: u64 = 0x0000_0020;
 pub const RIGHT_OPTION_MASK: u64 = 0x0000_0040;
 pub const RIGHT_CONTROL_MASK: u64 = 0x0000_2000;
 
+/// Keyboard-page (0x07) usages of the physical keys the macOS raw HID
+/// tracker follows. macOS's HID keyboard filter can rewrite Caps Lock
+/// (0x39) to Right Control (0xE4) before CoreGraphics sees it, so these are
+/// the only evidence of what the keyboard actually holds.
+pub const CAPS_LOCK_USAGE: u16 = 0x39;
+pub const LEFT_CONTROL_USAGE: u16 = 0xE0;
+pub const LEFT_SHIFT_USAGE: u16 = 0xE1;
+pub const LEFT_OPTION_USAGE: u16 = 0xE2;
+pub const LEFT_COMMAND_USAGE: u16 = 0xE3;
+pub const RIGHT_CONTROL_USAGE: u16 = 0xE4;
+pub const RIGHT_SHIFT_USAGE: u16 = 0xE5;
+pub const RIGHT_OPTION_USAGE: u16 = 0xE6;
+pub const RIGHT_COMMAND_USAGE: u16 = 0xE7;
+
 /// Which of a modifier's keys a shortcut holds. `Either` is one key on either side (or both,
 /// as before chords); `Both` is the left and the right key together, such as both Options.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -169,6 +183,18 @@ impl HotkeyModifiers {
             && (!required.function || self.function)
     }
 
+    /// Every key `held` names is one these modifiers name too: a
+    /// side-specific binding covers only that side, `Either` covers any,
+    /// and `Both` covers both. `None` names no key. A keyless chord's own
+    /// keys may therefore go down or up one at a time.
+    pub(super) fn covers(self, held: Self) -> bool {
+        side_covers_held(self.control, held.control)
+            && side_covers_held(self.option, held.option)
+            && side_covers_held(self.shift, held.shift)
+            && side_covers_held(self.command, held.command)
+            && (!held.function || self.function)
+    }
+
     /// Exactly the keys `required` names are held: no other modifier, and
     /// no other side of one it names.
     pub(super) fn holds_exactly(self, required: Self) -> bool {
@@ -293,6 +319,19 @@ pub(super) fn side_covers(held: Option<ModifierSide>, required: Option<ModifierS
     }
 }
 
+/// `held` is one of the keys `allowed` names: `Either` covers any side,
+/// `Both` covers either side or both, and a side-specific binding covers
+/// only itself. Input that names no side counts as covered.
+pub(super) fn side_covers_held(allowed: Option<ModifierSide>, held: Option<ModifierSide>) -> bool {
+    match (allowed, held) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(_), Some(ModifierSide::Either)) => true,
+        (Some(ModifierSide::Either | ModifierSide::Both), Some(_)) => true,
+        (Some(allowed), Some(held)) => allowed == held,
+    }
+}
+
 pub(super) fn side_exact(held: Option<ModifierSide>, required: Option<ModifierSide>) -> bool {
     match (held, required) {
         (None, None) => true,
@@ -330,6 +369,11 @@ pub struct HotkeyKey {
 
 /// Reserved input codes for the 32 mouse buttons CoreGraphics can report.
 pub(super) const MOUSE_INPUT_CODES: std::ops::Range<u16> = 0x8000..0x8020;
+
+/// macOS's virtual key code for the ISO section key, left of 1 on ISO
+/// keyboards (`kVK_ISO_Section`). Layouts label it § or a dead key such as
+/// `^`, `´`, or `` ` ``.
+pub const ISO_SECTION_KEY_CODE: u16 = 10;
 
 impl HotkeyKey {
     /// macOS mouse buttons occupy a separate input-code range, beyond every
@@ -1020,6 +1064,14 @@ impl RuntimeHotkey {
         modifiers_from_flags(flags).contains(self.modifiers)
     }
 
+    /// Every modifier `flags` names is one this binding names too, sides
+    /// included: a keyless chord's own keys may go down or up one at a time
+    /// without becoming a different modifier.
+    pub fn covers_modifiers(self, flags: u64) -> bool {
+        let flags = self.without_implied_function(flags);
+        self.modifiers.covers(modifiers_from_flags(flags))
+    }
+
     /// The device flags of each modifier the binding holds on both sides,
     /// whose two keys must go down together (`suppression`).
     pub fn both_sides_masks(self) -> impl Iterator<Item = (u64, u64)> {
@@ -1093,6 +1145,186 @@ pub(super) fn side_from_flags(
     }
 }
 
+/// The bit [`PhysicalModifierKeys`] keeps for a tracked keyboard-page usage.
+pub const fn physical_key_bit(usage: u16) -> Option<u8> {
+    match usage {
+        CAPS_LOCK_USAGE => Some(0),
+        LEFT_CONTROL_USAGE => Some(1),
+        LEFT_SHIFT_USAGE => Some(2),
+        LEFT_OPTION_USAGE => Some(3),
+        LEFT_COMMAND_USAGE => Some(4),
+        RIGHT_CONTROL_USAGE => Some(5),
+        RIGHT_SHIFT_USAGE => Some(6),
+        RIGHT_OPTION_USAGE => Some(7),
+        RIGHT_COMMAND_USAGE => Some(8),
+        _ => None,
+    }
+}
+
+/// The physical keys held right now, by HID keyboard-page usage, as the
+/// macOS raw HID tracker reads them. A bit per tracked usage keeps the
+/// snapshot `Copy` and cheap for the event tap.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PhysicalModifierKeys(u16);
+
+impl PhysicalModifierKeys {
+    const TRACKED_MASK: u16 = (1 << 9) - 1;
+
+    pub const fn from_bits(bits: u16) -> Self {
+        Self(bits & Self::TRACKED_MASK)
+    }
+
+    #[cfg(test)]
+    pub fn from_usages(usages: impl IntoIterator<Item = u16>) -> Self {
+        let mut bits = 0;
+        for usage in usages {
+            if let Some(bit) = physical_key_bit(usage) {
+                bits |= 1 << bit;
+            }
+        }
+        Self(bits)
+    }
+
+    pub const fn is_held(self, usage: u16) -> bool {
+        match physical_key_bit(usage) {
+            Some(bit) => self.0 & (1 << bit) != 0,
+            None => false,
+        }
+    }
+}
+
+/// The CoreGraphics flags with the side bits macOS's HID keyboard filter
+/// invents removed.
+///
+/// A Caps Lock remapped to Control arrives as Right Control, so a Right
+/// Control shortcut would also start from Caps Lock. The raw HID tracker
+/// still sees the physical key: when Caps Lock is held and a modifier's
+/// side-specific bit is set without that side's physical key held, its side
+/// bit is cleared and the general flag kept, which matches as either side.
+/// A release, a side press the tracker already sees held, or an inactive
+/// tracker (`None`) leaves `flags` untouched. Two lags limit correctness: if
+/// Caps Lock's own flags event reaches the tap before the raw callback marks
+/// Caps Lock held, the flags pass unchanged and a Right Control shortcut still
+/// starts; if the callback for a real side key lags while Caps Lock is held,
+/// that one event can lose the side until the next event. Without a held Caps
+/// Lock nothing is dropped.
+pub fn normalized_modifier_flags(flags: u64, physical: Option<PhysicalModifierKeys>) -> u64 {
+    let Some(physical) = physical.filter(|keys| keys.is_held(CAPS_LOCK_USAGE)) else {
+        return flags;
+    };
+    const SIDES: [(u64, u16, u64); 8] = [
+        (LEFT_CONTROL_MASK, LEFT_CONTROL_USAGE, CONTROL_KEY_MASK),
+        (RIGHT_CONTROL_MASK, RIGHT_CONTROL_USAGE, CONTROL_KEY_MASK),
+        (LEFT_SHIFT_MASK, LEFT_SHIFT_USAGE, SHIFT_KEY_MASK),
+        (RIGHT_SHIFT_MASK, RIGHT_SHIFT_USAGE, SHIFT_KEY_MASK),
+        (LEFT_OPTION_MASK, LEFT_OPTION_USAGE, OPTION_KEY_MASK),
+        (RIGHT_OPTION_MASK, RIGHT_OPTION_USAGE, OPTION_KEY_MASK),
+        (LEFT_COMMAND_MASK, LEFT_COMMAND_USAGE, COMMAND_KEY_MASK),
+        (RIGHT_COMMAND_MASK, RIGHT_COMMAND_USAGE, COMMAND_KEY_MASK),
+    ];
+    SIDES.iter().fold(flags, |flags, &(side, usage, general)| {
+        if flags & side != 0 && !physical.is_held(usage) {
+            (flags & !side) | general
+        } else {
+            flags
+        }
+    })
+}
+
+pub fn hotkey_conflicts(
+    candidate: &HotkeyBinding,
+    others: impl IntoIterator<Item = HotkeyBinding>,
+) -> bool {
+    others
+        .into_iter()
+        .any(|binding| candidate.overlaps(&binding))
+}
+
+impl AppSettings {
+    /// Whether `binding` overlaps a shortcut `slot` must not share: the other
+    /// active shortcuts (each active Labs › More dictation shortcuts row
+    /// included) and, where meetings exist (macOS), meeting paste. The two
+    /// capture shortcuts never share a key, on or off, since turning captures
+    /// on can't pull them apart. A saved Screenshots record shortcut and
+    /// Annotate's capture shortcuts never share a key, whether Annotate or the
+    /// Lab is on, since turning either on can't pull them apart.
+    pub fn hotkey_in_use(&self, slot: HotkeySlot, binding: &HotkeyBinding) -> bool {
+        let mut others = Vec::new();
+        if slot != HotkeySlot::Dictation {
+            others.push(self.dictation_hotkey.clone());
+        }
+        if slot != HotkeySlot::PasteLast
+            && let Some(paste) = &self.paste_last_hotkey
+        {
+            others.push(paste.clone());
+        }
+        if slot != HotkeySlot::RawDictation
+            && let Some(raw) = &self.raw_dictation_hotkey
+        {
+            others.push(raw.clone());
+        }
+        if slot != HotkeySlot::TypedText
+            && cfg!(target_os = "linux")
+            && self.labs.typed_text
+            && let Some(typed) = &self.typed_text_hotkey
+        {
+            others.push(typed.clone());
+        }
+        if slot != HotkeySlot::Cancel {
+            others.push(self.cancel_hotkey.clone());
+        }
+        if slot != HotkeySlot::SecondDictation
+            && self.labs.second_dictation_shortcut
+            && let Some(second) = &self.second_dictation_hotkey
+            // Linux and Windows register a key, so a keyless binding never
+            // runs there and takes no key from another shortcut.
+            && (cfg!(target_os = "macos") || second.key.is_some())
+        {
+            others.push(second.clone());
+        }
+        if cfg!(target_os = "macos") && self.labs.more_dictation_shortcuts {
+            for (index, row) in self.extra_dictation_hotkeys.iter().enumerate() {
+                if slot != HotkeySlot::ExtraDictation(index)
+                    && let Some(extra) = &row.binding
+                {
+                    others.push(extra.clone());
+                }
+            }
+        }
+        if slot != HotkeySlot::TerminalPaste
+            && cfg!(any(target_os = "windows", target_os = "linux"))
+            && self.labs.terminal_paste_shortcut
+            && let Some(terminal) = &self.terminal_paste_hotkey
+        {
+            others.push(terminal.clone());
+        }
+        if cfg!(target_os = "macos") && self.meetings.available() {
+            others.push(HotkeyBinding::paste_meeting_default());
+        }
+        #[cfg(hex_capture)]
+        if slot != HotkeySlot::Capture && self.capture_on() {
+            others.push(self.capture.hotkey.clone());
+        }
+        #[cfg(hex_capture)]
+        if slot != HotkeySlot::CaptureReplay
+            && cfg!(target_os = "macos")
+            && self.capture_on()
+            && self.labs.annotate_replay
+            && let Some(replay) = &self.capture.replay_hotkey
+        {
+            others.push(replay.clone());
+        }
+        if slot != HotkeySlot::Screenshot && cfg!(target_os = "macos") && self.labs.screenshots {
+            others.push(self.screenshots.hotkey.clone());
+        }
+        // A saved record shortcut and Annotate's own capture shortcuts never
+        // share a key, even with one of them off, so turning either on can
+        // never leave one of the two dead.
+        others.extend(self.screenshots_record_counterparts(slot));
+        hotkey_conflicts(binding, others)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RuntimeHotkeys {
     pub dictation: RuntimeHotkey,
@@ -1104,25 +1336,41 @@ pub struct RuntimeHotkeys {
     pub capture_replay: Option<RuntimeHotkey>,
     /// Dictate without processing, while it is bound.
     pub raw_dictation: Option<RuntimeHotkey>,
-    /// Labs › Second dictation shortcut (macOS), while it is on and bound.
+    /// Labs › Transform typed text (Linux), while it is on and bound.
+    pub typed_text: Option<RuntimeHotkey>,
+    /// Labs › Second dictation shortcut, while it is on and bound.
     pub second_dictation: Option<RuntimeHotkey>,
+    /// Labs › More dictation shortcuts (macOS), while the Lab is on and each
+    /// row is bound and shares no key.
+    pub extra_dictation: [Option<RuntimeHotkey>; MAX_EXTRA_DICTATION_SHORTCUTS],
+    /// Each extra row's activation mode, folded to one its binding can
+    /// trigger.
+    pub extra_dictation_modes: [ExtraDictationMode; MAX_EXTRA_DICTATION_SHORTCUTS],
     /// Toggle mode's cancel shortcut. Not among [`RuntimeHotkeys::all`]:
     /// Hex takes it only while a toggled recording runs.
     pub cancel: Option<RuntimeHotkey>,
 }
 
 impl RuntimeHotkeys {
+    /// The shortcuts [`Self::all`] lists by name, before the extra rows.
+    const NAMED: usize = 8;
+
     /// Every shortcut Hex matches, for suppression and chord evidence.
-    pub fn all(self) -> [Option<RuntimeHotkey>; 7] {
-        [
+    pub fn all(self) -> [Option<RuntimeHotkey>; Self::NAMED + MAX_EXTRA_DICTATION_SHORTCUTS] {
+        let named: [_; Self::NAMED] = [
             Some(self.dictation),
             self.paste_last,
             self.paste_meeting,
             self.capture,
             self.capture_replay,
             self.raw_dictation,
+            self.typed_text,
             self.second_dictation,
-        ]
+        ];
+        let mut all = [None; Self::NAMED + MAX_EXTRA_DICTATION_SHORTCUTS];
+        all[..named.len()].copy_from_slice(&named);
+        all[named.len()..].copy_from_slice(&self.extra_dictation);
+        all
     }
 }
 
@@ -1136,8 +1384,117 @@ impl Default for RuntimeHotkeys {
             capture: None,
             capture_replay: None,
             raw_dictation: None,
+            typed_text: None,
             second_dictation: None,
+            extra_dictation: [None; MAX_EXTRA_DICTATION_SHORTCUTS],
+            extra_dictation_modes: [ExtraDictationMode::HoldOrDoubleTap;
+                MAX_EXTRA_DICTATION_SHORTCUTS],
             cancel: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caps_lock_and(usages: impl IntoIterator<Item = u16>) -> PhysicalModifierKeys {
+        PhysicalModifierKeys::from_usages([CAPS_LOCK_USAGE].into_iter().chain(usages))
+    }
+
+    #[test]
+    fn a_binding_covers_only_its_own_modifiers_and_sides() {
+        let left = modifiers_from_flags(OPTION_KEY_MASK | LEFT_OPTION_MASK);
+        let right = modifiers_from_flags(OPTION_KEY_MASK | RIGHT_OPTION_MASK);
+        let both = modifiers_from_flags(OPTION_KEY_MASK | LEFT_OPTION_MASK | RIGHT_OPTION_MASK);
+        let either = HotkeyModifiers::option();
+        assert!(either.covers(left));
+        assert!(either.covers(right));
+        assert!(either.covers(both));
+        let right_binding = HotkeyModifiers {
+            option: Some(ModifierSide::Right),
+            ..Default::default()
+        };
+        assert!(right_binding.covers(right));
+        assert!(!right_binding.covers(left));
+        assert!(!right_binding.covers(both));
+        let both_binding = HotkeyModifiers {
+            option: Some(ModifierSide::Both),
+            ..Default::default()
+        };
+        assert!(both_binding.covers(left));
+        assert!(both_binding.covers(right));
+        assert!(both_binding.covers(both));
+        // A keyless chord's own keys may go down one at a time; another
+        // modifier is not covered.
+        let control_option = HotkeyModifiers::control_option();
+        assert!(control_option.covers(modifiers_from_flags(CONTROL_KEY_MASK | LEFT_CONTROL_MASK)));
+        assert!(!control_option.covers(modifiers_from_flags(COMMAND_KEY_MASK | LEFT_COMMAND_MASK)));
+    }
+
+    #[test]
+    fn a_remapped_caps_lock_loses_the_right_control_side() {
+        let remapped = normalized_modifier_flags(
+            CONTROL_KEY_MASK | RIGHT_CONTROL_MASK,
+            Some(caps_lock_and([])),
+        );
+        assert_eq!(remapped, CONTROL_KEY_MASK);
+        assert_eq!(
+            modifiers_from_flags(remapped).control,
+            Some(ModifierSide::Either)
+        );
+    }
+
+    #[test]
+    fn a_real_right_control_press_is_untouched() {
+        let flags = CONTROL_KEY_MASK | RIGHT_CONTROL_MASK;
+        assert_eq!(
+            normalized_modifier_flags(flags, Some(caps_lock_and([RIGHT_CONTROL_USAGE]))),
+            flags
+        );
+    }
+
+    #[test]
+    fn flags_are_untouched_without_caps_lock() {
+        let flags = CONTROL_KEY_MASK | RIGHT_CONTROL_MASK;
+        assert_eq!(
+            normalized_modifier_flags(
+                flags,
+                Some(PhysicalModifierKeys::from_usages([RIGHT_SHIFT_USAGE]))
+            ),
+            flags
+        );
+    }
+
+    #[test]
+    fn an_inactive_tracker_leaves_flags_untouched() {
+        let flags = CONTROL_KEY_MASK | RIGHT_CONTROL_MASK;
+        assert_eq!(normalized_modifier_flags(flags, None), flags);
+    }
+
+    #[test]
+    fn every_side_is_normalized_and_keeps_its_general_flag() {
+        let flags = OPTION_KEY_MASK
+            | RIGHT_OPTION_MASK
+            | COMMAND_KEY_MASK
+            | RIGHT_COMMAND_MASK
+            | SHIFT_KEY_MASK
+            | LEFT_SHIFT_MASK;
+        let normalized = normalized_modifier_flags(flags, Some(caps_lock_and([LEFT_SHIFT_USAGE])));
+        assert_eq!(
+            normalized,
+            OPTION_KEY_MASK | COMMAND_KEY_MASK | SHIFT_KEY_MASK | LEFT_SHIFT_MASK
+        );
+        let held = modifiers_from_flags(normalized);
+        assert_eq!(held.shift, Some(ModifierSide::Left));
+        assert_eq!(held.option, Some(ModifierSide::Either));
+        assert_eq!(held.command, Some(ModifierSide::Either));
+    }
+
+    #[test]
+    fn untracked_usages_are_ignored() {
+        let keys = PhysicalModifierKeys::from_usages([0x04, CAPS_LOCK_USAGE]);
+        assert!(keys.is_held(CAPS_LOCK_USAGE));
+        assert!(!keys.is_held(0x04));
     }
 }

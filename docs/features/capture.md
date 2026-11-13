@@ -67,16 +67,22 @@ Draw                                     // capture.draw (capture_host::drawing)
 │   physical for the hold on a portal desktop ("Annotate pen" is logged)
 ├── Ink holds 650 ms, then fades over 650 ms on screen; every stroke stays in
 │   the bundle (keyframes, contact sheet, scrawl.json)
-├── Linux: strokes are placed on the recorded screen in its logical points,
-│   from the ScreenCast portal's stream size when it reports one smaller
-│   than the frames, so a fractional scale (1.5, 1.33), which reaches the
-│   overlay rounded up to 2, no longer pins strokes to a top-left part of
-│   the screen; without that size it divides the pixels by the overlay's
-│   scale. Check: scrawl-capture capture::platform::tests
-│   a_fractionally_scaled_screen_keeps_its_logical_size; not observed on a
-│   fractionally scaled monitor. Known gap: the overlay starts below a
-│   desktop bar's reserved area, so saved ink sits that bar's height off
-│   the live ink
+├── Linux: strokes are placed on the recorded screen in its logical points.
+│   A monitor pick whose portal names the output (`mapping_id`, as
+│   xdg-desktop-portal-hyprland 1.4.0+ does, e.g. `DP-3`) opens the pen on
+│   that output with its logical size from xdg-output (linux::output::find),
+│   so strokes land on the recorded monitor even when the overlay had opened
+│   on another one. Otherwise it uses the ScreenCast portal's stream size
+│   when it reports one smaller than the frames, so a fractional scale
+│   (1.5, 1.33), which reaches the overlay rounded up to 2, no longer pins
+│   strokes to a top-left part of the screen; without that size it divides
+│   the pixels by the overlay's scale. Window picks still report no position
+│   and no output. Check: scrawl-capture capture::platform::tests
+│   a_fractionally_scaled_screen_keeps_its_logical_size and
+│   linux::output::tests the_named_output_carries_its_global_and_logical_size;
+│   neither the follow nor a fractional scale is observed on real hardware
+│   here. Known gap: the overlay starts below a desktop bar's reserved area,
+│   so saved ink sits that bar's height off the live ink
 └── Linux recordings show the overlay itself (Wayland can't leave it out)
 
 On Linux                                 // capture.linux
@@ -102,11 +108,18 @@ On Linux                                 // capture.linux
 │   frames in 9.97 s from 282 raw 4K grabs; raw 4K pipe readback is CPU-bound)
 ├── Wayland -> the ScreenCast portal (zbus): Screen asks the desktop once and
 │   keeps its restore token (<support>/screencast-token), so later captures
-│   start without a dialog; Window shows the desktop's picker every time (the
-│   capsule's Window chip goes straight to it); the cursor is embedded
+│   start without a dialog and record the remembered monitor; a monitor pick
+│   the portal names (`mapping_id`: xdg-desktop-portal-hyprland 1.4.0+) moves
+│   the pen to that output (see the pen bullet above). Window shows the
+│   desktop's picker every time (the capsule's Window chip goes straight to
+│   it) and names no output, so the pen keeps its old placement; the cursor
+│   is embedded
 ├── Frames -> the portal's PipeWire stream, libpipewire-0.3 loaded at run
 │   time (`maxFramerate` 60/1); 32-bit RGB as a linear DMA-BUF (niri, GNOME,
-│   KDE) or shared memory
+│   KDE) or shared memory. A stream that ends or fails before its first frame
+│   ends the capture with that reason, keeping no voice; a stream with no frame
+│   yet when the person stops is saved with its voice and marks, the summary
+│   saying the stream sent no frames
 ├── Encoding -> VA-API (libva loaded at run time): each DMA-BUF imported, scaled
 │   to a 2560 px long edge (1920 for a window, exact even sides padded to 16 px
 │   macroblocks and cropped in SPS) and converted on the video engine, H.264
@@ -150,7 +163,8 @@ On Linux                                 // capture.linux
 │   open for the capture
 ├── Words -> one foreground job on the listener's engine (its loaded model)
 ├── Copy -> the summary text through Hex's Linux clipboard (wl-copy or the
-│   X11 clipboard), as the Mac copies it
+│   X11 clipboard), as the Mac copies it; Labs › Copy captures as a zip puts
+│   `<stem>.scrawl.slim.zip` there instead, as a `text/uri-list` file
 ├── Paste -> as the Mac: the contact sheet (image/png), then the summary,
 │   each with Hex's own Ctrl+V (linux/paste). An app that takes no image (a
 │   terminal) gets only the summary, which names the contact sheet; the Mac
@@ -161,6 +175,21 @@ On Linux                                 // capture.linux
 ├── Shortcuts -> F9 (tap to start and stop, hold to draw) through the
 │   GlobalShortcuts portal ("Annotate") or X11 grabs. There is no separate
 │   draw shortcut and no send-to list shortcut on any OS
+├── GNOME Wayland -> no layer-shell, so Rune can't show the capsule or ink
+│   until Labs › Annotate on GNOME (`labs.gnome_annotate`, off by default)
+│   opens them on XWayland (`OverlayOptions::xwayland_input`): override-redirect
+│   windows that take the pointer in their input shape and never keyboard
+│   focus, only while this user's Xwayland already runs (never started by Hex;
+│   the meeting capsules' decision in linux/meeting_capsules.rs). The ink is
+│   made with pointer regions and `KeyPolicy::None`, since Rune refuses an
+│   OnDemand overlay on XWayland, and keeps regions with no hit area while not
+│   drawing because a click-through XWayland window can't take the pointer
+│   later. Esc can't stop drawing there: the capsule's pen button does, or
+│   letting go of a held Annotate key (a tap of it stops the recording). The
+│   in-app picker shows on Linux only in the edge states that return to
+│   Selecting (Window starts the portal's picker, Area isn't offered), and
+│   takes the same opt-in whenever it does. Check: labs
+│   gnome_annotate_is_its_own_bit_*; not run on a GNOME session
 ├── While it records, dictation starts nothing (the portal
 │   or grab already took their keys, so nothing reaches the app)
 ├── Pane -> no Screen Recording row, no transcriber choice, no "Show in screen
@@ -194,7 +223,8 @@ On Windows                               // capture.windows
 ├── While dictating -> General's setting through windows/audio_control, one
 │   suppressor per capture, restored when it ends
 ├── Copy and paste -> the engine's own clipboard and Ctrl+V (handoff): the
-│   contact sheet, then the summary
+│   contact sheet, then the summary; with Labs › Copy captures as a zip, the
+│   copy is the light zip as CF_HDROP instead
 ├── Pane -> no Screen Recording row, no transcriber choice
 └── Gaps: no `hex annotate` (Windows has no control transport yet), no
     iPhone, keys pressed in the app are not logged. Checked only by
@@ -213,8 +243,10 @@ Settings › Annotate                      // capture.pane
 ├── Screen Recording -> read once a second and again when the pane opens or
 │   the window becomes key, never with a prompt (capture_host::screen_access):
 │   the preflight, which keeps its first answer for the life of the process,
-│   then, while it says no, a fresh `scrawl-helper permissions` at most every
-│   2 s on its own thread and a one-frame probe once that says granted
+│   then, while it says no, a fresh `scrawl-helper permissions` on its own
+│   thread: at most every 60 s while nothing shows it, and every 2 s while
+│   its row or the capsule's permission helper is on screen, plus a one-frame
+│   probe once that says granted
 │   ├── granted -> Allowed, no button
 │   ├── granted in System Settings but unusable until Hex relaunches ->
 │   │   "Turns on when Hex restarts" and Restart Hex, never Allow over a switch
@@ -255,7 +287,10 @@ First launch with Annotate on            // capture.import
 ├── Esc while a capture records -> nothing: it reaches the app being recorded,
 │   and Hex's tap lets it through; a dictation under it goes on too (#786)
 ├── The binding is swallowed, never chord evidence for dictation
-└── Hold the dictation shortcut mid-capture -> dictation pastes as usual
+├── Hold the dictation shortcut mid-capture -> dictation pastes as usual
+└── Another app holds Secure Event Input -> ⌥⇧S still starts and stops (a
+    Carbon hotkey while it lasts; Esc doesn't arrive). See dictation.md's
+    Shortcuts Under Secure Input
 
 While a capture records                  // capture.quiet
 ├── Start -> a recording-environment session with General's While dictating
@@ -341,15 +376,16 @@ The capsule                              // capture.capsule (rune_ui/capture_cap
 │   to see your screen · Allow ✕" (Microphone, Accessibility alike)
 │   ├── Allow -> macOS's microphone prompt, else System Settings with the
 │   │   floating guide beside it (permission_guide), never at launch
-│   ├── Followed once a second (feed::watch_grant, screen_access) ->
+│   ├── Followed once a second (feed::watch_grant, screen_access_watched) ->
 │   │   "… is on · Restart Hex" when macOS needs one, then "… is on ·
 │   │   Capture ⌥⇧S"; Capture or the shortcut records the pointer's display
 │   ├── ✕ closes it; unanswered it folds after 2 min; the shortcut brings it
 │   │   back as it stood
-│   ├── A capture written with no frames (Screen Recording turned off mid-way)
-│   │   -> sent with only the voice and marks, its summary noting "No screen:
-│   │   Screen Recording is off for Hex", no contact sheet; the helper opens
-│   │   once its capsule folds
+│   ├── A capture written with no frames -> sent with only the voice and
+│   │   marks, its summary naming the actual reason the picture is missing
+│   │   (Screen Recording is off for Hex, or the screen source failed or sent
+│   │   no frames), no contact sheet; a permission miss opens the helper once
+│   │   its capsule folds
 │   └── Story: hex://story/prototypes/capture-capsule/permission; goldens
 │       capture-capsule-permission{,-restart,-ready}
 ├── A shown recording that leaves with no outcome (a discard, from a chip or
@@ -400,6 +436,31 @@ The capsule                              // capture.capsule (rune_ui/capture_cap
 │   │   runs out, and a rule's send waits (`CaptureCommand::Hold`). Leaving
 │   │   goes on with the time it had left, at least 1 s. A pick already went,
 │   │   so only its Undo waits (`Flow::hold_countdown`)
+│   ├── A capture of Ghostty -> the focused pane's folder and title
+│   │   (Ghostty's AppleScript), and what runs in front in it, read from the
+│   │   process tree under Ghostty (libproc: the shell's tty and foreground
+│   │   group, that process's name, arguments and folder; no new permission).
+│   │   Several panes are told apart by title and folder; still unclear, the
+│   │   process is left out (`look::terminal`)
+│   │   ├── OpenCode's TUI in front -> the session it shows is the top
+│   │   │   suggestion, "open in this terminal": the session titled as the
+│   │   │   terminal's `OC | <title>` (a cut title matches the long one,
+│   │   │   one in the pane's folder first), else the `-s ses_…` it was
+│   │   │   started with. A suggestion like any other, never sent by itself
+│   │   ├── OpenCode's home screen (`OpenCode`) or a plain shell -> the
+│   │   │   folder and the title's words are clues, as before
+│   │   ├── ⇧ (a folder that isn't home or `/`) -> the rule is
+│   │   │   `routing.terminals` keyed on the folder's project root ("hex
+│   │   │   terminal" in the header and the footer's app badge), naming the
+│   │   │   session picked; it covers that folder and everything under it (the
+│   │   │   longest key wins) and sends like a site rule. Ghostty itself stays
+│   │   │   a general app, so no rule ever sends all of Ghostty
+│   │   └── Checks -> `look::tests` (TUI session first, command-line
+│   │       fallback, home screen, home folder, terminal rule),
+│   │       `look::terminal::tests`, `policy` and `config` rule keys, and
+│   │       `capture_host::routing` `an_always_rule_from_a_terminal_keys_on_its_folder`.
+│   │       The process walk was measured once against a real Ghostty; no
+│   │       end-to-end capture of a TUI was run
 ├── A finished capture with nowhere sent yet reads "Copied" from the start
 │   ├── Anything else with somewhere to go (a guess, nothing fitting, no
 │   │   answer) -> macOS: "Copied", then Search with the capture shortcut's
@@ -407,17 +468,23 @@ The capsule                              // capture.capsule (rune_ui/capture_cap
 │   │   it; nothing sends until Kit picks. Linux: closed,
 │   │   with Paste, Inspect, and Send to…, which opens them on a click
 │   │   ├── "Send to" over up to five rows, suggested then the newest
-│   │   │   sessions, with no numbers and no footer; "⇧ remembers" on the
-│   │   │   header's right when a pick can save a rule. The first
-│   │   │   carries its reason in the accent. A reason is a real one in plain
-│   │   │   words ("you were just in it", "same page", "mentioned", "recent")
-│   │   │   or nothing; never "guess"
-│   │   ├── Shift down (a guess or rule with a site or app) -> "⇧ remembers"
-│   │   │   lights, and the highlighted row reads "always"; in the search the
-│   │   │   footer reads "Always send [site] to [row]", the site and the row's
-│   │   │   name each in a rounded-rect badge with its kind's icon (a globe for
-│   │   │   a site, a window for an app, a bubble for the session). Shift+click
-│   │   │   (or ⇧⏎ in the search)
+│   │   │   sessions, with no numbers and no footer; "⇧-click to always send
+│   │   │   [site] here" on the header's right when a pick can save a rule.
+│   │   │   The first carries its reason in the accent. A reason is a real one
+│   │   │   in plain words ("you were just in it", "same page", "mentioned",
+│   │   │   "recent") or nothing; never "guess". No row moves once shown: a
+│   │   │   later answer gives a row its new reason in place and adds new
+│   │   │   sessions last (`routes::keep_rows`, as the router does)
+│   │   ├── Shift down (a guess or rule with a site, terminal folder or app) -> the row under
+│   │   │   the pointer reads "always" in the accent and the header reads
+│   │   │   "Always send [site] to [row]" (with the pointer off the rows,
+│   │   │   "Always send [site] to…" and no row is marked). In the search the
+│   │   │   target is the row under the pointer, else the highlighted one: the
+│   │   │   highlight follows the pointer as in a menu and the arrows go on
+│   │   │   from it. The footer reads "Always send [site] to [row]", the site
+│   │   │   and the row's name each in a rounded-rect badge with its kind's
+│   │   │   icon (a globe for a site, a window for an app, a bubble for the
+│   │   │   session). Shift+click (or ⇧⏎ in the search)
 │   │   │   sends and saves the rule: "Sent to X · always", and its Undo
 │   │   │   takes back the send and the rule (what the key held before, or
 │   │   │   nothing, comes back). The rule names that session (`ses_…`),
@@ -647,7 +714,10 @@ Hex's own windows                        // capture.own-windows
     the last other app, never into Hex
 
 Ink and laser                            // capture.ink
-├── A click-through overlay over the recorded display, excluded from the recording
+├── A click-through overlay over the recorded display, excluded from the
+│   recording; on a Wayland monitor pick the portal names (`mapping_id`) it
+│   is recreated on that output, and strokes use its xdg-output logical size
+│   (see the Linux pen bullet above)
 ├── Shift strokes draw as ink, hold 650 ms, then fade over 650 ms
 └── The laser's tail lasts 420 ms; nothing lags the pointer
 
@@ -689,9 +759,18 @@ Never on Hex's path                      // capture.isolation
     captures), the agentContext summary format off
 
 Retention                                // capture.retention
-└── Hex's own thread: Scrawl's retention pass with capture.*'s policy, 90 s after
-    captures turn on, then hourly; skipped while a capture records or writes,
-    or while Scrawl.app runs (it cleans the shared folder then)
+├── Hex's own thread: Scrawl's retention pass with capture.*'s policy, 90 s after
+│   captures turn on, then hourly; skipped while a capture records or writes,
+│   or while Scrawl.app runs (it cleans the shared folder then)
+├── Linux sends media to the desktop Trash itself (the freedesktop.org Trash
+│   layout, no `trash` command; macOS uses /usr/bin/trash, Windows the
+│   Recycle Bin), so file managers can restore it
+├── `.media-cleaned` is written only after the media reaches the Trash; a
+│   failed trash leaves the media in the bundle. Staging left by an earlier
+│   version or an interrupted pass is put back on the next pass, and staging
+│   whose bundle is gone goes to the Trash
+└── Old media goes to the Trash and the prompt stays; after bundleDays the
+    whole bundle goes
 
 hex capture stop                         // capture.stop
 ├── Closes the sink (≤ 100 ms wait) -> reply: idle + the bundle path, at once
@@ -720,8 +799,46 @@ hex capture stop                         // capture.stop
     │   language. Check: scrawl-capture keyframes
     │   spoken_cues_count_in_other_languages
     ├── Transcription fails -> logged; the bundle has no words, and the outcome says why
-    ├── Written -> image and text copied to the clipboard (Scrawl's handoff)
+    ├── Written -> image and text copied to the clipboard (Scrawl's handoff),
+    │   or the light zip alone with Labs › Copy captures as a zip (capture.copy)
     └── Sent -> the capture-route thread (capture.route)
+
+Copying a written capture                 // capture.copy; Labs › Copy captures as a zip
+├── Off (default) -> the bundle's summary text on the clipboard, as before:
+│   macOS and Windows through Scrawl's handoff (Windows may also put the
+│   contact sheet PNG when the clipboardImage experiment is on), Linux the
+│   summary text through Hex's paster
+├── On -> crates/capture/src/slim_zip.rs writes <stem>.scrawl.slim.zip inside
+│   the bundle (a temp name, then rename) and puts only that file on the
+│   clipboard: macOS a file URL through handoff::copy_file_to_clipboard (the
+│   screenshot card's file copy uses it too), Windows CF_HDROP (a DROPFILES
+│   header and a double-NUL-terminal UTF-16 path list), Linux text/uri-list
+│   (the X11 `text/uri-list` target, or wl-copy --type text/uri-list)
+│   ├── Contents: the bundle's files recursively, paths relative to its root,
+│   │   STORED (no compression), UTF-8 names, a DOS timestamp
+│   ├── Left out: HEAVY_MEDIA (recording.mp4, recording.mov, audio.wav,
+│   │   frames-full/, contact-sheet-full.png), .media-pending, .media-sending,
+│   │   .deliver.json and its .tmp, and any earlier *.slim.zip or temp file;
+│   │   symlinks are skipped
+│   ├── summary.md inside the zip is generated with the bundle folder as `.`,
+│   │   so its header reads anywhere it is unzipped; the summary.md on disk
+│   │   is unchanged
+│   ├── A failed build or clipboard write is logged, and the capture copies
+│   │   as it did before
+│   ├── Refused rather than written as ZIP64 at 0xFFFF files or 0xFFFFFFFF
+│   │   bytes
+│   ├── A terminal paste gets no text: the clipboard holds only the file
+│   ├── scrawl.json and summary.md still name media the zip leaves out
+│   │   (recording.mp4, audio.wav, frames-full/), because they describe the
+│   │   whole capture
+│   └── The capsule's Paste, Inspect, Send to…, routing, and retention still
+│       see the same bundle; the zip goes when the bundle does
+│       // checks: `cargo test --manifest-path crates/capture/Cargo.toml --lib slim_zip`
+│       // (CRC-32 vector, central-directory read-back, excludes, header path,
+│       // a second copy); a_file_is_one_percent_encoded_uri_list_line (linux/paste.rs);
+│       // copy_capture_zip_is_its_own_switch_and_everywhere (labs.rs)
+│       // not verified: pasting the zip into a real chat or agent app on any OS,
+│       // and the Windows clipboard write (cross-compiled only)
 
 What a send carries                      // capture.send (router opencode::send_bundle)
 ├── One prompt: the summary (transcript, marks, notes) as text, then the
@@ -731,13 +848,19 @@ What a send carries                      // capture.send (router opencode::send_
 │   capture folder. The picture does not depend on the folder, so an OpenCode
 │   server on another machine reads it; the text only names where it was recorded
 ├── Every request goes to the running local service over HTTP
-│   (service.json); a service that isn't up is never started
+│   (service.json); a service that isn't up is never started. On Windows with
+│   Labs › OpenCode in WSL on, a service in the default WSL distribution
+│   answers instead (capture.route). The prompt's "Recorded at" line names the
+│   capture folder as its Linux `/mnt/…` path; the summary header keeps the
+│   Windows path
 ├── With an agent host (routing's agentHost), the request body travels on SSH
 │   stdin to a Python 3 standard-library HTTP client. The contact sheet stays
 │   inline; the bundle copy follows the accepted prompt in the background
 │   (the prompt says the folder may still be arriving). Credentials stay remote.
 │   An explicitly configured agentOpencode keeps the CLI and synchronous copy;
 │   without Python 3, the default path falls back to the CLI before any HTTP send
+│       The light-files tar leaves out any `*.slim.zip` and its temp file too:
+│       that copy is this Mac's clipboard attachment, not the capture
 │   └── macOS/Linux reuse the SSH connection for 60 s after its last use,
 │       through an owner-only control socket; Windows opens each connection.
 │       API reads now honor their caller's deadline over SSH too, including
@@ -773,15 +896,19 @@ Where it goes                            // capture.route; capture.routing's aut
 │   NoAnswer | Unreachable. Background refinements preserve an open search and
 │   selected session; a pick or Undo cancels them
 │   ├── Rule -> only a rule the person saved (`routing.sites`, `routing.apps`,
-│   │   a Shift pick's): a three-second countdown begins at Written. A folder
+│   │   `routing.terminals`, a Shift pick's), or a page that names its session (a
+│   │   `<meta name="opencode-session">` tag or an `.opencode-session` file in
+│   │   its folder, found through symlinked folders too), which beats any rule
+│   │   and is sent to that exact session, a subagent's included ("page names
+│   │   it"): a three-second countdown begins at Written. A folder
 │   │   rule shows its repository while its session resolves; it sends once both
 │   │   the countdown and resolution finish. Undo during the countdown posts
 │   │   nothing. The capsule's `Hold` pauses the countdown while the pointer is
 │   │   on it and resumes it with what it had left (at least 1 s; a hold the
 │   │   capsule never ends lapses after 2 min, and the next capture resumes
 │   │   it). Sending -> Sent, or Queued when OpenCode didn't take it. Whatever
-│   │   autoSend, smartRouting, or jevRouting say, a saved rule sends and
-│   │   nothing else sends on its own. smartRouting off decides with the port
+│   │   autoSend, smartRouting, or jevRouting say, a saved rule or signed page
+│   │   sends and nothing else sends on its own. smartRouting off decides with the port
 │   │   ladder, after rules and addresses, on the same look
 │   ├── Guess -> everything else the router would send (Jev's pick, HOME when
 │   │   Jev couldn't tell, a dev server's port, a page's data-session or
@@ -812,9 +939,9 @@ Where it goes                            // capture.route; capture.routing's aut
 │           ~/.local/state/opencode, or OPENCODE_PASSWORD), never the password.
 │           The capture stays saved and copied. Check: capture_host::routing
 │           a_look_that_read_no_sessions_answers_unreachable,
-│           a_failed_send_says_what_went_wrong. Known gap (#1131): Hex on
-│           Windows can't read the registration of an OpenCode running in WSL,
-│           so that setup isn't supported
+│           a_failed_send_says_what_went_wrong. On Windows with Labs ›
+│           OpenCode in WSL on, the capture router reaches the WSL service
+│           too (capture.send)
 ├── An answer for a capsule already closed (dismissed, or past its hold)
 │   leaves it closed; `hex capture list` and `send` still offer the capture
 ├── Starting another capture preserves an older rule's accepted pending send;
