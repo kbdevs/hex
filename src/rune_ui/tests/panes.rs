@@ -462,12 +462,17 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     assert!(!rt.state.settings.labs.return_to_app);
     tap(&mut rt, "lab-return-to-app");
     assert!(rt.state.settings.labs.return_to_app);
+    assert!(!rt.state.settings.labs.shift_to_submit);
+    tap(&mut rt, "lab-shift-to-submit");
+    assert!(rt.state.settings.labs.shift_to_submit);
     assert!(!rt.state.settings.labs.print_start);
     tap(&mut rt, "lab-print-start");
     assert!(rt.state.settings.labs.print_start);
     assert!(!rt.state.settings.labs.caps_lock_dictation);
     tap(&mut rt, "lab-caps-lock-dictation");
     assert!(rt.state.settings.labs.caps_lock_dictation);
+    tap(&mut rt, "chip-output");
+    assert!(rt.find("lab-card-shift-to-submit").is_some());
 
     // Tall enough that the last Labs rows (Share shortcut, Terminal paste)
     // sit inside the window, where a tap reaches them.
@@ -479,6 +484,7 @@ fn contributed_options_are_labs_toggles_off_by_default() {
     assert!(rt.find("lab-keep-on-clipboard").is_some(), "every OS");
     assert!(rt.find("lab-copy-only").is_some(), "macOS and Windows");
     assert!(rt.find("lab-type-dictation").is_none(), "macOS only");
+    assert!(rt.find("lab-shift-to-submit").is_none(), "macOS only");
     assert!(
         rt.find("lab-phonon-refiner").is_none(),
         "Apple silicon macOS only"

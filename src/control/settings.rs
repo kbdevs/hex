@@ -40,6 +40,7 @@ fn available() -> bool {
 
 fn setting_available(key: &str) -> bool {
     (key != "labs.phonon_refiner" || crate::labs::Feature::PhononRefiner.supported())
+        && (key != "labs.shift_to_submit" || crate::labs::Feature::ShiftToSubmit.supported())
         && needs(key).is_none_or(crate::rune_ui::capability)
 }
 
@@ -687,16 +688,17 @@ mod tests {
     }
 
     #[test]
-    fn type_dictation_setting_is_macos_only() {
-        let setting = keys()
-            .find(|setting| setting.key == "labs.type_dictation")
-            .expect("Type dictation setting");
-        assert_eq!(setting_available(setting.key), cfg!(target_os = "macos"));
-        assert_eq!(
-            unavailable_under("labs.type_dictation", crate::policy::Policy::default())
-                .map(|error| error.code),
-            (!cfg!(target_os = "macos")).then_some("unsupported")
-        );
+    fn macos_output_labs_settings_are_registered_and_macos_only() {
+        for key in ["labs.type_dictation", "labs.shift_to_submit"] {
+            let setting = keys()
+                .find(|setting| setting.key == key)
+                .unwrap_or_else(|| panic!("missing {key}"));
+            assert_eq!(setting_available(setting.key), cfg!(target_os = "macos"));
+            assert_eq!(
+                unavailable_under(key, crate::policy::Policy::default()).map(|error| error.code),
+                (!cfg!(target_os = "macos")).then_some("unsupported")
+            );
+        }
     }
 
     #[test]

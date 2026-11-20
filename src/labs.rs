@@ -117,6 +117,7 @@ impl Feature {
             | Self::TypeDictation
             | Self::PhononRefiner
             | Self::ReturnToApp
+            | Self::ShiftToSubmit
             | Self::SpokenFormatting
             | Self::FillerWords
             | Self::SubtitleExport
@@ -263,6 +264,7 @@ impl Feature {
             | Self::CopyCaptureZip
             | Self::ApiBrowserAccess => 20261112,
             Self::KQuantModels => 20261113,
+            Self::ShiftToSubmit => 20261120,
         }
     }
 
@@ -345,7 +347,7 @@ impl Feature {
             | Self::ScreenVocabulary
             | Self::MoreDictationShortcuts => cfg!(target_os = "macos"),
             Self::CopyOnly => cfg!(any(target_os = "macos", target_os = "windows")),
-            Self::ReturnToApp => cfg!(target_os = "macos"),
+            Self::ReturnToApp | Self::ShiftToSubmit => cfg!(target_os = "macos"),
             Self::TypeDictation => cfg!(target_os = "macos"),
             Self::PhononRefiner => cfg!(all(target_os = "macos", target_arch = "aarch64")),
             Self::TapOrHold => cfg!(any(target_os = "macos", target_os = "linux")),
@@ -429,6 +431,7 @@ impl Feature {
             Self::TypeDictation => "type-dictation",
             Self::PhononRefiner => "phonon-refiner",
             Self::ReturnToApp => "return-to-app",
+            Self::ShiftToSubmit => "shift-to-submit",
             Self::SpokenFormatting => "spoken-formatting",
             Self::FillerWords => "filler-words",
             Self::SubtitleExport => "subtitle-export",
@@ -517,6 +520,7 @@ impl Feature {
             Self::TypeDictation => "labs.type_dictation",
             Self::PhononRefiner => "labs.phonon_refiner",
             Self::ReturnToApp => "labs.return_to_app",
+            Self::ShiftToSubmit => "labs.shift_to_submit",
             Self::SpokenFormatting => "labs.spoken_formatting",
             Self::FillerWords => "labs.filler_words",
             Self::SubtitleExport => "labs.subtitle_export",
@@ -609,6 +613,7 @@ impl Feature {
             Self::TypeDictation => settings.labs.type_dictation,
             Self::PhononRefiner => settings.labs.phonon_refiner,
             Self::ReturnToApp => settings.labs.return_to_app,
+            Self::ShiftToSubmit => settings.labs.shift_to_submit,
             Self::SpokenFormatting => settings.labs.spoken_formatting,
             Self::FillerWords => settings.labs.filler_words,
             Self::SubtitleExport => settings.labs.subtitle_export,
@@ -698,6 +703,7 @@ impl Feature {
             &mut labs.type_dictation,
             &mut labs.phonon_refiner,
             &mut labs.return_to_app,
+            &mut labs.shift_to_submit,
             &mut labs.spoken_formatting,
             &mut labs.filler_words,
             &mut labs.subtitle_export,
@@ -791,6 +797,7 @@ impl Feature {
             Self::TypeDictation => settings.labs.type_dictation = on,
             Self::PhononRefiner => settings.labs.phonon_refiner = on,
             Self::ReturnToApp => settings.labs.return_to_app = on,
+            Self::ShiftToSubmit => settings.labs.shift_to_submit = on,
             Self::SpokenFormatting => settings.labs.spoken_formatting = on,
             Self::FillerWords => settings.labs.filler_words = on,
             Self::SubtitleExport => settings.labs.subtitle_export = on,
@@ -1008,6 +1015,9 @@ static TYPE_DICTATION: AtomicBool = AtomicBool::new(false);
 /// is full.
 static PHONON_REFINER: AtomicBool = AtomicBool::new(false);
 
+/// Labs › Shift to submit's switch; the packed state word is full.
+static SHIFT_TO_SUBMIT: AtomicBool = AtomicBool::new(false);
+
 /// The origins Labs › Browser access to the local API allows, set beside
 /// [`API_BROWSER_ACCESS`]: only normalized `scheme://host[:port]` origins,
 /// and empty while the lab is off.
@@ -1042,6 +1052,7 @@ fn state() -> u64 {
                 K_QUANT_MODELS.store(k_quant_models_enabled(&saved), Ordering::Release);
                 TYPE_DICTATION.store(type_dictation_enabled(&saved), Ordering::Release);
                 PHONON_REFINER.store(phonon_refiner_enabled(&saved), Ordering::Release);
+                SHIFT_TO_SUBMIT.store(shift_to_submit_enabled(&saved), Ordering::Release);
                 store_api_browser_access(&saved);
                 store_voice_prompt_phrase(&saved.voice_prompt_phrase);
             }
@@ -1114,6 +1125,15 @@ fn phonon_refiner_enabled(settings: &LabsSettings) -> bool {
         && Feature::PhononRefiner.managed().is_none()
 }
 
+/// Whether settings turn on Labs › Shift to submit in this build, before its
+/// managed lock.
+fn shift_to_submit_enabled(settings: &LabsSettings) -> bool {
+    settings.shift_to_submit
+        && Feature::ShiftToSubmit.supported()
+        && Feature::ShiftToSubmit.shipped()
+        && Feature::ShiftToSubmit.managed().is_none()
+}
+
 /// Whether `settings` turn on Labs › Browser access to the local API in this
 /// build, before its managed lock; the state word has no bit for it.
 fn api_browser_access_enabled(settings: &LabsSettings) -> bool {
@@ -1177,6 +1197,7 @@ pub(crate) fn apply(settings: &LabsSettings) {
     K_QUANT_MODELS.store(k_quant_models_enabled(settings), Ordering::Release);
     TYPE_DICTATION.store(type_dictation_enabled(settings), Ordering::Release);
     PHONON_REFINER.store(phonon_refiner_enabled(settings), Ordering::Release);
+    SHIFT_TO_SUBMIT.store(shift_to_submit_enabled(settings), Ordering::Release);
     store_api_browser_access(settings);
     store_voice_prompt_phrase(&settings.voice_prompt_phrase);
     // Labs › Pause from menu bar: turning it off resumes at once, without

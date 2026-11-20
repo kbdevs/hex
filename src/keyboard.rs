@@ -392,6 +392,11 @@ pub fn post_command(character: char) -> Result<()> {
     post_key_code(key_code, &[(COMMAND_FLAG, COMMAND_KEY_CODE)], 1)
 }
 
+/// Posts plain Return, even when Shift is physically held.
+pub(crate) fn post_return() -> Result<()> {
+    post_key_code(RETURN_KEY_CODE, &[], 1)
+}
+
 /// Types `text` as synthesized key events, never touching the clipboard. Line
 /// breaks are Shift-Return so chat boxes insert a newline instead of sending.
 /// A nonzero interval uses layout key codes and Shift, with a pause after
@@ -789,6 +794,26 @@ mod tests {
             types,
             [FLAGS_CHANGED_EVENT, KEY_DOWN, KEY_UP, FLAGS_CHANGED_EVENT]
         );
+    }
+
+    #[test]
+    fn submit_return_is_one_unmodified_keystroke() {
+        use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+
+        let events = shortcut_event_specs(RETURN_KEY_CODE, &[], 1)
+            .map(|spec| KeyboardEvent::new(spec).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 2);
+        for (event, kind) in events
+            .iter()
+            .zip([NSEventType::KeyDown, NSEventType::KeyUp])
+        {
+            // SAFETY: The event is retained for the AppKit conversion.
+            let native = unsafe { NSEvent::eventWithCGEvent(&*event.0.cast()) }.unwrap();
+            assert_eq!(native.r#type(), kind);
+            assert_eq!(native.keyCode(), RETURN_KEY_CODE);
+            assert!(!native.modifierFlags().contains(NSEventModifierFlags::Shift));
+        }
     }
 
     #[test]

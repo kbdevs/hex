@@ -77,6 +77,7 @@ impl Feature {
             | Self::TypeDictation
             | Self::PhononRefiner
             | Self::ReturnToApp
+            | Self::ShiftToSubmit
             | Self::GnomeClipboardRestore
             | Self::TypedText
             | Self::TerminalPaste

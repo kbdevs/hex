@@ -731,6 +731,29 @@ fn standalone_function_modifier_starts_and_finishes_dictation() {
 }
 
 #[test]
+fn releasing_fn_while_shift_is_held_finishes_dictation() {
+    let now = capture_time();
+    let mut hotkey = DictationHotkey::with_binding(false, now, true, function_binding());
+    let shift = SHIFT_KEY_MASK | crate::app_settings::LEFT_SHIFT_MASK;
+
+    assert_eq!(
+        hotkey.process(InputEvent::Flags(FUNCTION_KEY_MASK), now),
+        Some(HotkeyAction::Start)
+    );
+    assert_eq!(
+        hotkey.process(
+            InputEvent::Flags(FUNCTION_KEY_MASK | shift),
+            now + Duration::from_secs(1)
+        ),
+        None
+    );
+    assert_eq!(
+        hotkey.process(InputEvent::Flags(shift), now + Duration::from_millis(1100)),
+        Some(HotkeyAction::Finish)
+    );
+}
+
+#[test]
 fn globe_key_events_are_not_a_chord_with_the_function_shortcut() {
     let now = capture_time();
     let globe = |down| InputEvent::Key {

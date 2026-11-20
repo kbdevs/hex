@@ -6,15 +6,86 @@ use std::time::Duration;
 use color_eyre::Result;
 
 use crate::audio::CaptureInstant;
+use crate::control::PrintReply;
 use crate::desktop::events::{DictationPhase, EventLog, VoiceEvent, VoiceState, now_ms};
 use crate::dictation::audio::DictationAudio;
 use crate::dictation::context::ContextSnapshot;
 use crate::dictation::indicator::DictationIndicatorEvent;
-use crate::dictation::{DictationClip, Finish};
+use crate::dictation::{DictationClip, Finish, POST_RELEASE_TAIL};
 use crate::feedback::{self, Tone};
 use crate::parakeet::{DictationJobId, DictationWorker, TranscriptionTarget};
+use crate::paste::ShiftSubmit;
 
 use super::{DictationSink, FinishResult};
+
+/// Ends a shortcut dictation at `action_at` and hands it to transcription.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn finish_hotkey_dictation(
+    action_at: CaptureInstant,
+    dictation: &DictationAudio,
+    worker: &DictationWorker,
+    context: &ContextSnapshot,
+    device: &str,
+    events: &mut EventLog,
+    indicator: DictationSink<'_>,
+    release_while_idle: bool,
+    print: Option<PrintReply>,
+    raw: bool,
+    shift_submit: Option<ShiftSubmit>,
+) -> Result<FinishResult> {
+    if dictation.become_intentional(action_at)? && release_while_idle {
+        feedback::play(Tone::DictationStart);
+    }
+    // A dictation over a screenshot lands its words there, never pasted; a
+    // printing capture stops that shot's editor waiting instead.
+    #[cfg(hex_capture)]
+    let print = print
+        .inspect(|_| crate::screenshots::narration::ended())
+        .or_else(crate::screenshots::narration::claim);
+    // A discarded or silent clip never reaches transcription, so its waiter
+    // still hears from it.
+    let unanswered = print.clone();
+    let finished = match print {
+        None => finish_dictation(
+            dictation,
+            action_at,
+            POST_RELEASE_TAIL,
+            worker,
+            if raw {
+                TranscriptionTarget::RawPaste
+            } else {
+                TranscriptionTarget::Paste
+            },
+            context,
+            shift_submit,
+            device,
+            events,
+            indicator,
+        )?,
+        Some(print) => finish_dictation_with(
+            dictation,
+            action_at,
+            POST_RELEASE_TAIL,
+            // Narration lands on its screenshot either way, never pasted.
+            |clip, _| worker.transcribe_printed(clip, print, raw, context.clone()),
+            device,
+            events,
+            indicator,
+        )?,
+    };
+    if matches!(finished, FinishResult::Discarded) {
+        feedback::retract_start();
+    }
+    // A discarded or silent clip submitted no job: say so instead of leaving
+    // the printing command to its cap.
+    if matches!(finished, FinishResult::Discarded | FinishResult::Silent)
+        && let Some(print) = unanswered
+    {
+        print.send(crate::control::PrintedTranscript::NoSpeech);
+    }
+    super::emit_engine_state(events, false, worker, device)?;
+    Ok(finished)
+}
 
 /// Finishes a recording capture the microphone cut short. A kept clip becomes
 /// a copy-only dictation, or answers a print-only one; anything else keeps
@@ -39,7 +110,7 @@ pub(super) fn interrupted_dictation(
         let reply = print.take();
         let submit = |clip| match reply {
             Some(reply) => worker.transcribe_printed(clip, reply, raw, context),
-            None => worker.transcribe(clip, target, context),
+            None => worker.transcribe(clip, target, context, None),
         };
         if salvage_dictation(clip, submit, device, events, indicator)?.is_some() {
             // The capture ended with a job, not a failure: the HUD keeps
@@ -89,13 +160,14 @@ pub(super) fn salvage_dictation(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn finish_dictation(
+fn finish_dictation(
     capture: &DictationAudio,
     ended_at: CaptureInstant,
     tail: Duration,
     worker: &DictationWorker,
     target: TranscriptionTarget,
     context: &ContextSnapshot,
+    shift_submit: Option<ShiftSubmit>,
     device: &str,
     events: &mut EventLog,
     indicator: DictationSink<'_>,
@@ -110,7 +182,7 @@ pub(super) fn finish_dictation(
                 TranscriptionTarget::RawPaste if salvaged => TranscriptionTarget::RawCopyOnlyPaste,
                 target => target,
             };
-            worker.transcribe(clip, target, context.clone())
+            worker.transcribe(clip, target, context.clone(), shift_submit)
         },
         device,
         events,

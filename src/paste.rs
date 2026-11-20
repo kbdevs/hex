@@ -1,4 +1,7 @@
 pub(crate) mod return_to_app;
+mod shift_submit;
+
+pub(crate) use shift_submit::ShiftSubmit;
 
 use std::ffi::{c_char, c_void};
 use std::fs;
@@ -272,6 +275,34 @@ impl Paster {
             revision,
             inserted: text,
         });
+        Ok(())
+    }
+
+    pub(crate) fn paste_and_submit(
+        &mut self,
+        text: &str,
+        mode: PasteMode,
+        submit: Option<ShiftSubmit>,
+        latest_output: impl Fn() -> bool,
+    ) -> Result<()> {
+        let submit = submit.filter(|request| {
+            latest_output() && request.requested() && request.target_is_current(&self.activity)
+        });
+        let focus = submit.and_then(|request| crate::accessibility::focused_element(request.pid()));
+        // The clipboard path waits for the paste to settle. Both typing paths
+        // have posted the last keystroke by the time this returns.
+        self.paste(text, mode)?;
+        if let Some(request) = submit
+            && focus.is_none_or(|focus| focus.still_focused(request.pid()))
+            && latest_output()
+            && request.target_is_current(&self.activity)
+            && ShiftSubmit::no_other_modifier()
+        {
+            match keyboard::post_return() {
+                Ok(()) => self.continuation = None,
+                Err(error) => tracing::warn!(%error, "could not press Return after dictation"),
+            }
+        }
         Ok(())
     }
 

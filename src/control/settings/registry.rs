@@ -378,6 +378,11 @@ pub(super) const KEYS: &[Key] = &[
         "Labs: switch back to the app a dictation started in before pasting (macOS)",
     ),
     key(
+        "labs.shift_to_submit",
+        Kind::Bool,
+        "Labs: hold Shift as dictation ends to press Return after the text is inserted (macOS)",
+    ),
+    key(
         "labs.spoken_formatting",
         Kind::Bool,
         "Labs: turn spoken \"new line\", \"new paragraph\", and \"open/close quote\" into line breaks and quotation marks",

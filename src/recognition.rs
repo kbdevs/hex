@@ -18,12 +18,13 @@ use crate::dictation::service::{
     ProgrammaticDictationResult, ProgrammaticDictationStart, TerminalOutcome, finish_with_result,
     lease_expired, level_for, remember_completion,
 };
-use crate::dictation::{DictationClip, Finish, POST_RELEASE_TAIL};
+use crate::dictation::{DictationClip, Finish};
 use crate::feedback::{self, Tone};
 use crate::parakeet::{
     DictationJobStage, DictationWorker, PasteKind, TranscriptionTarget, WorkerEvent,
 };
-use crate::suppression::{DictationHotkey, DiscardCause, HotkeyAction, InputMonitor};
+use crate::paste::ShiftSubmit;
+use crate::suppression::{DictationHotkey, DiscardCause, HotkeyAction, InputEvent, InputMonitor};
 
 mod context_watch;
 mod guards;
@@ -35,7 +36,9 @@ use guards::{
     caps_lock_can_press, capture_boundary, capture_refusal, claims_escape, paste_last_refusal,
 };
 use hotkeys::{Hotkeys, Shortcut};
-use output::{finish_dictation, finish_dictation_with, interrupted_dictation};
+#[cfg(test)]
+use output::finish_dictation_with;
+use output::{finish_hotkey_dictation, interrupted_dictation};
 
 enum FinishResult {
     Discarded,
@@ -298,6 +301,7 @@ pub fn listen(
                 HotkeyAction::Cancel,
                 false,
                 None,
+                None,
                 input.captured_through(),
                 &input,
                 &dictation_worker,
@@ -519,6 +523,7 @@ pub fn listen(
                                     clip,
                                     TranscriptionTarget::Service,
                                     ContextSnapshot::default(),
+                                    None,
                                 ) {
                                     Ok(job_id) => {
                                         programmatic_results.insert(
@@ -707,6 +712,7 @@ pub fn listen(
                 HotkeyAction::Cancel,
                 false,
                 None,
+                None,
                 input.captured_through(),
                 &input,
                 &dictation_worker,
@@ -731,6 +737,7 @@ pub fn listen(
             handle_hotkey_action(
                 HotkeyAction::Cancel,
                 false,
+                None,
                 None,
                 input.captured_through(),
                 &input,
@@ -763,10 +770,16 @@ pub fn listen(
             let Some(action) = hotkeys.caps_lock_press() else {
                 continue;
             };
+            let shift_submit = if action == HotkeyAction::Finish {
+                ShiftSubmit::capture(&input_monitor.activity, None)
+            } else {
+                None
+            };
             let accepted = handle_hotkey_action(
                 action,
                 hotkeys.raw_capture,
                 None,
+                shift_submit,
                 at,
                 &input,
                 &dictation_worker,
@@ -849,10 +862,23 @@ pub fn listen(
                     hotkeys.raw_capture = shortcut == Shortcut::Raw;
                 }
                 let print = hotkeys.print_for(shortcut, action);
+                let shift_submit = if action == HotkeyAction::Finish
+                    && print.is_none()
+                    && !hotkeys.uses_shift(shortcut)
+                {
+                    let modifiers = match input_event {
+                        InputEvent::Flags(flags) | InputEvent::Key { flags, .. } => Some(flags),
+                        _ => None,
+                    };
+                    ShiftSubmit::capture(&input_monitor.activity, modifiers)
+                } else {
+                    None
+                };
                 let accepted = handle_hotkey_action(
                     action,
                     hotkeys.raw_capture,
                     print,
+                    shift_submit,
                     capture_at,
                     &input,
                     &dictation_worker,
@@ -1212,6 +1238,7 @@ fn handle_hotkey_action(
     action: HotkeyAction,
     raw: bool,
     print: Option<PrintReply>,
+    shift_submit: Option<ShiftSubmit>,
     action_at: CaptureInstant,
     dictation: &DictationAudio,
     worker: &DictationWorker,
@@ -1261,6 +1288,7 @@ fn handle_hotkey_action(
                 release_while_idle,
                 print,
                 raw,
+                shift_submit,
             )
             .map(drop)
         }
@@ -1302,73 +1330,6 @@ fn handle_hotkey_action(
         }
     }?;
     Ok(true)
-}
-
-/// Ends a shortcut dictation at `action_at` and hands it to transcription.
-#[allow(clippy::too_many_arguments)]
-fn finish_hotkey_dictation(
-    action_at: CaptureInstant,
-    dictation: &DictationAudio,
-    worker: &DictationWorker,
-    context: &ContextSnapshot,
-    device: &str,
-    events: &mut EventLog,
-    indicator: DictationSink<'_>,
-    release_while_idle: bool,
-    print: Option<PrintReply>,
-    raw: bool,
-) -> Result<FinishResult> {
-    if dictation.become_intentional(action_at)? && release_while_idle {
-        feedback::play(Tone::DictationStart);
-    }
-    // A dictation over a screenshot lands its words there, never pasted; a
-    // printing capture stops that shot's editor waiting instead.
-    #[cfg(hex_capture)]
-    let print = print
-        .inspect(|_| crate::screenshots::narration::ended())
-        .or_else(crate::screenshots::narration::claim);
-    // A discarded or silent clip never reaches transcription, so its waiter
-    // still hears from it.
-    let unanswered = print.clone();
-    let finished = match print {
-        None => finish_dictation(
-            dictation,
-            action_at,
-            POST_RELEASE_TAIL,
-            worker,
-            if raw {
-                TranscriptionTarget::RawPaste
-            } else {
-                TranscriptionTarget::Paste
-            },
-            context,
-            device,
-            events,
-            indicator,
-        )?,
-        Some(print) => finish_dictation_with(
-            dictation,
-            action_at,
-            POST_RELEASE_TAIL,
-            // Narration lands on its screenshot either way, never pasted.
-            |clip, _| worker.transcribe_printed(clip, print, raw, context.clone()),
-            device,
-            events,
-            indicator,
-        )?,
-    };
-    if matches!(finished, FinishResult::Discarded) {
-        feedback::retract_start();
-    }
-    // A discarded or silent clip submitted no job: say so instead of leaving
-    // the printing command to its cap.
-    if matches!(finished, FinishResult::Discarded | FinishResult::Silent)
-        && let Some(print) = unanswered
-    {
-        print.send(crate::control::PrintedTranscript::NoSpeech);
-    }
-    emit_engine_state(events, false, worker, device)?;
-    Ok(finished)
 }
 
 /// A control start has no press to judge, so its capture counts as
@@ -1433,6 +1394,7 @@ fn control_dictation(
                 HotkeyAction::CancelShortcut,
                 false,
                 None,
+                None,
                 input.captured_through(),
                 input,
                 worker,
@@ -1469,6 +1431,7 @@ fn control_dictation(
             let accepted = handle_hotkey_action(
                 HotkeyAction::Start,
                 raw,
+                None,
                 None,
                 capture_boundary(input, release_while_idle),
                 input,
@@ -1530,6 +1493,7 @@ fn control_dictation(
                 release_while_idle,
                 print,
                 hotkeys.raw_capture,
+                None,
             )?;
             match finished {
                 FinishResult::Discarded | FinishResult::Silent if printing => {
