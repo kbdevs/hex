@@ -100,6 +100,9 @@ pub struct LabsSettings {
     /// A dictation pastes into the app its capture started in, bringing it
     /// back to the front if another app came forward meanwhile (macOS).
     pub return_to_app: bool,
+    /// Holding Shift while dictation finishes presses Return after the text
+    /// is inserted (macOS).
+    pub shift_to_submit: bool,
     /// Spoken "new line", "new paragraph", and "open/close quote" become line breaks and quotes (issue 630).
     pub spoken_formatting: bool,
     /// Filler words such as "um" and "uh" are removed from dictations (issue 631).
@@ -336,6 +339,7 @@ impl Default for LabsSettings {
             type_dictation: false,
             phonon_refiner: false,
             return_to_app: false,
+            shift_to_submit: false,
             spoken_formatting: false,
             filler_words: false,
             subtitle_export: false,

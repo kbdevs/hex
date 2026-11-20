@@ -102,6 +102,14 @@ pub fn return_to_app() -> bool {
     on(RETURN_TO_APP) && Feature::ReturnToApp.on_this_os()
 }
 
+/// Holding Shift while dictation finishes presses Return after the text is
+/// inserted (macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn shift_to_submit() -> bool {
+    let _ = super::state();
+    super::SHIFT_TO_SUBMIT.load(Ordering::Acquire) && Feature::ShiftToSubmit.on_this_os()
+}
+
 /// Spoken formatting phrases become line breaks and quotation marks (read
 /// as each dictation's processing starts).
 pub fn spoken_formatting() -> bool {

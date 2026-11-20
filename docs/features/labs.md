@@ -55,6 +55,7 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Keep dictation on clipboard no labs.keep_on_clipboard (every OS) a pasted dictation stays on the clipboard; the previous one is not restored (#200)
 ├── Copy dictation only no labs.copy_only (macOS, Windows)    a dictation goes to the clipboard and is never pasted; Paste last dictation still pastes (#629)
 ├── Return to app   no    labs.return_to_app           (macOS)   a dictation pastes into the app it started in, switching back to it first when another app came forward
+├── Shift to submit no    labs.shift_to_submit         (macOS)   hold Shift as dictation ends to press Return after the text is inserted
 ├── Print-only CLI dictation no labs.print_start        (macOS)   hex dictation start --print answers with the transcript however the recording ends; never pasted or copied
 ├── Voice prompt    no    labs.voice_prompt + labs.voice_prompt_phrase ("rewrite this", every OS)
 │                                        a spoken phrase inside a dictation hands the mode's OpenCode model a one-off
@@ -739,6 +740,12 @@ in [labs.rs](../../src/labs.rs). Not yet observed: a real Mac with another app
 taking focus mid-dictation. The `mac-labs` and `mac-labs-link` goldens moved
 with the Labs and Output card counts and were regenerated on Linux; the card
 itself sits in a folded group there.
+
+Shift to submit (`shift-to-submit`, macOS): the `labs.shift_to_submit` switch
+defaults off. While it is on, holding Shift as dictation ends presses Return
+after Hex inserts the text. Settings › Labs lists the toggle in Output. A
+macOS settings fixture also shows the row on Linux. The runtime reads
+`crate::labs::shift_to_submit()`.
 
 Print-only CLI dictation (`print-start`, macOS): while on, `hex dictation
 start --print` records a dictation that belongs to the command instead of the

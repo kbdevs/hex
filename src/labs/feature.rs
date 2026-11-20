@@ -28,6 +28,7 @@ pub enum Feature {
     TypeDictation,
     PhononRefiner,
     ReturnToApp,
+    ShiftToSubmit,
     SpokenFormatting,
     FillerWords,
     SubtitleExport,
@@ -90,7 +91,7 @@ pub enum Feature {
 }
 
 impl Feature {
-    pub const ALL: [Self; 82] = [
+    pub const ALL: [Self; 83] = [
         Self::Meetings,
         Self::VoiceFilter,
         Self::Playground,
@@ -114,6 +115,7 @@ impl Feature {
         Self::TypeDictation,
         Self::PhononRefiner,
         Self::ReturnToApp,
+        Self::ShiftToSubmit,
         Self::SpokenFormatting,
         Self::FillerWords,
         Self::SubtitleExport,

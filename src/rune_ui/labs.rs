@@ -679,6 +679,12 @@ fn rows(ui: &Ui) -> Vec<Row> {
             tr("Return to app"),
             tr("If another app comes to the front while you dictate, Hex switches back to the app you started in before pasting. If it can't, nothing is pasted and Paste last dictation has the text."),
         ));
+        rows.push(row(
+            Feature::ShiftToSubmit,
+            Some(&KEYBOARD),
+            tr("Shift to submit"),
+            tr("Hold Shift as you finish dictating to press Return after the text is inserted"),
+        ));
         // macOS's listener answers a printing start when its dictation ends.
         rows.push(row(
             Feature::PrintStart,
@@ -1171,6 +1177,7 @@ fn row_key(lab: Lab) -> &'static str {
         Feature::TypeDictation => "lab-type-dictation",
         Feature::PhononRefiner => "lab-phonon-refiner",
         Feature::ReturnToApp => "lab-return-to-app",
+        Feature::ShiftToSubmit => "lab-shift-to-submit",
         Feature::SpokenFormatting => "lab-spoken-formatting",
         Feature::FillerWords => "lab-filler-words",
         Feature::SubtitleExport => "lab-subtitle-export",

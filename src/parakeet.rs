@@ -15,7 +15,7 @@ use crate::dictation::processor::ProcessingObservation;
 use crate::dictation::{DictationClip, pad_for_parakeet};
 use crate::history::{History, HistoryDraft, HistoryKind};
 use crate::meeting;
-use crate::paste::{PasteMode, Paster};
+use crate::paste::{PasteMode, Paster, ShiftSubmit};
 use crate::suppression::InputActivity;
 use crate::transcription::WarmTranscriber;
 use crate::transcription::engine::{PendingTranscript, TranscriptionEngine};
@@ -191,6 +191,7 @@ struct JobControl {
     /// A printing stop's reply; dropping the job unanswered tells it the
     /// dictation was cancelled or failed.
     print: Mutex<Option<crate::control::PrintReply>>,
+    shift_submit: Option<ShiftSubmit>,
 }
 
 impl JobControl {
@@ -373,8 +374,9 @@ impl DictationWorker {
         clip: DictationClip,
         target: TranscriptionTarget,
         context: ContextSnapshot,
+        shift_submit: Option<ShiftSubmit>,
     ) -> Result<DictationJobId, &'static str> {
-        self.submit(clip, target, context, None)
+        self.submit(clip, target, context, None, shift_submit)
     }
 
     /// Like a paste, but the transcript (processed unless `raw`) goes to
@@ -391,7 +393,7 @@ impl DictationWorker {
         } else {
             TranscriptionTarget::Print
         };
-        self.submit(clip, target, context, Some(print))
+        self.submit(clip, target, context, Some(print), None)
     }
 
     fn submit(
@@ -400,6 +402,7 @@ impl DictationWorker {
         target: TranscriptionTarget,
         context: ContextSnapshot,
         print: Option<crate::control::PrintReply>,
+        shift_submit: Option<ShiftSubmit>,
     ) -> Result<DictationJobId, &'static str> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let job_id = DictationJobId(state.next_output_sequence()?);
@@ -416,6 +419,7 @@ impl DictationWorker {
         };
         let control = Arc::new(JobControl {
             print: Mutex::new(print),
+            shift_submit,
         });
         let (_, selection) = crate::app_settings::transcription_selection();
         let language = selection.language.clone();
@@ -577,11 +581,21 @@ fn run_output_worker(
             continue;
         }
         for job in ordered.push(job) {
+            let sequence = job.sequence();
             let event = finish_output(
                 job,
                 // Read the Labs switches as each ordered output starts.
                 PasteMode::dictation(crate::labs::copy_only(), crate::labs::type_dictation()),
-                &mut |text, mode| paster.paste(text, mode),
+                &mut |text, mode, shift_submit| {
+                    paster.paste_and_submit(text, mode, shift_submit, || {
+                        let next = state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .next_sequence;
+                        next == sequence + 1
+                            && !crate::audio::recording_environment::capture_active()
+                    })
+                },
                 &mut last_transcript,
                 history.as_ref(),
             );
@@ -1002,7 +1016,7 @@ fn queue_error(error: TrySendError<impl Sized>) -> &'static str {
 fn finish_output(
     job: OutputJob,
     dictation_mode: PasteMode,
-    paste: &mut impl FnMut(&str, PasteMode) -> Result<()>,
+    paste: &mut impl FnMut(&str, PasteMode, Option<ShiftSubmit>) -> Result<()>,
     last_transcript: &mut Option<String>,
     history: Option<&History>,
 ) -> WorkerEvent {
@@ -1061,7 +1075,11 @@ fn finish_output(
                             // clipboard while Hex saved it) keeps the text
                             // for Paste last dictation, as above, so the
                             // dictation isn't lost.
-                            paste(&completed.text, mode).inspect_err(|_| {
+                            let shift_submit = match mode {
+                                PasteMode::Continue | PasteMode::Type => control.shift_submit,
+                                _ => None,
+                            };
+                            paste(&completed.text, mode, shift_submit).inspect_err(|_| {
                                 *last_transcript = Some(completed.text.clone());
                             })
                         }
@@ -1119,12 +1137,14 @@ fn finish_output(
                     .as_deref()
                     .ok_or_else(|| "no previous transcript is available".to_string())
                     .and_then(|text| {
-                        paste(text, PasteMode::Continue).map_err(|error| error.to_string())?;
+                        paste(text, PasteMode::Continue, None)
+                            .map_err(|error| error.to_string())?;
                         Ok(text.to_string())
                     }),
-                PasteKind::MeetingDelta => {
-                    paste_meeting_delta(paste).map_err(|error| error.to_string())
-                }
+                PasteKind::MeetingDelta => meeting::consume_active_or_latest_delta(|text| {
+                    paste(text, PasteMode::Standalone, None)
+                })
+                .map_err(|error| error.to_string()),
             };
             WorkerEvent::Pasted { kind, result }
         }
@@ -1159,10 +1179,6 @@ fn record_history(
     if let Err(error) = history.record(draft) {
         tracing::warn!(%error, "could not record dictation history");
     }
-}
-
-fn paste_meeting_delta(paste: &mut impl FnMut(&str, PasteMode) -> Result<()>) -> Result<String> {
-    meeting::consume_active_or_latest_delta(|text| paste(text, PasteMode::Standalone))
 }
 
 pub(crate) fn default_model_path() -> Result<std::path::PathBuf> {
@@ -1433,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_dictation_uses_saved_output_mode() {
+    fn primary_dictation_uses_saved_output_mode_and_only_submits_inserted_text() {
         for expected_mode in [PasteMode::Continue, PasteMode::Type, PasteMode::CopyOnly] {
             for target in [TranscriptionTarget::Paste, TranscriptionTarget::RawPaste] {
                 let job = processing_job(target);
@@ -1443,7 +1459,10 @@ mod tests {
                 let event = finish_output(
                     OutputJob::Completed {
                         job_id: job.job_id,
-                        control: job.control,
+                        control: Arc::new(JobControl {
+                            shift_submit: Some(ShiftSubmit::fixture()),
+                            ..JobControl::default()
+                        }),
                         target,
                         result: Box::new(Ok(CompletedTranscript {
                             text: text.into(),
@@ -1457,8 +1476,9 @@ mod tests {
                         })),
                     },
                     expected_mode,
-                    &mut |text, mode| {
+                    &mut |text, mode, shift_submit| {
                         assert_eq!(mode, expected_mode);
+                        assert_eq!(shift_submit.is_some(), mode != PasteMode::CopyOnly);
                         emitted.push(text.to_string());
                         Ok(())
                     },
@@ -1599,7 +1619,7 @@ mod tests {
                 })),
             },
             PasteMode::Continue,
-            &mut |_, _| Err(eyre!("clipboard changed while Hex was preserving it")),
+            &mut |_, _, _| Err(eyre!("clipboard changed while Hex was preserving it")),
             &mut last_transcript,
             None,
         );
@@ -1656,7 +1676,8 @@ mod tests {
                     })),
                 },
                 PasteMode::Continue,
-                &mut |pasted_text, mode| {
+                &mut |pasted_text, mode, shift_submit| {
+                    assert!(shift_submit.is_none());
                     pasted = Some((pasted_text.to_string(), mode));
                     Ok(())
                 },

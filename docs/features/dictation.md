@@ -1795,6 +1795,13 @@ check version detection on fake bundles;
 [keyboard.rs](../../src/keyboard.rs) check the typed events. Neither proves
 insertion into a real Chrome page.
 
+**Shift to submit (Labs, macOS):** Hold Shift as you finish with a
+dictation shortcut, or while Hex prepares the text. After a successful
+paste or the last typed key, Hex presses plain Return once. Empty,
+cancelled, print-only, copied, and recovered dictations send no Return.
+The request expires if another output is queued or if the app or input
+focus changes. A dictation shortcut that includes Shift does not arm it.
+
 **Type dictation (Labs):** Labs > Type dictation
 (`labs.type_dictation`, `hex labs on|off type-dictation`) selects the output
 for ordinary and raw macOS dictations when output commits. It defaults off:

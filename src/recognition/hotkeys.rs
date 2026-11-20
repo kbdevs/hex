@@ -108,6 +108,12 @@ impl Hotkeys {
         }
     }
 
+    /// Shift in the shortcut itself is not a request to submit.
+    pub(super) fn uses_shift(&self, shortcut: Shortcut) -> bool {
+        self.machine(shortcut)
+            .is_some_and(|machine| machine.binding().modifiers.shift.is_some())
+    }
+
     fn machine_mut(&mut self, shortcut: Shortcut) -> Option<&mut DictationHotkey> {
         match shortcut {
             Shortcut::Dictation => Some(&mut self.dictation),

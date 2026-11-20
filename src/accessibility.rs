@@ -52,6 +52,7 @@ struct CfRange {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFGetTypeID(value: CfTypeRef) -> usize;
+    fn CFEqual(left: CfTypeRef, right: CfTypeRef) -> u8;
     fn CFNumberGetTypeID() -> usize;
     fn CFNumberGetValue(number: CfTypeRef, kind: isize, value: *mut c_void) -> u8;
     fn CFStringGetTypeID() -> usize;
@@ -355,8 +356,7 @@ fn copy_elements_up_to(element: &CfObject, name: &CStr, limit: usize) -> Vec<CfO
 /// focused text element, for Labs › Smart spacing. `None` when text is
 /// selected, the cursor is at the start, or the app doesn't say.
 pub fn char_before_caret(pid: i32) -> Option<char> {
-    let application = foreign_application(pid)?;
-    let focused = copy_element(&application, c"AXFocusedUIElement")?;
+    let focused = focused_element(pid)?.element;
     let selection = copy_range(&focused, c"AXSelectedTextRange")?;
     if selection.length != 0 || selection.location <= 0 {
         return None;
@@ -369,6 +369,26 @@ pub fn char_before_caret(pid: i32) -> Option<char> {
         };
         copy_string_for_range(&focused, range)?.chars().next_back()
     })
+}
+
+/// The focused element's identity. No field contents are read.
+pub(crate) struct FocusedElement {
+    element: CfObject,
+}
+
+pub(crate) fn focused_element(pid: i32) -> Option<FocusedElement> {
+    let application = foreign_application(pid)?;
+    let element = copy_element(&application, c"AXFocusedUIElement")?;
+    Some(FocusedElement { element })
+}
+
+impl FocusedElement {
+    pub(crate) fn still_focused(&self, pid: i32) -> bool {
+        focused_element(pid).is_some_and(|other| {
+            // SAFETY: both retained Core Foundation objects are valid.
+            unsafe { CFEqual(self.element.0, other.element.0) != 0 }
+        })
+    }
 }
 
 fn copy_range(element: &CfObject, name: &CStr) -> Option<CfRange> {

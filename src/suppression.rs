@@ -417,6 +417,12 @@ pub(crate) fn alpha_shift_now() -> bool {
         != 0
 }
 
+/// The modifiers held on the physical keyboard, excluding toggle state.
+pub(crate) fn held_modifiers() -> u64 {
+    // SAFETY: a read-only CoreGraphics state query.
+    (unsafe { CGEventSourceFlagsState(HID_SYSTEM_STATE) }) & HOTKEY_MODIFIERS_MASK
+}
+
 /// The modifier flags that keep a keyboard from reading neutral. Caps Lock's
 /// alpha shift is a toggle rather than a hold, and arrow-key metadata can
 /// leave SecondaryFn set after release, which `recover_stale_keys_with`

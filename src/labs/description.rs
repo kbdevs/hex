@@ -57,6 +57,9 @@ impl Feature {
             Self::ReturnToApp => {
                 "If another app comes to the front while you dictate, switch back to the app you started in before pasting"
             }
+            Self::ShiftToSubmit => {
+                "Hold Shift as you finish dictating to press Return after the text is inserted"
+            }
             Self::SpokenFormatting => {
                 "Turn spoken \"new line\", \"new paragraph\", and \"open/close quote\" into line breaks and quotation marks"
             }
