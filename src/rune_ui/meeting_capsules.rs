@@ -1,6 +1,5 @@
 //! The meeting capsules on Rune: the calendar meeting reminder, the
-//! recording offer, "left the call", the ready transcript, and the recording
-//! capsule. Each is an
+//! recording offer, "left the call", and the recording capsule. Each is an
 //! interactive Rune overlay, which on macOS is a non-activating `NSPanel`:
 //! its buttons take clicks while the call app keeps focus and Hex never
 //! activates. An offer that times out only closes; nothing starts or stops
@@ -15,8 +14,7 @@
 //! Option-Control-V's cursor and first transcribes the call up to the click
 //! (`meeting::entries_for_copy`), saying "Transcribing…" meanwhile. "Copy
 //! agent prompt" copies instructions that tell a coding agent which `hex
-//! meetings` commands read the meeting. The ready panel offers the same three
-//! under the finished meeting's title and summary.
+//! meetings` commands read the meeting.
 //!
 //! The recording capsule rests as a small pill in its corner, only its voice
 //! bars and elapsed time, and springs open into a panel with Stop and its
@@ -27,7 +25,7 @@
 //! stands in for it until Keep recording, and turning the setting on or off
 //! mid-recording shows or hides it within a second.
 //! With Labs › Movable meeting capsules on, the panel capsules (offer,
-//! reminder, call ended, ready, recording automatically) show in that same
+//! reminder, call ended, recording automatically) show in that same
 //! saved corner and drag the same way; off, they stay in the top right.
 //!
 //! On a Linux Wayland compositor without layer-shell (GNOME) the capsules
@@ -53,13 +51,13 @@ use crate::calendar::CalendarMeeting;
 use crate::desktop::i18n::{tr, tr_fill};
 use crate::meeting::detection::MeetingCandidate;
 use crate::meeting::watcher::{ControllerCommand, ControllerEvent};
-use crate::meeting::{self, MeetingManifest, TranscriptEntry};
+use crate::meeting::{self, TranscriptEntry};
 
 mod panel;
 
-use panel::{Bars, agent_prompt, hex_command, ready, ready_summary, recording, recording_notice};
+use panel::{Bars, agent_prompt, hex_command, recording, recording_notice};
 
-/// The offer, call ended, and ready capsules.
+/// The offer capsule's default width.
 const MEETING_PANEL_WIDTH: f32 = 420.0;
 /// The offer's "…" choices need room for three buttons beside the name.
 const MEETING_MENU_WIDTH: f32 = 560.0;
@@ -80,7 +78,7 @@ const REST_HEIGHT: f32 = 38.0;
 /// The resting pill's sides, and the open panel header's right side, so the
 /// timer stays put as the pill opens.
 const REST_PX: f32 = 11.0;
-/// The open recording pill and the ready panel.
+/// The open recording pill.
 const PANEL_WIDTH: f32 = 252.0;
 const PANEL_RADIUS: f32 = 13.0;
 /// Around the open panel's rows.
@@ -89,15 +87,12 @@ const HEADER_HEIGHT: f32 = 36.0;
 const ROW_HEIGHT: f32 = 36.0;
 /// Concentric with the panel across [`PANEL_PAD`].
 const ROW_RADIUS: f32 = PANEL_RADIUS - PANEL_PAD;
-/// A row's icon and label inset; titles and summaries share it.
+/// A row's icon and label inset.
 const ROW_PX: f32 = 9.0;
 /// Under the first row, which is raised.
 const FIRST_ROW_GAP: f32 = 2.0;
 /// "Microphone is silent" or "Started automatically" under the header.
 const NOTICE_HEIGHT: f32 = 20.0;
-/// The ready panel's summary: Apple Intelligence's two sentences.
-const SUMMARY_LINES: usize = 3;
-const SUMMARY_LINE: f32 = 19.5;
 /// The resting pill fits a timer up to `100:00`.
 #[cfg(target_os = "windows")]
 const REST_WINDOW_WIDTH: f32 = 116.0;
@@ -131,7 +126,6 @@ const BAR_SPRING: Spring = Spring::new(0.12, 0.0);
 /// How long a copy says "Copied".
 const COPIED_FEEDBACK: Duration = Duration::from_millis(1_500);
 const OFFER_TIMEOUT: Duration = Duration::from_secs(20);
-const READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long after an offer Linux checks that its overlay opened.
 #[cfg(target_os = "linux")]
 const OFFER_CHECK: Duration = Duration::from_secs(2);
@@ -158,7 +152,6 @@ enum Kind {
         app: String,
         auto_stop: bool,
     },
-    Ready(Box<MeetingManifest>),
     /// An automatic recording while the recording indicator is off.
     AutoStarted {
         title: String,
@@ -230,9 +223,7 @@ impl PillModel {
             }
             ControllerEvent::ReminderWithdrawn { .. }
             | ControllerEvent::Chapters(_)
-            | ControllerEvent::ImportFailed { .. }
-            | ControllerEvent::NotesStarted
-            | ControllerEvent::NotesFinished(_) => {}
+            | ControllerEvent::ImportFailed { .. } => {}
         }
     }
 
@@ -255,8 +246,7 @@ enum LiveCopy {
     Prompt,
 }
 
-/// The shown meeting's transcript as last read: the recording's in-call
-/// transcript by the ticker, or the ready meeting's when it shows.
+/// The in-call transcript as last read by the ticker.
 #[derive(Default)]
 struct Live {
     entries: Vec<TranscriptEntry>,
@@ -288,12 +278,8 @@ struct Capsule {
     keep_recording: Option<Arc<dyn Fn() + Send + Sync>>,
     resize: Option<Resize>,
     choose: Choose,
-    /// The pointer is over the recording pill (or holding it), or over the
-    /// ready panel.
+    /// The pointer is over the recording pill or holding it.
     hovered: bool,
-    /// The ready panel's time ran out while the pointer was over it; it
-    /// closes when the pointer leaves.
-    expired: bool,
     /// Where the recording capsule rests, and the panel while
     /// [`Capsule::movable`].
     corner: MeetingIndicatorCorner,
@@ -335,12 +321,10 @@ impl Capsule {
         }
     }
 
-    /// The meeting whose transcript the capsule copies: the recording, or
-    /// the ready meeting.
+    /// The recording whose transcript the capsule copies.
     fn meeting_id(&self) -> Option<&str> {
         match &self.kind {
             Some(Kind::Recording(Recording { id, .. })) => Some(id),
-            Some(Kind::Ready(manifest)) => Some(&manifest.id),
             _ => None,
         }
     }
@@ -362,9 +346,6 @@ impl Capsule {
         self.hovered = inside;
         #[cfg(target_os = "windows")]
         self.fit_recording_window();
-        if !inside && self.expired {
-            self.close();
-        }
     }
 
     /// Saves the offered provider's choice; returns whether there was one.
@@ -444,39 +425,19 @@ impl Capsule {
     }
 
     fn copy_all(&mut self, tx: &mut Tx) {
-        let markdown = match &self.kind {
-            Some(Kind::Recording(_)) if self.live.entries.is_empty() => return,
-            Some(Kind::Recording(_)) => meeting::transcript_markdown(&self.live.entries),
-            Some(Kind::Ready(manifest)) => {
-                match meeting::transcript_markdown_for_manifest(manifest) {
-                    Ok(markdown) => markdown,
-                    Err(error) => {
-                        tracing::warn!(%error, "could not copy meeting transcript");
-                        return;
-                    }
-                }
-            }
-            _ => return,
-        };
-        tx.copy(markdown);
+        if !matches!(&self.kind, Some(Kind::Recording(_))) || self.live.entries.is_empty() {
+            return;
+        }
+        tx.copy(meeting::transcript_markdown(&self.live.entries));
         self.live.copied = Some((LiveCopy::All, Instant::now()));
     }
 
     fn copy_prompt(&mut self, tx: &mut Tx) {
-        let prompt = match &self.kind {
-            Some(Kind::Recording(Recording { id, title, .. })) => {
-                let reached = self.live.entries.last().map_or(0, |entry| entry.end_ms);
-                agent_prompt(&hex_command(), id, title, Some(reached))
-            }
-            Some(Kind::Ready(manifest)) => agent_prompt(
-                &hex_command(),
-                &manifest.id,
-                &meeting::display_title(manifest),
-                None,
-            ),
-            _ => return,
+        let Some(Kind::Recording(Recording { id, title, .. })) = &self.kind else {
+            return;
         };
-        tx.copy(prompt);
+        let reached = self.live.entries.last().map_or(0, |entry| entry.end_ms);
+        tx.copy(agent_prompt(&hex_command(), id, title, reached));
         self.live.copied = Some((LiveCopy::Prompt, Instant::now()));
     }
 
@@ -486,7 +447,6 @@ impl Capsule {
             Some(Kind::Recording(shown)) => {
                 recording_window_size(self.hovered, recording_notice(shown).is_some())
             }
-            Some(Kind::Ready(manifest)) => ready_window_size(manifest),
             Some(Kind::Offer(_)) if self.more_open => (MEETING_MENU_WIDTH, MEETING_PANEL_HEIGHT),
             Some(kind) => (panel_width(kind), MEETING_PANEL_HEIGHT),
             None => (MEETING_PANEL_WIDTH, MEETING_PANEL_HEIGHT),
@@ -539,25 +499,6 @@ fn recording_window_size(open: bool, noticed: bool) -> (f32, f32) {
         return (width, REST_HEIGHT + 2.0 * CAPSULE_INSET);
     }
     RECORDING_WINDOW
-}
-
-/// The ready panel's window: its header, a summary while there is one or one
-/// is being written, and the three copies.
-fn ready_window_size(manifest: &MeetingManifest) -> (f32, f32) {
-    let summary = if ready_summary(manifest).is_some() {
-        SUMMARY_LINE * SUMMARY_LINES as f32 + ROW_PX + FIRST_ROW_GAP
-    } else {
-        0.0
-    };
-    (
-        PANEL_WIDTH + 2.0 * CAPSULE_INSET,
-        HEADER_HEIGHT
-            + summary
-            + 3.0 * ROW_HEIGHT
-            + FIRST_ROW_GAP
-            + PANEL_PAD
-            + 2.0 * CAPSULE_INSET,
-    )
 }
 
 /// Where a corner's capsule window sits: its edge and margin, and its
@@ -645,7 +586,7 @@ fn float_on_xwayland(capsule: &OverlayHandle<Capsule>) {
     let _ = capsule;
 }
 
-/// The two capsules: the timed panel (offer, call ended, ready) and the
+/// The two capsules: the meeting prompts and the
 /// recording capsule in the configured corner.
 pub(crate) struct MeetingCapsules {
     panel: OverlayHandle<Capsule>,
@@ -821,7 +762,6 @@ impl MeetingCapsules {
                     resize: None,
                     choose: choose.clone(),
                     hovered: false,
-                    expired: false,
                     corner: MeetingIndicatorCorner::default(),
                     movable: false,
                     shift: None,
@@ -922,7 +862,9 @@ impl MeetingCapsules {
                 );
                 self.show_panel(Kind::Offer(candidate.clone()), Some(OFFER_TIMEOUT));
             }
-            ControllerEvent::Starting | ControllerEvent::Transcribing => self.close_panel(),
+            ControllerEvent::Starting
+            | ControllerEvent::Transcribing
+            | ControllerEvent::Finished(_) => self.close_panel(),
             ControllerEvent::RecordingStarted {
                 title, automatic, ..
             } => {
@@ -945,47 +887,11 @@ impl MeetingCapsules {
                     None,
                 );
             }
-            ControllerEvent::Finished(manifest) => {
-                self.show_panel(Kind::Ready(manifest.clone()), Some(READY_TIMEOUT));
-                // Copy new's hint reads the final transcript, off the main
-                // thread.
-                let (panel, id) = (self.panel.clone(), manifest.id.clone());
-                std::thread::spawn(move || {
-                    let entries = match meeting::TranscriptReader::default().read(&id) {
-                        Ok(entries) => entries,
-                        Err(error) => {
-                            tracing::debug!(%error, "could not read the finished transcript");
-                            return;
-                        }
-                    };
-                    let pending = meeting::pending_delta(&id, &entries);
-                    panel.update(move |capsule, _| {
-                        if capsule.meeting_id() == Some(id.as_str()) {
-                            capsule.live.entries = entries;
-                            capsule.live.pending = pending;
-                        }
-                    });
-                });
-            }
-            ControllerEvent::NotesFinished(manifest) => {
-                let manifest = manifest.clone();
-                let panel = self.panel.clone();
-                self.panel.update(move |capsule, _| {
-                    if let Some(Kind::Ready(ready)) = &mut capsule.kind
-                        && ready.id == manifest.id
-                    {
-                        *ready = manifest;
-                        // The summary may have arrived or gone.
-                        panel.resize(ready_window_size(ready));
-                    }
-                });
-            }
             ControllerEvent::Retitled { .. }
             | ControllerEvent::SourceWarning { .. }
             | ControllerEvent::Failed { .. }
             | ControllerEvent::ImportFailed { .. }
-            | ControllerEvent::Chapters(_)
-            | ControllerEvent::NotesStarted => {}
+            | ControllerEvent::Chapters(_) => {}
         }
     }
 
@@ -1001,16 +907,13 @@ impl MeetingCapsules {
             MeetingIndicatorCorner::TopRight
         };
         place_capsule(&self.panel, corner, 0.0, 0.0);
-        self.panel.resize(match &kind {
-            Kind::Ready(manifest) => ready_window_size(manifest),
-            kind => (panel_width(kind), MEETING_PANEL_HEIGHT),
-        });
+        self.panel
+            .resize((panel_width(&kind), MEETING_PANEL_HEIGHT));
         self.panel.update(move |capsule, tx| {
             capsule.kind = Some(kind);
             capsule.more_open = false;
             capsule.live = Live::default();
             capsule.hovered = false;
-            capsule.expired = false;
             capsule.movable = movable;
             capsule.corner = corner;
             tx.instant();
@@ -1050,11 +953,6 @@ impl MeetingCapsules {
                             if candidate.key != "preview" {
                                 capsule.send(ControllerCommand::OfferTimedOut);
                             }
-                        }
-                        // A ready panel waits for the pointer to leave it.
-                        if capsule.hovered && matches!(capsule.kind, Some(Kind::Ready(_))) {
-                            capsule.expired = true;
-                            return;
                         }
                         capsule.close();
                     });
@@ -1225,7 +1123,6 @@ fn view_body(capsule: &Capsule, cx: &mut Cx<Capsule>) -> El {
                 }),
             ],
         ),
-        Kind::Ready(manifest) => return ready(p, capsule, manifest),
     };
     pill(p, dot, &title, &subtitle, actions, capsule.movable)
 }
@@ -1544,7 +1441,6 @@ mod tests {
             resize: None,
             choose: Arc::new(move |choice| saved.lock().unwrap().push(choice)),
             hovered: false,
-            expired: false,
             corner: MeetingIndicatorCorner::TopRight,
             movable: false,
             shift: None,
@@ -2054,7 +1950,7 @@ mod tests {
     fn only_a_movable_panel_drags() {
         type Moves = Arc<Mutex<Vec<(MeetingIndicatorCorner, f32, f32)>>>;
         for movable in [false, true] {
-            let (mut rt, _, _) = runtime(ready_transcript(), false, true, ready_size());
+            let (mut rt, _, _) = runtime(call_ended(), false, true, CALL_ENDED);
             let moves: Moves = Moves::default();
             let record = moves.clone();
             rt.update(move |capsule, _| {
@@ -2064,7 +1960,7 @@ mod tests {
                 }));
             });
             rt.frame(0.0);
-            let (x, y) = rt.find("header").unwrap();
+            let (x, y) = rt.find("title").unwrap();
             rt.pointer_move(x, y);
             rt.pointer_down(x, y);
             rt.pointer_move(x - 20.0, y + 30.0);
@@ -2096,50 +1992,6 @@ mod tests {
         }
     }
 
-    fn ready_transcript() -> Kind {
-        ready_with(serde_json::Value::Null)
-    }
-
-    /// "Lantern design sync", with Apple Intelligence's summary.
-    fn ready_summarized() -> Kind {
-        ready_with(serde_json::json!({
-            "title": "Lantern design sync",
-            "summary": "March 26 depends on passing the soak test by March 5. Friday's playtest decides the festival demo.",
-        }))
-    }
-
-    fn ready_size_of(kind: &Kind) -> (f32, f32) {
-        let Kind::Ready(manifest) = kind else {
-            panic!("a ready meeting");
-        };
-        ready_window_size(manifest)
-    }
-
-    fn ready_size() -> (f32, f32) {
-        ready_size_of(&ready_transcript())
-    }
-
-    fn ready_with(notes: serde_json::Value) -> Kind {
-        Kind::Ready(Box::new(
-            serde_json::from_value(serde_json::json!({
-                "schema_version": 1,
-                "id": "ready-snap",
-                "title": "Design sync",
-                "status": "complete",
-                "created_at_ms": 1_760_000_000_000_u64,
-                "ended_at_ms": null,
-                "duration_ms": 536_000,
-                "notes": notes,
-                "title_source": if notes.is_null() { "user" } else { "default" },
-                "system": {"file": "system.wav", "samples": 0, "dropped_packets": 0},
-                "microphone": {"file": "microphone.wav", "samples": 0, "dropped_packets": 0},
-                "error": null,
-                "export_path": "/Users/alex/Documents/Hex Meetings/Design sync.md"
-            }))
-            .unwrap(),
-        ))
-    }
-
     fn auto_started() -> Kind {
         Kind::AutoStarted {
             title: "Slack Huddle call — 2:30 PM".into(),
@@ -2147,65 +1999,9 @@ mod tests {
     }
 
     #[test]
-    fn the_ready_panel_copies_the_finished_meeting() {
-        let _cursor = PASTE_CURSOR
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let kind = ready_summarized();
-        let size = ready_size_of(&kind);
-        let (mut rt, commands, _) = runtime(kind, false, true, size);
-        let shown = texts(&rt);
-        for expected in [
-            "Lantern design sync",
-            "08:56",
-            "Copy all",
-            "Copy agent prompt",
-        ] {
-            assert!(shown.contains(&expected.to_string()), "{shown:?}");
-        }
-        assert!(shown.iter().any(|text| text.starts_with("March 26")));
-        // The transcript reads after the panel shows; until then Copy new
-        // has nothing to say.
-        tap(&mut rt, "copy-new");
-        assert!(rt.copy_request.is_none());
-
-        rt.update(|capsule, _| {
-            capsule.live.entries = call();
-            capsule.live.pending = meeting::pending_delta("ready-snap", &call());
-        });
-        rt.frame(1.0 / 60.0);
-        assert!(texts(&rt).contains(&"8 sec new".to_string()));
-        tap(&mut rt, "copy-new");
-        assert!(rt.copy_request.take().unwrap().starts_with("Them: Kickoff"));
-        assert_eq!(meeting::pending_delta("ready-snap", &call()).turns, 0);
-
-        tap(&mut rt, "copy-prompt");
-        let prompt = rt.copy_request.take().unwrap();
-        assert!(
-            prompt.contains("meetings show ready-snap --md"),
-            "{}",
-            &*prompt
-        );
-        assert!(commands.try_recv().is_err());
-        assert!(rt.state.kind.is_some());
-    }
-
-    #[test]
-    fn a_ready_panel_whose_time_ran_out_closes_when_the_pointer_leaves() {
-        let (mut rt, _, _) = runtime(ready_transcript(), false, true, ready_size());
-        rt.update(|capsule, _| {
-            capsule.set_hovered(true);
-            capsule.expired = true;
-        });
-        assert!(rt.state.kind.is_some());
-        rt.update(|capsule, _| capsule.set_hovered(false));
-        assert!(rt.state.kind.is_none());
-    }
-
-    #[test]
     fn the_agent_prompt_names_real_commands() {
         assert_eq!(
-            agent_prompt("hex", "2026-11-10-1430", "Q4 launch sync", Some(258_000)),
+            agent_prompt("hex", "2026-11-10-1430", "Q4 launch sync", 258_000),
             "Use my Hex meeting \"Q4 launch sync\" as context. It is still recording.\n\n\
              Read the transcript so far:\n  hex meetings show 2026-11-10-1430 --md\n\n\
              Catch up on what was said since this prompt (the first turn may repeat):\n  \
@@ -2214,10 +2010,6 @@ mod tests {
              hex meetings search \"<words>\"\n  \
              hex meetings show 2026-11-10-1430 --from <mm:ss> --to <mm:ss> --md\n"
         );
-        let finished = agent_prompt("hex", "m", "Design sync", None);
-        assert!(finished.starts_with("Use my Hex meeting \"Design sync\" as context.\n\n"));
-        assert!(finished.contains("  hex meetings show m --md\n"));
-        assert!(!finished.contains("--from 0"));
     }
 
     #[test]
@@ -2457,20 +2249,13 @@ mod tests {
                 RECORDING,
             ),
             ("auto-started", auto_started(), false, PANEL),
-            ("ready", ready_transcript(), false, ready_size()),
-            (
-                "ready-summary",
-                ready_summarized(),
-                false,
-                ready_size_of(&ready_summarized()),
-            ),
         ];
         type Setup = fn(&mut Capsule);
         let nothing: Setup = |_| {};
         let states = states
             .into_iter()
             .map(|(name, kind, more_open, size)| (name, kind, more_open, size, nothing))
-            .chain::<[(&str, Kind, bool, (f32, f32), Setup); 9]>([
+            .chain::<[(&str, Kind, bool, (f32, f32), Setup); 8]>([
                 (
                     "recording-rest",
                     live_recording("snap"),
@@ -2564,19 +2349,6 @@ mod tests {
                         capsule.hovered = true;
                     },
                 ),
-                (
-                    "ready-finished",
-                    ready_summarized(),
-                    false,
-                    ready_size_of(&ready_summarized()),
-                    |capsule: &mut Capsule| {
-                        capsule.live.entries = call();
-                        capsule.live.pending = meeting::PendingDelta {
-                            turns: 3,
-                            span_ms: 3 * 60_000 + 5_000,
-                        };
-                    },
-                ),
             ]);
         for (name, kind, more_open, size, setup) in states {
             for dark in [false, true] {
@@ -2614,7 +2386,7 @@ mod tests {
         (w, h, target.read(&gpu.device))
     }
 
-    /// The call-ended, ready, and automatic-recording capsules against
+    /// The call-ended and automatic-recording capsules against
     /// `tests/golden/meeting-capsule-*.png`; `HEX_UPDATE_GOLDENS=1` rewrites
     /// them. Without a GPU adapter it skips. Like every golden it is checked
     /// on Linux only: glyph coverage on Metal differs past the tolerance.
@@ -2628,7 +2400,6 @@ mod tests {
         let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
         let states = [
             ("call-ended", call_ended(), CALL_ENDED),
-            ("ready", ready_transcript(), ready_size()),
             ("auto-started", auto_started(), PANEL),
         ];
         let mut misses = Vec::new();

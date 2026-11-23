@@ -1075,23 +1075,20 @@ pub fn summarize_file(path: &Path, excerpt_chars: Option<usize>) -> Result<Strin
     Ok(report)
 }
 
-/// Summarizes on a utility-QoS thread and reports the outcome. Returns false
-/// when notes for this meeting are already being written.
-pub fn spawn_summary(
-    id: String,
-    done: impl FnOnce(Result<MeetingManifest>) + Send + 'static,
-) -> bool {
+/// Writes notes on a background thread if they are not already in progress.
+pub fn spawn_summary(id: String) {
     let Some(claim) = InProgress::claim(&id) else {
-        return false;
+        return;
     };
-    thread::Builder::new()
+    if let Err(error) = thread::Builder::new()
         .name("meeting-notes".into())
         .spawn(move || {
             crate::transcription::background_priority::deprioritize_background_thread();
-            done(summarize_claimed(&id, claim));
+            let _ = summarize_claimed(&id, claim);
         })
-        .map_err(|error| tracing::error!(%error, "could not start meeting notes"))
-        .is_ok()
+    {
+        tracing::error!(%error, "could not start meeting notes");
+    }
 }
 
 #[cfg(test)]

@@ -1027,7 +1027,6 @@ impl Pump {
                 tracing::info!(id = %manifest.id, "meeting transcript ready");
                 self.meeting_state = MeetingMenuState::Idle;
             }
-            ControllerEvent::NotesStarted | ControllerEvent::NotesFinished(_) => {}
             ControllerEvent::Failed { title, error } => {
                 tracing::error!(%title, %error, "meeting failed");
                 self.meeting_state = MeetingMenuState::Idle;

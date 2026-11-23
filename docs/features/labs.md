@@ -170,7 +170,7 @@ Feature             Pane  Toggle (settings.json, hex settings)   On: what it doe
 ├── Pause from menu bar no labs.pause_menu             (macOS) the menu bar's action block offers Pause Hex; while paused every capture shortcut and the secure-input hotkeys are inert, the event tap passes keys through, and Resume waits for a neutral keyboard (#82)
 ├── ⌘Q closes Settings no labs.quit_closes_window      (macOS) the app menu's Quit Hex (⌘Q) closes the Settings window instead of quitting Hex; dictation keeps running, the menu bar icon still quits (#1473)
 ├── Notch indicator no    labs.notch_indicator         (macOS) on a screen with a notch, the HUD widens the notch sideways in the Dynamic Island's compact style at either visible position: an orange mic and level bars, the macOS spinner, a green checkmark; Hidden still hides it, and flat screens keep the Top/Bottom setting
-├── Movable meeting capsules no labs.movable_meeting_capsules (macOS) panel capsules (Meeting transcript ready, Recording automatically, offers, reminders) drag to another corner and show in the last one, shared with the recording capsule (#1093)
+├── Movable meeting capsules no labs.movable_meeting_capsules (macOS) panel capsules (call ended, Recording automatically, offers, reminders) drag to another corner and show in the last one, shared with the recording capsule (#1093)
 ├── Vocabulary in meeting notes no labs.meeting_notes_vocabulary (every OS with Meetings)
 │                                        final meeting titles and summaries (and Regenerate summary) read the vocabulary ahead of the transcript (#1154)
 ├── Meeting finished event no labs.meeting_finished_event (every OS with Meetings)
