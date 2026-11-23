@@ -95,8 +95,6 @@ pub(crate) enum ControllerEvent {
     ImportFailed {
         error: String,
     },
-    NotesStarted,
-    NotesFinished(Box<meeting::MeetingManifest>),
 }
 
 struct ActiveRecording {
@@ -197,7 +195,7 @@ pub(crate) fn controller_loop(
 
         poll_recording(&mut recording, &mut detector, &mut browser, &events)?;
         reminders.poll(enabled, recording.is_some(), &events);
-        pending_finals.poll(enabled, recording.is_some(), &events);
+        pending_finals.poll(enabled, recording.is_some());
         expiry.poll();
 
         if recording.is_none() && enabled {
@@ -322,7 +320,7 @@ impl PendingFinals {
         }
     }
 
-    fn poll(&mut self, enabled: bool, recording: bool, events: &SyncSender<ControllerEvent>) {
+    fn poll(&mut self, enabled: bool, recording: bool) {
         // Before the pending pass, and whatever the Meetings opt-in, remove
         // folders a crashed or quitting import left without a manifest.
         if !self.swept {
@@ -342,7 +340,6 @@ impl PendingFinals {
         if ids.is_empty() {
             return;
         }
-        let events = events.clone();
         self.worker = thread::Builder::new()
             .name("meeting-pending-finals".into())
             .spawn(move || {
@@ -356,7 +353,7 @@ impl PendingFinals {
                         {
                             tracing::info!(meeting = id, "finished a pending meeting transcript");
                             if meeting::notes_wanted() {
-                                start_notes(manifest.id, &events);
+                                meeting::spawn_summary(manifest.id);
                             }
                         }
                         Ok(Some(manifest)) => {
@@ -467,7 +464,7 @@ fn handle_command(
                 }
             }
         }
-        ControllerCommand::Summarize(id) => start_notes(id, events),
+        ControllerCommand::Summarize(id) => meeting::spawn_summary(id),
         ControllerCommand::OfferTimedOut => detector.offer_timed_out(),
         ControllerCommand::Dismiss | ControllerCommand::Record(_) => {}
     }
@@ -744,7 +741,7 @@ fn poll_import(importing: &mut Option<ImportWorker>, events: &SyncSender<Control
         Ok(Ok(manifest)) if manifest.status == meeting::MeetingStatus::Complete => {
             tracing::info!(meeting = manifest.id, "imported audio was transcribed");
             if meeting::notes_wanted() {
-                start_notes(manifest.id, events);
+                meeting::spawn_summary(manifest.id);
             }
         }
         Ok(Ok(manifest)) => {
@@ -861,7 +858,7 @@ fn poll_recording(
         let event = match active.worker.join() {
             Ok(Ok(manifest)) => {
                 if manifest.status == meeting::MeetingStatus::Complete && meeting::notes_wanted() {
-                    start_notes(manifest.id.clone(), events);
+                    meeting::spawn_summary(manifest.id.clone());
                 }
                 ControllerEvent::Finished(Box::new(manifest))
             }
@@ -1323,19 +1320,6 @@ fn detect_meeting(
         );
     }
     Ok(detection)
-}
-
-/// Writes notes on a background thread; the UI refreshes from the manifest
-/// whether generation succeeds or fails.
-fn start_notes(id: String, events: &SyncSender<ControllerEvent>) {
-    let finished = events.clone();
-    if meeting::spawn_summary(id, move |result| {
-        if let Ok(manifest) = result {
-            let _ = finished.send(ControllerEvent::NotesFinished(Box::new(manifest)));
-        }
-    }) {
-        let _ = events.send(ControllerEvent::NotesStarted);
-    }
 }
 
 #[cfg(debug_assertions)]

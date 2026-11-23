@@ -726,8 +726,7 @@ Detected app leaves the microphone for about 3 s     // meetings.call-ended
   -> No timeout; nothing stops automatically
 
 Labs › Movable meeting capsules (macOS, off by default; #1093) // meetings.panel-drag
-  The panel capsules: offer, reminder, left the call, the finished meeting,
-  Recording automatically
+  The panel capsules: offer, reminder, left the call, Recording automatically
   -> On: each opens in the saved recording_indicator_corner (read as it shows)
      ├── Drag its body -> follows the pointer; release -> snaps to the corner
      │   nearest its centre (by its own width) and saves it, so the recording
@@ -978,7 +977,7 @@ call, a muted call, and Zoom or Teams helpers),
 `a_warning_is_written_to_the_manifest_as_soon_as_it_is_raised`, and
 `a_device_switch_restarts_the_zero_count_without_clearing_the_warning` in
 [meeting/warning.rs](../../src/meeting/warning.rs). Menu-bar Record Meeting and
-Stop & Transcribe, and the recording and ready capsule buttons, were clicked
+Stop & Transcribe, and the recording capsule buttons, were clicked
 on a real Mac on 2026-10-22; no automated test covers them. The digital
 silence watch is not verified on a live device or call app that holds the
 microphone with voice processing.
@@ -987,16 +986,14 @@ The capsules are Rune overlays in [meeting_capsules.rs](../../src/rune_ui/meetin
 interactive, non-activating `NSPanel`s at status level on every Space,
 fed by the controller events the menu-bar pump receives
 ([macos_rune.rs](../../src/macos_rune.rs)). The offer (20 s), "left the
-call", the finished meeting panel (15 s, title, summary, Copy new, Copy all,
-Copy agent prompt, notes refresh) and a recording pill (voice bars and
+call" prompt, and recording pill (voice bars and
 elapsed time at rest; Stop, Copy new, Copy all, Copy agent prompt under the
 pointer; in the configured corner, dragged between corners) are ported. The
 copies are checked by `the_recording_capsule_copies_the_in_call_transcript`,
 `copy_new_copies_the_transcript_read_through_the_click`,
-`copy_new_says_how_much_is_new`, `the_agent_prompt_names_real_commands`, and
-`the_ready_panel_copies_the_finished_meeting`, and rendered by
+`copy_new_says_how_much_is_new` and `the_agent_prompt_names_real_commands`, and rendered by
 `capsule_snapshots` (`recording-rest`, `-hover`, `-copied`, `-transcribing`,
-`-empty`, `-silent`, `-hover-bottom-left`, `ready-finished`); the minimal
+`-empty`, `-silent`, `-hover-bottom-left`); the minimal
 panel (2026-11-12) has not been clicked on a real Mac. Hover and the corner snap
 are checked by `the_recording_capsule_rests_compact_and_opens_under_the_pointer`,
 `dragging_the_recording_capsule_moves_it_and_snaps_to_a_corner`, and
@@ -1004,14 +1001,12 @@ are checked by `the_recording_capsule_rests_compact_and_opens_under_the_pointer`
 tried with a real pointer. A "Never offer" or "Always record" choice is saved and
 also written into the window's live settings. On 2026-10-22 a signed build on a MacBook Pro
 showed the recording capsule (Open opened the meeting while it kept
-recording; Stop transcribed) and the ready capsule (Copy copied the
-Markdown). Before that day's fix the recording capsule never appeared: it
+recording; Stop transcribed). Before that day's fix the recording capsule never appeared: it
 closed and reopened in one overlay batch, and the hide ran last. The offer,
 "left the call", "…" choices, and automatic-recording capsules remain unseen
-on screen. The ready and automatic-recording capsules' ✕ (#996) is checked by
-`dismissing_a_ready_transcript_only_closes_it` and
-`dismissing_an_automatic_recording_never_stops_it`, and drawn by
-`panel_goldens` (`meeting-capsule-ready-*`, `-auto-started-*`); it has not
+on screen. Dismiss on the automatic-recording capsule (#996) is checked by
+`dismissing_an_automatic_recording_never_stops_it` and drawn by
+`panel_goldens` (`meeting-capsule-auto-started-*`); it has not
 been clicked on a real Mac.
 
 ### Transcribe
@@ -1299,16 +1294,7 @@ Final publication                                   // meetings.output
     │   follow
     └── Failure -> Meeting still Complete; "Markdown not saved: …"
 
-Finished meeting panel (15 s, kept open while the pointer is over it; it
-    closes when the pointer leaves after that) -> title · length, the
-    summary while notes are on (or "Writing a title and summary with Apple
-    Intelligence…", or "Markdown not saved: …"), then the recording's copies
-    ├── Copy new -> the turns not yet copied or pasted, from the final
-    │   transcript read off the main thread after the panel shows
-    ├── Copy all -> Markdown, or speaker turns as a fallback
-    └── Copy agent prompt -> `hex meetings show <id> --md` and search
-    (the_ready_panel_copies_the_finished_meeting,
-    a_ready_panel_whose_time_ran_out_closes_when_the_pointer_leaves)
+Meeting finishes -> closes the recording capsule and returns the menu bar to idle
 Meetings pane -> Copy icon on a completed row's hover, the card's Copy
     transcript icon, Reveal files (opens the recording folder), and Reveal
     Markdown (selects the exported .md) while the export exists
@@ -1544,10 +1530,8 @@ Final publication complete                               // meetings.notes
 
 Unavailable (not eligible / Apple Intelligence off / model not ready / macOS < 26)
   -> Settings row says why; nothing runs
-Meetings pane -> title in list and detail; Summary paragraph above the transcript;
+Meetings pane -> title in list and detail. Notes progress or summary above the transcript.
   "Summarize" / "Regenerate summary" / "Summarizing…" in the overflow menu
-Finished meeting panel -> the shown title; "Writing a title and summary with
-  Apple Intelligence…" under it, then the summary (at most three lines)
 ```
 
 Title rule: the shown title is the user's title unless it is still the default

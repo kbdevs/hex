@@ -1,6 +1,5 @@
-//! The recording pill and the ready panel: the voice bars and timer at
-//! rest, then Stop and the three copies, and the finished meeting's title
-//! and summary over the same copies.
+//! The recording pill: voice bars and a timer at rest, with Stop and the
+//! copy actions on hover.
 
 use rune::{Cursor, El, Icon, TextStyle, Tx, col, el, icon, row, text};
 use rune_theme_opencode::icons;
@@ -76,30 +75,7 @@ pub(super) fn recording_notice(shown: &Recording) -> Option<Notice> {
     }
 }
 
-/// The ready panel's line under its title, and its colour: the summary, the
-/// summary still being written, or why the Markdown wasn't saved.
-pub(super) fn ready_summary(manifest: &MeetingManifest) -> Option<(String, bool)> {
-    if meeting::notes_in_progress(&manifest.id) {
-        return Some((
-            tr("Writing a title and summary with Apple Intelligence…").to_owned(),
-            false,
-        ));
-    }
-    if let Some(summary) = manifest
-        .notes
-        .as_ref()
-        .map(|notes| notes.summary.trim())
-        .filter(|summary| !summary.is_empty())
-    {
-        return Some((summary.to_owned(), true));
-    }
-    manifest
-        .export_error
-        .as_ref()
-        .map(|error| (tr_fill("Markdown not saved: {}", error), false))
-}
-
-/// The timer: elapsed while recording, the length once finished.
+/// The elapsed time while recording.
 fn timer_style() -> TextStyle {
     TextStyle::new(14.0, 600.0).mono().lh(18.0)
 }
@@ -122,19 +98,15 @@ fn voice_bars(p: Paint, bars: &Bars) -> El {
 
 /// "4 min new", "Up to date", "Transcribing…", or ✓ Copied: what Copy new
 /// would do now.
-fn copy_new_hint(p: Paint, live: &Live, recording: bool) -> Option<El> {
+fn copy_new_hint(p: Paint, live: &Live) -> El {
     if live.copying {
-        return Some(hint_text(p, tr("Transcribing…").to_owned()));
+        return hint_text(p, tr("Transcribing…").to_owned());
     }
     if live.copied(LiveCopy::New) {
-        return Some(copied_hint(p));
+        return copied_hint(p);
     }
     let meeting::PendingDelta { turns, span_ms } = live.pending;
-    // The ready panel reads its transcript after it shows.
-    if turns == 0 && live.entries.is_empty() && !recording {
-        return None;
-    }
-    Some(hint_text(
+    hint_text(
         p,
         if turns > 0 && span_ms >= 60_000 {
             tr_fill("{} min new", &(span_ms / 60_000).to_string())
@@ -145,7 +117,7 @@ fn copy_new_hint(p: Paint, live: &Live, recording: bool) -> Option<El> {
         } else {
             tr("No speech yet").to_owned()
         },
-    ))
+    )
 }
 
 fn hint_text(p: Paint, hint: String) -> El {
@@ -219,16 +191,13 @@ fn panel_row(
     }
 }
 
-/// Copy new, Copy all, and Copy agent prompt, for the recording or the
-/// ready meeting.
-fn copy_rows(p: Paint, capsule: &Capsule, recording: bool) -> Vec<El> {
+/// Copy new, Copy all, and Copy agent prompt for the recording.
+fn copy_rows(p: Paint, capsule: &Capsule) -> Vec<El> {
     let live = &capsule.live;
     // While recording, reading through the click can find speech the ticker
     // hasn't shown yet.
     let new_enabled = !live.copying
-        && (live.pending.turns > 0
-            || live.copied(LiveCopy::New)
-            || (recording && capsule.copy_new.is_some()));
+        && (live.pending.turns > 0 || live.copied(LiveCopy::New) || capsule.copy_new.is_some());
     let copied = |kind| live.copied(kind).then(|| copied_hint(p));
     vec![
         panel_row(
@@ -236,7 +205,7 @@ fn copy_rows(p: Paint, capsule: &Capsule, recording: bool) -> Vec<El> {
             "copy-new",
             &icons::MENU,
             tr("Copy new"),
-            copy_new_hint(p, live, recording),
+            Some(copy_new_hint(p, live)),
             true,
             new_enabled,
             |c, tx| c.press_copy_new(tx),
@@ -248,7 +217,7 @@ fn copy_rows(p: Paint, capsule: &Capsule, recording: bool) -> Vec<El> {
             tr("Copy all"),
             copied(LiveCopy::All),
             false,
-            !recording || !live.entries.is_empty(),
+            !live.entries.is_empty(),
             |c, tx| c.copy_all(tx),
         ),
         panel_row(
@@ -262,21 +231,6 @@ fn copy_rows(p: Paint, capsule: &Capsule, recording: bool) -> Vec<El> {
             |c, tx| c.copy_prompt(tx),
         ),
     ]
-}
-
-/// The panel's rounded body; only it takes the pointer, not the window's
-/// margin around it.
-fn panel_body(p: Paint, title: &str) -> El {
-    col()
-        .key("pill")
-        .role("status")
-        .label(title)
-        .w(PANEL_WIDTH)
-        .radius(PANEL_RADIUS)
-        .fill(p.k.c.bg_base)
-        .border(p.hair, p.k.c.border_base)
-        .clip_rounded(PANEL_RADIUS)
-        .hit()
 }
 
 /// Places a capsule's body in its window's corner.
@@ -297,62 +251,6 @@ fn in_corner(capsule: &Capsule, body: El) -> El {
         column.justify_end()
     }
     .child(body)
-}
-
-/// The finished meeting: its title and length, the summary when there is
-/// one, and the same copies as the recording.
-pub(super) fn ready(p: Paint, capsule: &Capsule, manifest: &MeetingManifest) -> El {
-    let title = meeting::display_title(manifest);
-    let header = row()
-        .key("header")
-        .h(HEADER_HEIGHT)
-        .pl(PANEL_PAD + ROW_PX)
-        .pr(REST_PX)
-        .gap(8.0)
-        .center_y()
-        .child(
-            text(title.clone())
-                .key("title")
-                .font(TextStyle::new(13.0, 600.0).lh(20.0))
-                .color(p.text())
-                .truncate()
-                .grow(1.0)
-                .min_w(0.0)
-                .a11y_hidden(),
-        )
-        .children(manifest.duration_ms.map(|duration| {
-            text(meeting::format_duration(duration))
-                .key("duration")
-                .font(timer_style())
-                .color(p.muted())
-        }));
-    let summary = ready_summary(manifest).map(|(summary, written)| {
-        text(summary)
-            .key("summary")
-            .font(p.k.ty.text_small)
-            .color(if written { p.muted() } else { p.faint() })
-            .max_lines(SUMMARY_LINES)
-            .mx(ROW_PX + PANEL_PAD)
-            .mt(2.0)
-            .mb(ROW_PX)
-    });
-    let rows = col()
-        .key("rows")
-        .px(PANEL_PAD)
-        .pb(PANEL_PAD)
-        .children(copy_rows(p, capsule, false));
-    let body = panel_body(p, &title)
-        .child(header)
-        .children(summary)
-        .child(rows)
-        .on_hover_change(|c: &mut Capsule, inside, _| c.set_hovered(inside));
-    let body = if capsule.movable {
-        body.cursor(Cursor::Grab)
-            .on_drag(|c: &mut Capsule, drag, tx| c.drag(drag, tx))
-    } else {
-        body
-    };
-    in_corner(capsule, body)
 }
 
 /// The recording: at rest only its voice bars and elapsed time; under the
@@ -430,7 +328,7 @@ pub(super) fn recording(p: Paint, capsule: &Capsule, shown: &Recording) -> El {
         let rows = col()
             .key("rows")
             .px(PANEL_PAD)
-            .children(copy_rows(p, capsule, true));
+            .children(copy_rows(p, capsule));
         parts.push(if top {
             rows.pb(PANEL_PAD)
         } else {
@@ -490,25 +388,17 @@ pub(super) fn hex_command() -> String {
 }
 
 /// Tells a coding agent how to read meeting `id` with `hex meetings`.
-/// `recording` is how far its transcript reaches while it still records.
-pub(super) fn agent_prompt(hex: &str, id: &str, title: &str, recording: Option<u64>) -> String {
+/// `reached_ms` is how far the recording's transcript reaches.
+pub(super) fn agent_prompt(hex: &str, id: &str, title: &str, reached_ms: u64) -> String {
     let id = shell_word(id);
-    let search = format!(
-        "Find a topic, then read around the time it came up:\n  \
+    format!(
+        "Use my Hex meeting {title:?} as context. It is still recording.\n\n\
+         Read the transcript so far:\n  {hex} meetings show {id} --md\n\n\
+         Catch up on what was said since this prompt (the first turn may repeat):\n  \
+         {hex} meetings show {id} --from {} --md\n\n\
+         Find a topic, then read around the time it came up:\n  \
          {hex} meetings search \"<words>\"\n  \
-         {hex} meetings show {id} --from <mm:ss> --to <mm:ss> --md\n"
-    );
-    match recording {
-        Some(reached_ms) => format!(
-            "Use my Hex meeting {title:?} as context. It is still recording.\n\n\
-             Read the transcript so far:\n  {hex} meetings show {id} --md\n\n\
-             Catch up on what was said since this prompt (the first turn may repeat):\n  \
-             {hex} meetings show {id} --from {} --md\n\n{search}",
-            meeting::format_duration(reached_ms),
-        ),
-        None => format!(
-            "Use my Hex meeting {title:?} as context.\n\n\
-             Read its notes and transcript:\n  {hex} meetings show {id} --md\n\n{search}"
-        ),
-    }
+         {hex} meetings show {id} --from <mm:ss> --to <mm:ss> --md\n",
+        meeting::format_duration(reached_ms),
+    )
 }
