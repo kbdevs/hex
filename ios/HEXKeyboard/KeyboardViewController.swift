@@ -781,11 +781,12 @@ final class KeyboardViewController: UIInputViewController {
             self?.typingLog?.context("space")
         }
         viewModel.onMoveCursor = { [weak self] offset in
-            self?.typingLog?.edit("cursor", [
+            guard let self else { return }
+            self.typingLog?.edit("cursor", [
                 TypingLogField("offset", .int(offset)),
                 TypingLogField("src", .string("bar")),
             ])
-            self?.textDocumentProxy.adjustTextPosition(byCharacterOffset: offset)
+            self.fullKeyboard?.engine.trackpadMovedCursor(by: offset)
         }
         viewModel.onInsertText = { [weak self] text in
             self?.typingLog?.edit("insert", [
