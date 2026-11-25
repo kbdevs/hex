@@ -1,20 +1,7 @@
 import Foundation
 
-/// The space after a word mid-sentence, where the text after the cursor already starts with a
-/// space or a closing mark (TestFlight: "Tapping on a word to select it, and then quickly
-/// typing in a correction doesn't account for the trailing space and you end up with 2 spaces
-/// inserted"). A picked suggestion, or a space after a typed or swiped word (corrected or
-/// not), types no second space there: the space is held, and goes in only if the next key
-/// starts another word, as a swiped word's does (`spaceAfterSwipedWord`). "brown" in "brown
-/// fox" selected, "black" and space typed, reads "black fox"; "cat" next reads "black cat
-/// fox". A mark goes against the word ("black, fox"), delete takes the held space back (so an
-/// autocorrection's revert follows as after a typed space, `offeringRevert`), and moving the
-/// cursor drops it.
-///
-/// Apple's keyboard (black box, iOS 27.2, a UITextField) types the second space after a typed
-/// word, corrected or not ("black  fox"); a picked suggestion steps over the space after the
-/// cursor, and a word typed next then joins the one after it ("black catfox"). Hex holds the
-/// space instead, which reads right both ways.
+/// A suggestion picked before a space or closing mark defers its automatic space.
+/// The next word gets that space, and punctuation can go directly after the suggestion.
 @MainActor
 extension FullKeyboardEngine {
     /// Marks a space never goes before: closing punctuation, quotes and apostrophes.
@@ -32,13 +19,6 @@ extension FullKeyboardEngine {
         return !(french && Self.frenchSpacedMarks.contains(first))
     }
 
-    /// Whether the space bar holds its space rather than typing it: right after a word or a
-    /// mark, before a space, or right after a word, before a closing mark.
-    var holdsTypedSpace: Bool {
-        guard let last = textBefore?.last, !last.isWhitespace, textAfterSeparates else { return false }
-        return target.documentContextAfterInput?.first?.isWhitespace == true || last.isLetter || last.isNumber
-    }
-
     /// Whether a held space waits for the next key: nothing has changed since it was held.
     var spacePending: Bool {
         guard let held = suggestionSpaceBefore, held.last?.isWhitespace == false else { return false }
@@ -49,17 +29,6 @@ extension FullKeyboardEngine {
     /// one, so the strip offers the next word rather than the word just finished.
     var stripBefore: String? {
         spacePending ? textBefore.map { $0 + " " } : textBefore
-    }
-
-    /// Holds the space after the word just finished, until the next key. The space bar's
-    /// counts as a space for the keys' page too: 123 goes back to ABC.
-    func holdSpaceAfterWord(spaceBar: Bool = false) {
-        suggestionSpaceBefore = typingContext
-        if spaceBar {
-            layerState.didInsert(" ")
-            rebuildLayoutIfNeeded()
-        }
-        refreshSuggestions()
     }
 
     /// Types the held space before a pick from the strip, which then offers the next word:
@@ -80,11 +49,8 @@ extension FullKeyboardEngine {
     func insertPicked(_ word: String) {
         let holds = textAfterSeparates
         insert(holds ? word : word + " ", source: nil)
-        if holds {
-            holdSpaceAfterWord()
-        } else {
-            suggestionSpaceBefore = typingContext
-        }
+        suggestionSpaceBefore = typingContext
+        if holds { refreshSuggestions() }
         typingLog?.context("suggestion")
     }
 

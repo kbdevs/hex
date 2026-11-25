@@ -131,64 +131,56 @@ extension FullKeyboardEngineTests {
         XCTAssertEqual(field.text, "pretty ", "a host that reports the keys' own edit leaves it swallowed")
     }
 
-    /// TestFlight: "Tapping on a word to select it, and then quickly typing in a correction
-    /// doesn't account for the trailing space and you end up with 2 spaces inserted."
-    func testASpaceBeforeASpaceMidSentenceIsHeldForTheNextWord() {
-        typeOverBrown()
-        type("black ")
-        XCTAssertEqual(target.text, "the quick black fox", "one space, not two")
-        tap(.space)
-        XCTAssertEqual(target.text, "the quick black fox", "nor after a second press")
-        type("cat")
-        XCTAssertEqual(target.text, "the quick black cat fox", "the next word gets the space")
-        tap(.space)
-        punctuate(",")
-        XCTAssertEqual(target.text, "the quick black cat, fox", "a mark goes against the word")
-
-        target.adjustTextPosition(byCharacterOffset: 4)
-        engine.textDidChange()
-        type(" jumps")
+    func testSpaceAtAnExistingWordBoundaryInsertsImmediately() {
+        target.insertText("or gotta over")
         target.adjustTextPosition(byCharacterOffset: -5)
         engine.textDidChange()
+
         tap(.space)
-        XCTAssertEqual(target.text, "the quick black cat, fox  jumps", "after a space, a space you asked for")
+
+        XCTAssertEqual(target.text, "or gotta  over")
+        XCTAssertEqual(target.documentContextBeforeInput, "or gotta ")
     }
 
-    /// A held space reads as a typed one for the strip and the keys' page: the strip offers the
-    /// next word (never the finished word's completions), a pick goes in after the held space
-    /// rather than in the finished word's place, and 123 goes back to ABC.
-    func testAHeldSpaceOffersTheNextWordAndGoesBackToLetters() throws {
+    func testSpaceBeforePunctuationInsertsImmediately() {
+        target.insertText("hello!")
+        target.adjustTextPosition(byCharacterOffset: -1)
+        engine.textDidChange()
+
+        tap(.space)
+
+        XCTAssertEqual(target.text, "hello !")
+    }
+
+    func testSpaceMidSentenceOffersTheNextWordAndGoesBackToLetters() throws {
         typeOverBrown()
         engine.letterOdds = try XCTUnwrap(TypingDecoderModel.bundled("en"))
         type("thank ")
-        XCTAssertEqual(target.text, "the quick thank fox")
+        XCTAssertEqual(target.text, "the quick thank  fox")
         XCTAssertTrue(engine.suggestions.allSatisfy { $0.kind == .nextWord }, "\(engine.suggestions.map(\.replacement))")
         let you = try XCTUnwrap(engine.suggestions.first { $0.replacement == "you" })
         engine.acceptSuggestion(you)
         XCTAssertEqual(target.text, "the quick thank you fox")
-        XCTAssertTrue(engine.suggestions.allSatisfy { $0.kind == .nextWord }, "\(engine.suggestions.map(\.replacement))")
 
         tap(.layerSwitch(.numbers))
         tap(.character("7"))
         tap(.space)
-        XCTAssertEqual(target.text, "the quick thank you 7 fox")
-        XCTAssertEqual(engine.layout.layer, .letters, "a held space goes back to ABC as a typed one does")
+        XCTAssertEqual(target.text, "the quick thank you 7  fox")
+        XCTAssertEqual(engine.layout.layer, .letters)
     }
 
-    func testAnAutocorrectionMidSentenceHoldsItsSpaceAndDeleteStillOffersTheRevert() {
+    func testDeletingATypedSpaceMidSentenceOffersTheAutocorrectionRevert() {
         type("see  ok")
         target.adjustTextPosition(byCharacterOffset: -3)
         engine.textDidChange()
         type("teh ")
-        XCTAssertEqual(target.text, "see the ok")
-        XCTAssertNotEqual(engine.suggestions.first?.kind, .revert, "not before delete, as after a typed space")
+        XCTAssertEqual(target.text, "see the  ok")
+        XCTAssertNotEqual(engine.suggestions.first?.kind, .revert)
         tap(.delete)
-        XCTAssertEqual(target.text, "see the ok", "delete takes the held space")
+        XCTAssertEqual(target.text, "see the ok")
         XCTAssertEqual(engine.suggestions.first?.kind, .revert)
         engine.acceptSuggestion(engine.suggestions[0])
-        XCTAssertEqual(target.text, "see teh ok", "the strip puts back what was typed")
-        tap(.space)
-        XCTAssertEqual(target.text, "see teh ok", "space keeps it, with no second space")
+        XCTAssertEqual(target.text, "see teh ok")
     }
 
     /// X and TestFlight: "when you type the word of an emoji it suggests and replaces that word

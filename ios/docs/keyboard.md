@@ -1131,6 +1131,7 @@ the simulator never delayed them).
 
 ## Spaces (full keyboard)
 
+The space key inserts a space before existing spaces and punctuation, too.
 A suggestion (a word, what you typed, or an emoji)
 types its own space, so a space pressed right after it is swallowed, as on Apple's
 keyboard; it still counts towards double-space for a period. Holding the space bar

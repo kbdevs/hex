@@ -3034,6 +3034,8 @@ iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
 │   themes (Black, White, Navy, Forest, Ember), Two-thumb selection, Delete swiped words
 │   letter by letter, Hide word suggestions, Join the keyboard when unfolded, Learn each
 │   language separately
+├── Full keyboard: Space inserts a space before existing spaces and punctuation. A picked
+│   suggestion can still defer its automatic space (`FullKeyboardEngineTests`).
 ├── Full keyboard's languages (Settings › Keyboard › Languages, with Full chosen): one or
 │   more layouts, the space bar names the current one and a slide switches letters, accents
 │   and autocorrect, and the input mode reports the language typing
