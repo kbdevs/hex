@@ -131,10 +131,13 @@ extension FullKeyboardEngineTests {
         XCTAssertEqual(field.text, "pretty ", "a host that reports the keys' own edit leaves it swallowed")
     }
 
-    func testSpaceAtAnExistingWordBoundaryInsertsImmediately() {
+    func testSpaceAfterRetypingTheLastLetterOfAWordInsertsImmediately() {
         target.insertText("or gotta over")
         target.adjustTextPosition(byCharacterOffset: -5)
         engine.textDidChange()
+        tap(.delete)
+        tap(.character("a"))
+        XCTAssertEqual(target.documentContextBeforeInput, "or gotta")
 
         tap(.space)
 
