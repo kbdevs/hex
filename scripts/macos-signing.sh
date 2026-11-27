@@ -2,6 +2,28 @@
 
 # Sourced by the app and helper packagers. Print only the selected identity so
 # callers can capture it without mixing diagnostics into codesign arguments.
+hex_local_codesign_identity() {
+  local_fingerprint=$1
+  if [ "${#local_fingerprint}" -ne 40 ]; then
+    echo "Local signing identity must be a certificate SHA-1 fingerprint." >&2
+    return 1
+  fi
+  case "$local_fingerprint" in
+    *[!0123456789ABCDEFabcdef]*)
+      echo "Local signing identity must be a certificate SHA-1 fingerprint." >&2
+      return 1 ;;
+  esac
+  if ! security find-identity -v -p codesigning | awk -F '"' -v wanted="$local_fingerprint" '
+    index(toupper($1), toupper(wanted)) && $0 !~ /CSSMERR/ &&
+      ($2 ~ /^Apple Development: / || $2 ~ /^Developer ID Application: /) { found = 1 }
+    END { exit !found }
+  '; then
+    echo "Configured local signing certificate is unavailable or is not an Apple Development or Developer ID Application identity." >&2
+    return 1
+  fi
+  printf '%s\n' "$local_fingerprint"
+}
+
 hex_codesign_identity() {
   team_id=$1
   identity=${HEX_CODESIGN_IDENTITY:-}
