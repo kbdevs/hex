@@ -18,8 +18,8 @@ use crate::rune_ui::Ui;
 use crate::rune_ui::controls::{ButtonKind, Paint, PushSize, button, status_dot};
 use crate::transcription::model_benchmarks::ErrorMetric;
 use crate::transcription::models::{
-    self as transcription_models, AUTO_LANGUAGE, ModelDefinition, ModelRuntime, Recommendation,
-    TranscriptionModelId, VocabularyUse, language_name,
+    self as transcription_models, AUTO_LANGUAGE, ModelDefinition, ModelRef, ModelRuntime,
+    Recommendation, TranscriptionModelId, VocabularyUse, language_name,
 };
 
 /// The one state a model shows.
@@ -47,7 +47,7 @@ impl State {
 }
 
 pub(super) struct Entry {
-    pub(super) def: &'static ModelDefinition,
+    pub(super) def: ModelRef,
     pub(super) recommendation: Option<Recommendation>,
     pub(super) supports: bool,
     pub(super) state: State,
@@ -67,20 +67,22 @@ pub(super) fn entries(ui: &Ui, language: &str, models: &[PickerModel]) -> Vec<En
     let details = picker::benchmark_details_on(ui);
     models
         .iter()
-        .map(|&(def, recommendation)| Entry {
-            def,
-            recommendation: picker::shown_recommendation(recommendation, def, language, details),
+        .map(|(def, recommendation)| Entry {
+            recommendation: picker::shown_recommendation(*recommendation, def, language, details),
             supports: def.supports_language(language),
             state: state(ui, def, language),
+            def: def.clone(),
         })
         .collect()
 }
 
-fn state(ui: &Ui, def: &'static ModelDefinition, language: &str) -> State {
-    let installed = ui.picker.installed(def, def.language_for(language));
+fn state(ui: &Ui, def: &ModelDefinition, language: &str) -> State {
+    let language = def.language_for(language);
+    let installed = ui.picker.installed(def, language);
+    let ready = ui.picker.ready(def, language);
     if let Some((label, fraction)) = picker::preparation(ui, def) {
         State::Preparing { label, fraction }
-    } else if picker::transcription_selection_is_active(&ui.settings.transcription, def, installed)
+    } else if picker::transcription_selection_is_active(&ui.settings.transcription, def, ready)
         // A selected import that is missing or changed isn't what Hex runs.
         && (!def.id.is_custom() || def.available())
     {
@@ -185,13 +187,12 @@ pub(super) fn languages_label(def: &ModelDefinition) -> String {
 }
 
 /// Whether transcription reads the vocabulary: Whisper and Qwen3-ASR as
-/// their prompt, Parakeet only with Labs › Vocabulary biasing.
+/// their prompt, Parakeet unless Vocabulary's boost is Off.
 pub(super) fn reads_vocabulary(ui: &Ui, def: &ModelDefinition) -> bool {
     match def.vocabulary_use() {
         VocabularyUse::Prompt => true,
         VocabularyUse::Bias => {
-            let feature = crate::labs::Feature::VocabularyBiasing;
-            feature.shipped() && feature.on(&ui.settings)
+            ui.settings.vocabulary_boost != crate::dictation::vocabulary::VocabularyBoost::Off
         }
         VocabularyUse::None => false,
     }
@@ -222,6 +223,7 @@ pub(super) fn blurb(def: &ModelDefinition) -> &'static str {
         M::ParakeetV2 => tr("The English model before Parakeet Unified"),
         M::ParakeetV3 => tr("25 European languages, and it hears which one you speak"),
         M::Orukeet => tr("A Parakeet v3 fine-tune, a bit more accurate in 20 of its 25 languages"),
+        M::FluidSpeechPro => tr("A Parakeet v3 retrain with fewer wrong words in its 25 languages"),
         M::ParakeetUltra => tr("Parakeet v3, retrained for fewer wrong words"),
         M::Qwen3Asr06B => tr("Chinese and 29 more, and it reads your vocabulary"),
         M::QwenCleoAsr17B => tr("Egyptian Arabic, mixed with English"),
@@ -232,6 +234,7 @@ pub(super) fn blurb(def: &ModelDefinition) -> &'static str {
         M::Nemotron35Asr => tr("Writes while you talk, in 27 languages"),
         M::GigaAmV3 => tr("Russian, with punctuation. A small download"),
         M::NbWhisperMedium => tr("Whisper, tuned for Norwegian by its National Library"),
+        M::KbWhisperMedium => tr("Whisper, tuned for Swedish by its National Library"),
         M::GraniteSpeech5 => tr("IBM's model for seven languages, with punctuation"),
         M::AppleSpeech => tr("Apple's speech recognition, kept up to date by macOS"),
         M::Custom(_) => "",
@@ -262,13 +265,13 @@ pub(super) fn role(
         Some(Recommendation::Vocabulary) => Some((tr("Reads your vocabulary"), Some("vocabulary"))),
         None if others.len() > 1
             && others.iter().all(|other| {
-                language_count(other.def) < language_count(entry.def)
+                language_count(&other.def) < language_count(&entry.def)
                     || other.def.id == entry.def.id
             }) =>
         {
             Some((tr("Most languages"), Some("languages")))
         }
-        None if reads_vocabulary(ui, entry.def) => {
+        None if reads_vocabulary(ui, &entry.def) => {
             Some((tr("Reads your vocabulary"), Some("vocabulary")))
         }
         None => None,
@@ -410,7 +413,7 @@ pub(super) fn progress_line(p: Paint, entry: &Entry) -> El {
 /// Use or Download for a model that can be chosen, at the button size of
 /// the compare columns.
 pub(super) fn choose_button(p: Paint, entry: &Entry, primary: bool) -> El {
-    let def = entry.def;
+    let def = entry.def.clone();
     let label = if downloads(entry) {
         tr_fill("Download {}", &def.size_label())
     } else {
@@ -425,17 +428,17 @@ pub(super) fn choose_button(p: Paint, entry: &Entry, primary: bool) -> El {
         } else {
             ButtonKind::Secondary
         },
-        move |ui: &mut Ui, _| choose(ui, def),
+        move |ui: &mut Ui, _| choose(ui, &def),
     )
 }
 
 /// The list's quieter Use or download action, at row size.
 pub(super) fn row_choose_button(p: Paint, entry: &Entry) -> El {
-    let def = entry.def;
+    let def = entry.def.clone();
     if !downloads(entry) {
         return Button::new(tr("Use"))
             .variant(ButtonVariant::Neutral)
-            .on_press_tx(move |ui: &mut Ui, _| choose(ui, def))
+            .on_press_tx(move |ui: &mut Ui, _| choose(ui, &def))
             .build_small_push(p.k)
             .key("choose-model");
     }
@@ -454,7 +457,7 @@ pub(super) fn row_choose_button(p: Paint, entry: &Entry) -> El {
                 )
                 .child(text(size).key("label").font(tnum(font)).color(ink))
         })
-        .on_press_tx(move |ui: &mut Ui, _| choose(ui, def))
+        .on_press_tx(move |ui: &mut Ui, _| choose(ui, &def))
         .build_small_push(p.k)
         .key("choose-model")
         // A ghost's label lines up with the row's other right edges.

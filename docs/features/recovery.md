@@ -13,6 +13,7 @@ platforms, and dependencies.
 - [Rearm without a phantom capture](#rearm-without-a-phantom-capture).
 - [Reopen with fresh audio](#reopen-with-fresh-audio).
 - [Keep an interrupted dictation](#keep-an-interrupted-dictation).
+- [Keep a press across a reopen](#keep-a-press-across-a-reopen).
 - [Fence late capture notifications](#fence-late-capture-notifications).
 - [Degrade only the failing dependency](#degrade-only-the-failing-dependency).
 - [Keep Linux listeners managed](#keep-linux-listeners-managed).
@@ -256,13 +257,18 @@ disable event (timeout | user input)
 every 5 s on the tap thread
   ├── tap disabled without notice -> re-enable  // "event tap was disabled without notice"
   ├── tap invalidated or re-enable fails -> recreate  // "recreated event tap"
+  ├── replacement stays disabled -> recreate after 5, 10, 20, 40, then every 60 s
+  │                                         // "event tap stayed disabled; recreating it"
+  ├── retired tap -> invalidated before release  // macOS drops its registration (#2968)
   └── creation fails -> retry next check    // "could not recreate event tap", logged once
   -> key or modifier gap -> recover.tap-interruption
 tap thread holds a user-initiated activity  // App Nap cannot throttle it; idle sleep allowed
 ```
-Source: `TapSet::check`, `reenable_disabled_taps`, and `AppNapOptOut` in
-[suppression.rs](../../src/suppression.rs). No check: it needs macOS to disable
-a real tap. Proof limit: reported field failure (#612), not reproduced.
+Source: `TapSet::check`, `AttachedTap`'s drop, `reenable_disabled_taps`, and
+`AppNapOptOut` in [suppression/tap.rs](../../src/suppression/tap.rs). Check:
+`a_tap_macos_keeps_disabled_is_rebuilt_less_often_up_to_once_a_minute` covers
+the retry spacing; disabling a real tap still needs macOS. Proof limit:
+reported field failures (#612, #2968), not reproduced.
 
 The [2.1.11 release notes](../releases/2.1.11.md) describe the shipped navigation
 and missed-release fix; they are historical context, not a current-tree test.
@@ -278,7 +284,11 @@ initial open fails OR stream interrupts
   -> a dictation held past the hold threshold, or a `hex dictation start`
      control capture, keeps what it heard    // recover.interrupted-dictation
      -> transcribed and copied, never pasted
+  -> a press that has not passed the hold threshold waits for the reopen
+     -> its capture starts at the first fresh chunk  // recover.interrupted-press
   -> otherwise cancel the incomplete capture + discard stale audio  // interrupted audio cannot return
+  -> an idle, release-tail, or annotate-only interruption is the stream's
+     own recovery: no failed dictation is recorded  // recover.idle-interruption
   -> bounded backoff -> reopen the resolved input     // warm microphone retries
   -> replacement delivers new audio
   -> fresh capture -> release -> expected output
@@ -286,6 +296,26 @@ device refuses a stream in its own default format     // #988, Intel Smart Sound
   -> log the refused format (channels, Hz, sample format) // audio/input_format
   -> try the other formats it lists (F32, I16, U16, I32), at most 12
   -> none opens -> the default format's error, with its format, goes to recovery
+device reports no default format at all               // #1845, Windows default input
+  -> log the driver's reason and kind, not just the wrap // audio/input_format
+  -> try the direct WASAPI paths, then the formats it lists
+     (48 kHz, else 44.1 kHz, else the range's top) // unverified on real Windows
+  -> none opens -> the read error, with its cause, and the direct path's
+     failure, go to recovery
+Windows System default input or output                       // audio::default_endpoint
+  -> resolve the default endpoint id on one MTA thread       // the endpoint thread
+     initializes MTA; callers need no COM of their own
+  -> open the listed cpal device with that id                // never cpal's default handle:
+     cpal's default-handle monitor initializes COM as STA on Windows thread-pool
+     threads, so ActivateAudioInterfaceAsync later fails with RPC_E_CHANGED_MODE
+  ├── input: no default endpoint resolves -> a listed stand-in microphone
+  │   (built-in first); the next route change resolves the default again,
+  │   and only nothing usable being listed is an error
+  ├── output: a listed device will not open -> try the next listed output
+  │   -> none opens -> the tone is dropped                   // never the default handle
+  └── default endpoint changes -> an IMMNotificationClient bumps the input or
+      output route generation                                // no COM calls in the callback
+      -> input switches once capture is idle; a warm feedback output reopens
 no input device at all (macOS)
   -> devices whose name can't be read are skipped     // audio::device_name, never Display
   -> bounded recovery; `hex status` listener: "No microphone"
@@ -394,6 +424,10 @@ meeting microphone stream delivers only exact zeros for 3 s (macOS, #1518)
 open stream stops delivering audio without an error (any OS, #1206)
   -> 4 s with no chunk (STREAM_STALL_TIMEOUT) -> treated as a stream failure
   -> reopened like any interrupted stream, idle or not // logged "microphone stopped delivering audio"
+     ├── an idle listener, a submitted release tail, or Annotate copying the
+     │     microphone -> recovery only, no failed dictation // recover.idle-interruption
+     ├── a press on the stalled stream is kept, not started on dead audio
+     │     -> its capture starts at the reopened stream's first chunk
      ├── it delivered for 8 s without stopping (STREAM_PROVEN_UPTIME) -> it was working:
      │     reopen at once with the backoff reset // exactly as before
      └── any stream that fails before that never proved steady delivery (#1681)
@@ -738,6 +772,44 @@ and raw clips are both copied, with normal and raw history). Proof limit:
 channel-backed audio and the output worker, not a physical microphone taken by
 a call app or a target app's clipboard.
 
+### Keep A Press Across A Reopen
+
+`recover.interrupted-press`: a shortcut press taken before the hold threshold
+that arrives while the microphone cannot capture yet — the stream stopped
+delivering, its replacement is opening, or it opened but has not delivered —
+is kept instead of dropped. The capture begins at the first fresh chunk and
+anchors there, so audio from an earlier stream never joins it. The HUD and log
+already say dictating. Releasing or cancelling while the press waits discards
+it like any pending start.
+
+A reopened stream that is interrupted again before it delivers discards the
+press and records the failure, so the person sees why nothing was dictated.
+While opens keep failing, no event ends the press: it waits until it is
+released or cancelled (Release microphone while idle's failed on-demand open
+still clears it and reports the failure), and the listener keeps retrying with
+its bounded backoff.
+
+```ts
+press before the hold threshold while the stream cannot capture
+  -> the press waits, and the log says dictating
+  -> a failed stream's replacement still starts        // audio.rs recv_timeout
+     -> start_pending never holds the microphone closed
+  -> first fresh chunk -> capture starts there, with no pre-roll
+  ├── released or cancelled meanwhile -> discarded
+  └── interrupted again before any audio -> discarded + failed dictation
+```
+
+Both listeners keep the press when `DictationCapture::tentative_start` is
+`Some`: the capture is cancelled and turned back into a pending press. A
+capture past the hold threshold is dropped. The audio-owner pieces they share
+(`capture_idle` and a stalled stream) live in
+[audio/interruption.rs](../../src/audio/interruption.rs). On macOS the
+equivalent is the cold-stream branch of
+[dictation/audio.rs](../../src/dictation/audio.rs) that turns a tentative
+capture back into its pending capture. Proof limit: the Windows listener is
+compiled only on Windows, so its arm is proven by `Check Windows` rather than
+the Linux suite.
+
 ### Fence Late Capture Notifications
 
 `recover.late-notification`: keeping a failure visible is correct until it
@@ -786,6 +858,65 @@ and `Command::Reload` in [transcription/engine.rs](../../src/transcription/engin
 Check: `a_model_without_room_on_the_gpu_reloads_in_place_once` (swap state
 only). Not observed on a real 2 GB GPU. A second process (another `hex`
 command that loads a model itself) still loads its own copy.
+
+`recover.gpu-oom`: on Linux and Windows a GPU that fails a run out of memory
+(status 7) is not a driver fault, so it is not added to `gpu-failures.json`
+(#1165); the dictation engine still switched to the CPU and must say so
+(#1984).
+
+```ts
+GPU run fails out of memory -> the model reloads on the CPU and carries the failure
+  -> the engine publishes it for this process only     // never gpu-failures.json
+  -> General › Advanced › Speech engine names it: "Hex switched to the CPU
+     because {device} failed during transcription (out of memory). Restart
+     Hex to use the GPU again."
+  -> a later GPU load that works, or Hex restarting -> the note goes away
+     // ggml keeps the failed device for the process, so a restart is the
+     // reliable way back
+```
+Only the model the engine holds publishes the note: the local API's own
+model, model preparation, and a superseded model swap load beside it, and
+their out-of-memory failures are not dictation's.
+Source: `recover_on_cpu` and `out_of_memory` in
+[transcription/local_transcriber.rs](../../src/transcription/local_transcriber.rs),
+`publish_out_of_memory` in [transcription/engine.rs](../../src/transcription/engine.rs),
+and `out_of_memory_failure`/`set_out_of_memory`/`out_of_memory_fallback` in
+[transcription/gpu_health.rs](../../src/transcription/gpu_health.rs); the row in
+[rune_ui/general.rs](../../src/rune_ui/general.rs).
+Check: `an_out_of_memory_fallback_lasts_until_a_gpu_load_works` (state only).
+Proof limit: not observed on a real device loss that surfaced as out of memory,
+and no test of the row itself; the copy names the recorded error, not its cause.
+The other copies' failures are kept out by which call sites publish, not by a
+test: reproducing one needs a GPU and a model.
+A load-time out of memory stays the [`recover.gpu-full`](#degrade-only-the-failing-dependency)
+path, which keeps retrying in place.
+
+`recover.gpu-start-crash`: on Windows a launch that crashes while ggml starts
+a GPU cannot be caught, so `gpu-start.pending` spans that work (#662).
+
+```ts
+GPU start -> marker "<version> <crashed + 1>" written before the risky work
+  ├── start succeeds -> marker removed; a crash outside a GPU start is not counted
+  └── process crashes -> the next launch of the same build reads it
+      ├── crashed < 2 -> one automatic retry (a bare <version> from the first
+      │   format counts as one crash)
+      └── crashed >= 2 -> CPU only, warned in process.log and said in
+          Settings › Speech engine; re-picking Auto or GPU clears the marker
+          and says the GPU turns on at restart; an update deletes a marker
+          from another build
+```
+Source: `gpu_start_at`, `guarded_at`, and `gpu_guard` in
+[transcription/local_transcriber.rs](../../src/transcription/local_transcriber.rs);
+the row in [rune_ui/general.rs](../../src/rune_ui/general.rs), whose note comes
+from `crash_fallback` in [transcription/gpu_health.rs](../../src/transcription/gpu_health.rs).
+The loaded model's device is also in `hex status` (`model.backend`) and its
+Speech line, which says "CPU (GPU start crashed twice)" after the marker
+forced the CPU.
+Checks: `the_first_formats_bare_version_gets_one_retry`,
+`two_crashed_starts_keep_the_cpu`, and
+`every_guarded_scope_records_this_launchs_attempt` (marker rules only).
+Proof limit: not observed on a real Windows GPU-driver crash, and no test of
+the Settings row itself.
 
 `recover.command-pressure`: command recognition is best-effort; dictation
 audio is not.
@@ -1025,6 +1156,23 @@ verification is claimed. The installed local app and its settings were not chang
 Changing layouts during a running GUI session still requires a restart to
 refresh its snapshot; live GUI layout refresh is not part of this fix.
 
+### Launch Past A Leftover Discovery File
+
+**Fixed November 26, 2026 (issue 2887):** a Hex that stopped uncleanly (a
+restart, a power loss) leaves `local-api.json` behind. Launch used to probe
+the pid and port it names and refuse to start when both answered, with
+"another local API service appears to be running". After a reboot the system
+can hand both to unrelated programs, so Hex quit about 70 ms into every
+launch, with no window, until the file was moved aside. The local API takes
+its instance lock (`local-api.lock`, beside the file) before it looks at the
+file, and while it holds that lock no other Hex can publish there, so the
+launching Hex now replaces a leftover file without probing it. A second Hex
+is still refused, by the lock. Clients that only read the file (`hex status`
+while no Hex runs) still probe the pid and port.
+Check: `a_leftover_file_naming_a_live_pid_and_port_does_not_stop_the_lock_holder`
+in [local_api/discovery.rs](../../src/local_api/discovery.rs); not reproduced
+by rebooting a Mac.
+
 ## Gaps And Constraints
 
 These five known gaps still limit recovery claims; they are not proposed features.
@@ -1107,9 +1255,16 @@ occur.
 ### Slow Paste Consumer
 
 ```ts
-Chromium 155/156 frontmost? type instead (#212); else publish clipboard -> post Paste
-  ├── settle for 100 ms -> allow next output
-  └── schedule restore after 500 ms -> restore only if still owned
+Which insertion?                                       // paste.rs
+├── Chromium 155/156 frontmost -> type instead (#212)
+├── Windows App frontmost -> type one paced key at a time (#1048)
+│       // 50 ms lead-in before the first key so the session has settled
+│       // and keeps the first character (#2942)
+│       // both skip the paste; Keep dictation on clipboard still writes the
+│       // typed text to the clipboard afterwards
+└── else -> publish clipboard -> post Paste
+    ├── settle for 100 ms -> allow next output
+    └── schedule restore after 500 ms -> restore only if still owned
 target consumes later?                                // no consumption acknowledgment
 
 controlled delayed consumer -> output A -> output B -> restoration

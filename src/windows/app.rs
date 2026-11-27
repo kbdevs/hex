@@ -52,6 +52,14 @@ impl RunningListener {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AutomaticSwitch {
+    Keyboard,
+    App,
+    /// Labs › Model switch shortcut: the preparation swaps both selections.
+    Swap,
+}
+
 /// The Windows runtime: owns the listener, model preparation, OpenCode
 /// catalog, personal transformations, and self-updater.
 pub(crate) struct WindowsDesktopHost {
@@ -72,21 +80,25 @@ pub(crate) struct WindowsDesktopHost {
     error: Option<String>,
     settings: AppSettings,
     history: Option<History>,
-    last_dictation: Arc<Mutex<Option<String>>>,
+    last_dictation: Arc<Mutex<Option<crate::dictation::paste_last::LastDictation>>>,
     indicator: crate::rune_hud::HudSender,
     mode_runtime: Arc<RwLock<crate::dictation::modes::ModeRuntime>>,
     transformations: Arc<crate::personal_commands::TransformationClient>,
     personal_commands: Option<crate::personal_commands::PersonalCommands>,
     personal_commands_checked_at: Instant,
     preparation: TranscriptionPreparation,
+    /// The preparation Enable started to check the selected model. Only this
+    /// one is canceled by Disable; a model download is left running.
+    checking: bool,
     keyboard_switcher: crate::transcription::keyboard_model_switching::Switcher,
     /// Labs › Switch model with app: the foreground app's mode choice.
     app_switcher: crate::transcription::app_model_switching::Switcher,
     /// Present only while keyboard model switching is on.
     input_sources: Option<crate::keyboard_input_sources::Watcher>,
-    /// The preparation running is a keyboard switch, which a manual choice
-    /// or a later source change supersedes.
-    automatic_preparation: bool,
+    /// Which automatic switcher owns the in-flight preparation, if any.
+    automatic_preparation: Option<AutomaticSwitch>,
+    /// The selection a running swap preparation swaps back to.
+    pending_swap: Option<crate::app_settings::KeyboardModelChoice>,
     updater: crate::updater::Updater,
     /// The newest foreground window of another app, where the tray's Paste
     /// last dictation goes once its menu has taken the foreground.
@@ -165,6 +177,11 @@ impl AppInstance {
                 AllowSetForegroundWindow(ASFW_ANY);
                 SetEvent(event);
             }
+        } else {
+            // A hidden launch (`hex start`, `hex restart`, a login launch)
+            // only yields, so nothing else records that it came and went:
+            // say why here, or a lost relaunch leaves no trace at all.
+            tracing::info!("Hex is already running; this hidden launch exits");
         }
         // SAFETY: `event` is a valid handle owned by this function.
         unsafe { CloseHandle(event) };
@@ -203,6 +220,14 @@ impl WindowsDesktopHost {
         processing: crate::dictation::modes::ProcessingState,
     ) -> Self {
         crate::desktop::i18n::apply(settings.ui_language.as_deref());
+        // The Sounds sheet also plays with the listener stopped and volume Off.
+        // Preloading decodes the sounds without opening a device.
+        crate::feedback::set_enabled(settings.sound_effects);
+        crate::feedback::set_volume(settings.sound_effect_volume);
+        crate::feedback::set_sound_set(settings.sound_theme);
+        if let Err(error) = crate::feedback::preload() {
+            tracing::warn!(%error, "Windows recording feedback is unavailable");
+        }
         let mut event_reader = EventReader::open(&event_path);
         let mut activity = DesktopActivity::default();
         activity.refresh(&mut event_reader);
@@ -250,10 +275,12 @@ impl WindowsDesktopHost {
             personal_commands: None,
             personal_commands_checked_at: Instant::now(),
             preparation: TranscriptionPreparation::default(),
+            checking: false,
             keyboard_switcher,
             app_switcher,
             input_sources: None,
-            automatic_preparation: false,
+            automatic_preparation: None,
+            pending_swap: None,
             updater: crate::updater::Updater::start(),
             foreground: ForeignWindow::default(),
             dictations,
@@ -269,6 +296,11 @@ impl WindowsDesktopHost {
             }
         }
         host
+    }
+
+    /// The host's retained-history store; one store per process.
+    pub(crate) fn history(&self) -> Option<History> {
+        self.history.clone()
     }
 
     /// Setup is ready, so the tour's practice can dictate, or the tour
@@ -291,9 +323,14 @@ impl WindowsDesktopHost {
                 self.remember_listening(self.listen_when_ready);
             }
             Request::ChooseModel { model, language } => self.choose_model(model, language),
+            Request::SwapModel => self.swap_model(),
             Request::CancelModel => {
                 self.manual_choice();
+                self.checking = false;
                 self.preparation.cancel();
+                if !self.is_running() && self.status == ListenerStatus::Enabling {
+                    self.status = ListenerStatus::ModelRequired;
+                }
             }
             Request::PasteLast => {
                 if let Some(listener) = &self.listener {
@@ -350,10 +387,63 @@ impl WindowsDesktopHost {
         false
     }
 
+    /// Labs › Model switch shortcut: prepares the saved other model,
+    /// installed only, and swaps both selections together once it loads. A
+    /// failure leaves the running model and the saved selection as they were.
+    fn swap_model(&mut self) {
+        use crate::transcription::other_model;
+        if crate::transcription::engine::dictation_busy() {
+            tracing::info!("the model switch request was ignored while dictating");
+            return;
+        }
+        let plan = match other_model::planned(&self.settings) {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return,
+            Err(error) => {
+                self.report_switch_error(&error);
+                return;
+            }
+        };
+        if let Err(error) = other_model::installed(&plan) {
+            self.report_switch_error(&error);
+            return;
+        }
+        self.manual_choice();
+        self.checking = false;
+        self.pending_swap = Some(plan.other);
+        self.preparation.start(plan.to, true);
+        self.automatic_preparation = Some(AutomaticSwitch::Swap);
+    }
+
+    /// Shows a failed switch in Settings, and beside the HUD when Labs ›
+    /// Failure notices is on.
+    fn report_switch_error(&self, error: &crate::transcription::other_model::SwitchError) {
+        self.preparation.set_error(Some(error.message()));
+        if self.settings.labs.failure_notices
+            && let Some((template, detail)) = error.notice()
+        {
+            self.indicator.send(crate::rune_hud::HudEvent::Failed {
+                message: Some(tr_fill(template, detail)),
+            });
+        }
+    }
+
     fn choose_model(&mut self, model: TranscriptionModelId, language: String) {
         self.manual_choice();
+        self.checking = false;
         let selection = crate::transcription::models::TranscriptionSelection { model, language };
-        self.preparation.start(selection, false);
+        self.start_preparation(selection, false);
+    }
+
+    /// Starts a preparation that isn't a swap, dropping any swap it
+    /// supersedes so that swap's way back can never commit.
+    fn start_preparation(
+        &mut self,
+        selection: crate::transcription::models::TranscriptionSelection,
+        installed_only: bool,
+    ) {
+        self.pending_swap = None;
+        self.preparation.start(selection, installed_only);
     }
 
     /// A layout change not yet polled counts as before this choice, so it
@@ -369,18 +459,19 @@ impl WindowsDesktopHost {
         }
         self.keyboard_switcher.manual_choice();
         self.app_switcher.manual_choice();
-        if self.automatic_preparation {
-            self.preparation.cancel();
-            self.automatic_preparation = false;
-        }
+        self.supersede_automatic();
     }
 
     /// A layout being cycled through cancels only automatic work; a manual
     /// operation is superseded once the debounced choice is due.
     fn supersede_automatic(&mut self) {
-        if self.automatic_preparation {
+        if let Some(source) = self.automatic_preparation.take() {
             self.preparation.cancel();
-            self.automatic_preparation = false;
+            match source {
+                AutomaticSwitch::Keyboard => self.keyboard_switcher.cancel_applying(),
+                AutomaticSwitch::App => self.app_switcher.cancel_applying(),
+                AutomaticSwitch::Swap => self.pending_swap = None,
+            }
         }
     }
 
@@ -417,13 +508,22 @@ impl WindowsDesktopHost {
         if selection.model != self.settings.transcription.model
             || selection.language != self.settings.transcription.language
         {
-            self.preparation.start(selection, true);
-            self.automatic_preparation = true;
+            if self.automatic_preparation == Some(AutomaticSwitch::App) {
+                self.app_switcher.cancel_applying();
+            }
+            self.checking = false;
+            self.start_preparation(selection, true);
+            self.automatic_preparation = Some(AutomaticSwitch::Keyboard);
         } else {
             // The current model stays, but an older manual preparation must
             // not replace it.
+            self.keyboard_switcher.commit();
+            self.checking = false;
+            if self.automatic_preparation.take() == Some(AutomaticSwitch::App) {
+                self.app_switcher.cancel_applying();
+            }
+            self.pending_swap = None;
             self.preparation.cancel();
-            self.automatic_preparation = false;
         }
     }
 
@@ -442,9 +542,14 @@ impl WindowsDesktopHost {
         if self.app_switcher.observe(
             crate::transcription::app_model_switching::Observation::frontmost(
                 application.as_deref(),
+                None,
             ),
-            |application| {
-                crate::transcription::app_model_switching::mode_choice(&self.settings, application)
+            |application, _| {
+                crate::transcription::app_model_switching::mode_choice(
+                    &self.settings,
+                    application,
+                    None,
+                )
             },
             now,
         ) {
@@ -463,15 +568,38 @@ impl WindowsDesktopHost {
             language: choice.language,
             ..self.settings.transcription_for_model(choice.model)
         };
-        self.preparation.start(selection, true);
-        self.automatic_preparation = true;
+        if self.automatic_preparation == Some(AutomaticSwitch::Keyboard) {
+            self.keyboard_switcher.cancel_applying();
+        }
+        self.checking = false;
+        self.start_preparation(selection, true);
+        self.automatic_preparation = Some(AutomaticSwitch::App);
     }
 
     fn model_ready(&self) -> bool {
+        crate::desktop::onboarding::model_ready(&self.runtime_selection())
+    }
+
+    /// Verifies the selected model's file when it is here but unverified
+    /// (another app's catalog download), using the same installed-only
+    /// preparation as a model switch. The first check hashes the file, so it
+    /// runs off the UI thread. No file means no check: Enable says Model
+    /// required, as before.
+    fn check_selected_model(&mut self) -> bool {
         let selection = self.runtime_selection();
-        let model = crate::transcription::models::definition(selection.model);
-        crate::transcription::models::is_installed(model, &selection.language)
-            && crate::transcription::models::is_verified(model)
+        let Ok(model) = crate::transcription::models::validate(&selection) else {
+            return false;
+        };
+        if !crate::transcription::models::needs_check(&model, &selection.language) {
+            return false;
+        }
+        self.checking = true;
+        // This is Enable's check, not the swap it replaced: a failed check
+        // must not say "Couldn't switch the speech model".
+        self.automatic_preparation = None;
+        self.start_preparation(selection, true);
+        self.status = ListenerStatus::Enabling;
+        true
     }
 
     pub(crate) fn start(&mut self) {
@@ -479,8 +607,20 @@ impl WindowsDesktopHost {
         if self.is_running() {
             return;
         }
+        let selection = self.runtime_selection();
         if !self.model_ready() {
-            self.status = ListenerStatus::ModelRequired;
+            // Only a preparation for the selected model (its check, or a
+            // download of it) is worth waiting for. Anything else keeps the
+            // old answer and is left running.
+            let preparing = self.preparation.status().model;
+            if preparing == Some(selection.model) {
+                self.status = ListenerStatus::Enabling;
+            } else {
+                if preparing.is_none() && self.check_selected_model() {
+                    return;
+                }
+                self.status = ListenerStatus::ModelRequired;
+            }
             return;
         }
         let stop = Arc::new(AtomicBool::new(false));
@@ -490,7 +630,6 @@ impl WindowsDesktopHost {
         let (swap_failure_sender, swap_failures) = mpsc::channel();
         let (commands, command_receiver) = mpsc::channel();
         let event_path = self.event_path.clone();
-        let selection = self.runtime_selection();
         let config = crate::windows::dictation::WindowsDictationConfig {
             swap_failures: Some(swap_failure_sender),
             commands: Some(command_receiver),
@@ -555,7 +694,22 @@ impl WindowsDesktopHost {
 
     pub(crate) fn stop(&mut self) {
         self.listen_when_ready = false;
-        self.signal_stop(ListenerStatus::Disabling);
+        if self.listener.is_some() {
+            self.signal_stop(ListenerStatus::Disabling);
+            return;
+        }
+        // Disable during a model check: stop the check too, and never leave
+        // the listener card on Enabling with nothing to finish.
+        if self.status == ListenerStatus::Enabling {
+            // Only Enable's own check is canceled; a model download the
+            // person started keeps running.
+            if self.checking {
+                self.preparation.cancel();
+                self.preparation.set_error(None);
+                self.checking = false;
+            }
+            self.status = ListenerStatus::Disabled;
+        }
     }
 
     fn is_running(&self) -> bool {
@@ -683,13 +837,32 @@ impl WindowsDesktopHost {
     }
 
     pub(crate) fn refresh(&mut self) {
+        if crate::transcription::other_model::take_request() {
+            self.swap_model();
+        }
         self.switch_with_keyboard();
         self.switch_with_app();
+        let mut checked = false;
         if let Some(result) = self.preparation.poll() {
-            self.automatic_preparation = false;
+            let automatic = self.automatic_preparation.take();
+            self.checking = false;
+            // A swap's way back is saved with the selection it swaps in, in
+            // one write, only once the new model has loaded.
+            let swap_other = (automatic == Some(AutomaticSwitch::Swap))
+                .then(|| self.pending_swap.take())
+                .flatten();
             let result = result.and_then(|selection| {
                 crate::transcription::models::validate(&selection).map_err(|e| e.to_string())?;
+                // Only a preparation that changes what Hex runs replaces the
+                // saved choice: a check of that same model, or of a lost
+                // import's fallback, leaves the saved selection alone.
+                if selection == self.runtime_selection() && swap_other.is_none() {
+                    return Ok(());
+                }
                 let mut candidate = self.settings.clone();
+                if let Some(other) = swap_other {
+                    candidate.model_switch_other = Some(other);
+                }
                 candidate.remember_transcription(selection);
                 let saved = self
                     .settings
@@ -698,9 +871,60 @@ impl WindowsDesktopHost {
                 self.apply_settings(&saved);
                 Ok(())
             });
-            if let Err(error) = result {
-                self.preparation.set_error(Some(error));
+            match result {
+                Ok(()) => {
+                    match automatic {
+                        Some(AutomaticSwitch::Keyboard) => self.keyboard_switcher.commit(),
+                        Some(AutomaticSwitch::App) => self.app_switcher.commit(),
+                        Some(AutomaticSwitch::Swap) | None => {}
+                    }
+                    checked = true;
+                    if self.status == ListenerStatus::Enabling && !self.model_ready() {
+                        // One check per Enable: a check that finished without
+                        // making the model ready is not retried by itself.
+                        self.status = ListenerStatus::ModelRequired;
+                    }
+                }
+                Err(error) => {
+                    match automatic {
+                        Some(AutomaticSwitch::Keyboard) => {
+                            self.keyboard_switcher.fail(Instant::now())
+                        }
+                        Some(AutomaticSwitch::App) => self.app_switcher.fail(Instant::now()),
+                        Some(AutomaticSwitch::Swap) | None => {}
+                    }
+                    if automatic == Some(AutomaticSwitch::Swap)
+                        && self.settings.labs.failure_notices
+                    {
+                        self.indicator.send(crate::rune_hud::HudEvent::Failed {
+                            message: Some(tr_fill("Couldn't switch the speech model: {}", &error)),
+                        });
+                    }
+                    // An Enable that stopped to check a model failed to reach
+                    // listening; say so instead of Enabling… forever.
+                    if self.listen_when_ready
+                        && !self.is_running()
+                        && self.status == ListenerStatus::Enabling
+                    {
+                        self.status = ListenerStatus::CouldNotEnable;
+                    }
+                    self.preparation.set_error(Some(error));
+                }
             }
+        }
+        // A listener waiting on its model starts once the check it needed
+        // passed (a model found on this computer is adopted here).
+        if checked && self.listen_when_ready && !self.is_running() && self.model_ready() {
+            self.start();
+        }
+        // A check canceled while waiting (a switch or an explicit cancel)
+        // must not leave the host on Enabling with nothing pending.
+        if self.listen_when_ready
+            && !self.is_running()
+            && self.status == ListenerStatus::Enabling
+            && self.preparation.status().model.is_none()
+        {
+            self.start();
         }
         let swap_failures = self
             .listener
@@ -803,6 +1027,10 @@ impl WindowsDesktopHost {
                 preparation_stage: preparation.stage,
                 selection: self.settings.transcription.clone(),
                 preparing: preparation.model,
+                // The listener shares its engine with this process, so its
+                // last finished command says where the model runs.
+                backend: crate::transcription::engine::TranscriptionEngine::shared()
+                    .and_then(|engine| engine.held_backend()),
             },
             update_status: self.updater.status(),
             update_notes: self.updater.notes(),
@@ -847,7 +1075,9 @@ pub(crate) fn foreground_other_process_stem() -> Option<String> {
 }
 
 /// The newest foreground window another process owns, polled with the
-/// runtime's refresh.
+/// runtime's refresh. The desktop, taskbars, and the taskbar's overflow
+/// flyout are skipped: a paste there is lost, so bringing one forward is
+/// never what Paste Last wants.
 #[derive(Default)]
 struct ForeignWindow(Option<isize>);
 
@@ -865,7 +1095,9 @@ impl ForeignWindow {
             }
             let mut process_id = 0;
             GetWindowThreadProcessId(window, &mut process_id);
-            if process_id != GetCurrentProcessId() {
+            if process_id != GetCurrentProcessId()
+                && !crate::windows::paste::is_shell_window(window)
+            {
                 self.0 = Some(window as isize);
             }
         }

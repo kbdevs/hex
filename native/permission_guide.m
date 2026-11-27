@@ -54,16 +54,35 @@ static NSString *hexAppName(NSURL *bundleURL) {
     return name.length > 0 ? name : @"Hex";
 }
 
-/// macOS 27 renamed the Accessibility list.
+/// macOS 27 renamed the Accessibility list to Device Control and Data Access.
 static BOOL accessibilityRenamed(void) {
     NSOperatingSystemVersion version = {27, 0, 0};
     return [NSProcessInfo.processInfo isOperatingSystemAtLeastVersion:version];
+}
+
+/// macOS 27.3 renamed the list again to System & App Protection Override and
+/// stopped accepting tiles dragged into it; the pane adds apps with its own +
+/// control instead. macOS 27.0 through 27.2 still takes the dragged tile.
+static BOOL accessibilityProtected(void) {
+    NSOperatingSystemVersion version = {27, 3, 0};
+    return [NSProcessInfo.processInfo isOperatingSystemAtLeastVersion:version];
+}
+
+/// Whether macOS 27.3 split the old Accessibility grant in two. The new
+/// Accessibility list holds assistive technologies; apps that control other
+/// apps (posting ⌘V included) need System & App Protection Override instead,
+/// and the Accessibility grant no longer stands in for that.
+bool hex_permission_split_accessibility(void) {
+    return accessibilityProtected();
 }
 
 /// The name of the Privacy & Security list each permission lives in.
 const char *hex_permission_list_name(int permission) {
     switch ((HexPermission)permission) {
         case HexPermissionAccessibility:
+            if (accessibilityProtected()) {
+                return "System & App Protection Override";
+            }
             return accessibilityRenamed() ? "Device Control and Data Access" : "Accessibility";
         case HexPermissionMicrophone:
             return "Microphone";
@@ -73,6 +92,25 @@ const char *hex_permission_list_name(int permission) {
             return "Screen & System Audio Recording";
     }
     return "Privacy & Security";
+}
+
+/// Whether Hex's guide can offer a tile for `permission` to drop into its
+/// list. System Settings' Microphone list only holds apps that asked, so Hex
+/// switches it on instead, and macOS 27.3's System & App Protection Override
+/// refuses dropped tiles: it asks for a click on the Privacy & Security
+/// notification and adds apps with the pane's own + control. macOS 27.0
+/// through 27.2 still takes the dragged tile.
+bool hex_permission_drag_supported(int permission) {
+    switch ((HexPermission)permission) {
+        case HexPermissionAccessibility:
+            return !accessibilityProtected();
+        case HexPermissionMicrophone:
+            return NO;
+        case HexPermissionSystemAudio:
+        case HexPermissionScreenRecording:
+            return YES;
+    }
+    return NO;
 }
 
 /// Asks macOS to register this running binary in Accessibility and show its
@@ -230,6 +268,13 @@ static NSString *const settingsBundleID = @"com.apple.systempreferences";
 /// Bumped by every pane request, so an older request's retries stand down.
 static NSUInteger settingsRequest;
 
+/// Whether System Settings is the application in front, so the guide has
+/// somewhere to point and must not float over anything else.
+static BOOL settingsFrontmost(void) {
+    NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
+    return [front.bundleIdentifier isEqualToString:settingsBundleID];
+}
+
 static BOOL settingsHasWindow(void) {
     NSArray<NSRunningApplication *> *apps =
         [NSRunningApplication runningApplicationsWithBundleIdentifier:settingsBundleID];
@@ -254,8 +299,7 @@ static BOOL settingsHasWindow(void) {
 int hex_permission_settings_state(void) {
     NSCAssert(NSThread.isMainThread, @"settings state must run on the main thread");
     BOOL open = settingsHasWindow();
-    NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
-    BOOL frontmost = [front.bundleIdentifier isEqualToString:settingsBundleID];
+    BOOL frontmost = settingsFrontmost();
     BOOL active = NSApp.isActive;
     return (open ? 1 : 0) | (frontmost ? 2 : 0) | (active ? 4 : 0);
 }
@@ -378,6 +422,16 @@ static BOOL systemAudioGranted(void) {
     return tccPreflight(CFSTR("kTCCServiceAudioCapture")) == 0;
 }
 
+/// Screen Recording, read from TCC: `CGPreflightScreenCaptureAccess` keeps
+/// the answer it read first for the life of the process, so a grant made in
+/// System Settings while Hex runs never reached the guide and it hung there
+/// until Hex restarted. TCC's preflight reads it now; the CoreGraphics one
+/// remains only for a system where that preflight is unavailable.
+static BOOL screenRecordingGranted(void) {
+    int status = tccPreflight(CFSTR("kTCCServiceScreenCapture"));
+    return status >= 0 ? status == 0 : CGPreflightScreenCaptureAccess();
+}
+
 /// AVFoundation keeps the microphone answer it read first until Hex itself
 /// asks, so a grant that came another way (macOS prompting when CoreAudio
 /// opened an input, or the switch in System Settings) reads from TCC.
@@ -398,7 +452,7 @@ static BOOL permissionGranted(void) {
         case HexPermissionSystemAudio:
             return systemAudioGranted();
         case HexPermissionScreenRecording:
-            return CGPreflightScreenCaptureAccess();
+            return screenRecordingGranted();
     }
     return NO;
 }
@@ -422,6 +476,24 @@ static void closeGuide(void) {
     guideTile = nil;
     guideSettingsURL = nil;
     sawSettingsWindow = NO;
+}
+
+/// Whether the guide for `permission` is open, in front or waiting behind
+/// another app for System Settings to come back.
+bool hex_permission_guide_active(int permission) {
+    NSCAssert(NSThread.isMainThread, @"permission guide must run on the main thread");
+    return guidePanel != nil && activePermission == (HexPermission)permission;
+}
+
+/// Closes the guide for `permission`: Hex read the grant itself (Screen
+/// Recording through a fresh helper, since this process's own preflight keeps
+/// the launch answer), so there is nothing left for the tile to point at.
+void hex_close_permission_guide(int permission) {
+    NSCAssert(NSThread.isMainThread, @"permission guide must run on the main thread");
+    if (guidePanel == nil || activePermission != (HexPermission)permission) {
+        return;
+    }
+    closeGuide();
 }
 
 
@@ -583,6 +655,13 @@ static void updateGuidePosition(void) {
         return;
     }
     sawSettingsWindow = YES;
+    if (!settingsFrontmost()) {
+        // Another app is in front of System Settings: the guide points at
+        // nothing from there, and must not float over what the person is
+        // doing. It comes back when System Settings does.
+        [guidePanel orderOut:nil];
+        return;
+    }
     NSRect settings = appKitFrame(quartzFrame);
     NSSize size = guidePanel.frame.size;
     NSScreen *screen = nil;
@@ -596,13 +675,31 @@ static void updateGuidePosition(void) {
         screen = NSScreen.mainScreen;
     }
     NSRect visible = screen != nil ? screen.visibleFrame : settings;
-    CGFloat x = NSMaxX(settings) - size.width - 16;
-    CGFloat y = NSMinY(settings) + 16;
-    x = MIN(MAX(x, NSMinX(visible) + 8), NSMaxX(visible) - size.width - 8);
-    y = MIN(MAX(y, NSMinY(visible) + 8), NSMaxY(visible) - size.height - 8);
-    [guidePanel setFrameOrigin:NSMakePoint(x, y)];
+    if (activePermission == HexPermissionAccessibility && accessibilityProtected()) {
+        // macOS 27.3's System & App Protection Override keeps its own + and
+        // list controls at the bottom of the window, so the bar sits outside
+        // the window: below it when there is room, above it when there is not,
+        // never over its list.
+        CGFloat x = NSMidX(settings) - size.width / 2;
+        x = MIN(MAX(x, NSMinX(visible) + 8), NSMaxX(visible) - size.width - 8);
+        CGFloat y = NSMinY(settings) - size.height - 16;
+        if (y < NSMinY(visible) + 8) {
+            CGFloat above = NSMaxY(settings) + 16;
+            y = above <= NSMaxY(visible) - size.height - 8 ? above : NSMinY(visible) + 8;
+        }
+        [guidePanel setFrameOrigin:NSMakePoint(x, y)];
+    } else {
+        CGFloat x = NSMaxX(settings) - size.width - 16;
+        CGFloat y = NSMinY(settings) + 16;
+        x = MIN(MAX(x, NSMinX(visible) + 8), NSMaxX(visible) - size.width - 8);
+        y = MIN(MAX(y, NSMinY(visible) + 8), NSMaxY(visible) - size.height - 8);
+        [guidePanel setFrameOrigin:NSMakePoint(x, y)];
+    }
     if (flightPanel != nil && flightStartedAt == 0) {
         flightStartedAt = CACurrentMediaTime();
+    }
+    if (flightPanel != nil) {
+        [flightPanel orderFrontRegardless];
     }
     [guidePanel orderFrontRegardless];
 }
@@ -635,8 +732,12 @@ void hex_show_permission_guide(int permission) {
             break;
     }
     // The Microphone list only holds apps that asked, so a refused
-    // microphone is switched on rather than dragged in.
-    BOOL draggable = activePermission != HexPermissionMicrophone;
+    // microphone is switched on rather than dragged in; macOS 27.3's
+    // Accessibility pane no longer takes a dropped tile at all.
+    BOOL draggable = hex_permission_drag_supported(permission);
+    // macOS 27.3 gets a compact bar that says where Hex is added instead of a
+    // drag tile and its flight.
+    BOOL protected = activePermission == HexPermissionAccessibility && accessibilityProtected();
     NSURL *settingsURL = [NSURL URLWithString:[NSString stringWithFormat:
         @"x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?%@", pane]];
     openSettingsPane(settingsURL);
@@ -646,7 +747,26 @@ void hex_show_permission_guide(int permission) {
         return;
     }
 
-    NSSize panelSize = NSMakeSize(480, draggable ? 116 : 60);
+    NSFont *instructionFont = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+    NSString *text;
+    NSSize panelSize;
+    if (protected) {
+        text = [NSString stringWithFormat:
+            @"Click the Privacy & Security notification, or add %@ with + in %@",
+            appName, listName];
+        CGFloat width = ceil([text sizeWithAttributes:@{ NSFontAttributeName: instructionFont }].width) + 36;
+        NSScreen *mainScreen = NSScreen.mainScreen;
+        if (mainScreen != nil) {
+            width = MIN(width, mainScreen.visibleFrame.size.width - 32);
+        }
+        panelSize = NSMakeSize(MAX(width, 320), 52);
+    } else if (draggable) {
+        text = [NSString stringWithFormat:@"↑  Drag %@ into the %@ list above", appName, listName];
+        panelSize = NSMakeSize(480, 116);
+    } else {
+        text = [NSString stringWithFormat:@"↑  Switch on %@ in the %@ list above", appName, listName];
+        panelSize = NSMakeSize(480, 60);
+    }
     guidePanel = [[NSPanel alloc]
         initWithContentRect:NSMakeRect(0, 0, panelSize.width, panelSize.height)
                   styleMask:NSWindowStyleMaskBorderless |
@@ -667,16 +787,15 @@ void hex_show_permission_guide(int permission) {
     NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, panelSize.width, panelSize.height)];
     content.wantsLayer = YES;
     content.layer.backgroundColor = NSColor.controlBackgroundColor.CGColor;
-    content.layer.cornerRadius = 20;
+    content.layer.cornerRadius = protected ? 14 : 20;
     content.layer.borderWidth = 1;
     content.layer.borderColor = [NSColor colorWithWhite:0 alpha:0.10].CGColor;
 
-    NSString *text = draggable
-        ? [NSString stringWithFormat:@"↑  Drag %@ into the %@ list above", appName, listName]
-        : [NSString stringWithFormat:@"↑  Switch on %@ in the %@ list above", appName, listName];
     NSTextField *instruction = [NSTextField labelWithString:text];
-    instruction.frame = NSMakeRect(18, draggable ? 73 : 18, panelSize.width - 36, 24);
-    instruction.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+    instruction.frame = protected
+        ? NSMakeRect(18, (panelSize.height - 24) / 2, panelSize.width - 36, 24)
+        : NSMakeRect(18, draggable ? 73 : 18, panelSize.width - 36, 24);
+    instruction.font = instructionFont;
     instruction.textColor = NSColor.labelColor;
     [content addSubview:instruction];
 

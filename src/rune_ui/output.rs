@@ -9,14 +9,15 @@ use rune::{El, TextEdit, Tx, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, TextInput};
 
 use super::controls::{
-    ButtonKind, CardRow, DESCRIPTION, METRICS, Paint, PushSize, button, card, folding, note, page,
-    raised, status_dot,
+    ButtonKind, CardRow, Choice, DESCRIPTION, METRICS, Paint, PushSize, button, card, folding,
+    note, page, raised, select_sized, setting_row, status_dot,
 };
 use super::icons::MIC;
 use super::lists::{Tone, tone_tag};
 use super::modes::{application_icon, monogram};
+use super::settings::toggle_menu;
 use super::spark::{Spark, spark};
-use super::{ShortcutTarget, Ui};
+use super::{Menu, ShortcutTarget, Ui};
 use crate::app_settings::DictationMode;
 use crate::desktop::i18n::{tr, tr_fill};
 use crate::dictation::text_replacements::ReplacementSet;
@@ -25,6 +26,9 @@ mod examples;
 
 /// The agent card's spark, this many points square.
 const SPARK: f32 = 30.0;
+/// The narrowest the agent card's lead (spark and copy) gets before its
+/// actions wrap below it.
+const AGENT_TEXT_MIN: f32 = 160.0;
 /// Each app rule's folding steps, by its place in the list.
 const RULE_STEPS: [&str; 8] = [
     "rule0-steps",
@@ -89,7 +93,6 @@ enum Runner {
     BuiltIn,
     Script,
     Rewrite,
-    LocalRefiner,
 }
 
 struct Step {
@@ -98,8 +101,8 @@ struct Step {
     runner: Runner,
 }
 
-/// A mode's steps in order: its vocabulary and corrections, one rewrite, then
-/// its transformations.
+/// A mode's steps in the order they run: the names it hears, its
+/// corrections, OpenCode rewriting when it is on, then its transformations.
 fn steps(ui: &Ui, mode: &DictationMode) -> Vec<Step> {
     let mut steps = Vec::new();
     if !mode.vocabulary.is_empty() {
@@ -136,16 +139,7 @@ fn steps(ui: &Ui, mode: &DictationMode) -> Vec<Step> {
             runner: Runner::BuiltIn,
         });
     }
-    let local_refiner = ui.settings.labs.phonon_refiner
-        && ui.platform.caps.os == super::platform::Os::Macos
-        && (crate::labs::Feature::PhononRefiner.supported() || cfg!(test));
-    if local_refiner {
-        steps.push(Step {
-            title: tr("Local refiner (Phonon)").into(),
-            detail: Some(tr("Cleans the final transcript on this Mac after recording").into()),
-            runner: Runner::LocalRefiner,
-        });
-    } else if mode.post_processing.enabled {
+    if mode.post_processing.enabled {
         steps.push(Step {
             title: tr("Rewrite with OpenCode").into(),
             detail: mode.post_processing.model.clone(),
@@ -181,7 +175,10 @@ fn steps(ui: &Ui, mode: &DictationMode) -> Vec<Step> {
 fn builtin(id: &str) -> Option<(&'static str, &'static str)> {
     match id {
         "lowercase" => Some((tr("Lowercase"), tr("Lowercases everything"))),
-        "no-trailing-punctuation" => Some((tr("No final period"), tr("Drops the last . ! or ?"))),
+        "no-trailing-punctuation" => Some((
+            tr("No final period"),
+            tr("Drops the final period, keeps ? and !"),
+        )),
         "spongebob-case" => Some((tr("SpongeBob case"), tr("aLtErNaTeS every letter"))),
         _ => None,
     }
@@ -202,12 +199,17 @@ fn preview(mode: &DictationMode, input: &str) -> String {
 // ---------------------------------------------------------------------------
 // View
 
-pub(super) fn pane(ui: &Ui, p: Paint, reduced: bool) -> El {
+pub(super) fn pane(ui: &Ui, p: Paint, reduced: bool, layer: &mut Vec<El>) -> El {
     let processing = &ui.settings.dictation_processing;
     let mut content = page("output-content")
         .children(trust_card(ui, p))
-        .child(agent_card(ui, p, reduced))
-        .child(every_dictation(ui, p, &processing.default_mode));
+        .child(agent_card(ui, p, reduced));
+    // Labs › Dictation style writes every dictation after the corrections
+    // and any rewrite, before the transformations below.
+    if ui.settings.labs.dictation_style {
+        content = content.child(dictation_style(ui, p, layer));
+    }
+    content = content.child(every_dictation(ui, p, &processing.default_mode));
     #[cfg(target_os = "linux")]
     if ui.settings.labs.typed_text {
         content = content.child(typed_text(ui, p));
@@ -261,8 +263,8 @@ fn agent_card(ui: &Ui, p: Paint, reduced: bool) -> El {
             .child(
                 row()
                     .key("lead")
-                    .w(200.0)
                     .grow(1.0)
+                    .min_w(AGENT_TEXT_MIN)
                     .gap(12.0)
                     .center_y()
                     .child(mark)
@@ -273,6 +275,11 @@ fn agent_card(ui: &Ui, p: Paint, reduced: bool) -> El {
                     .key("actions")
                     .gap(4.0)
                     .center_y()
+                    // Below the window's usual minimum width the two labels
+                    // no longer fit side by side; stack them instead of
+                    // running past the card.
+                    .shrink()
+                    .flex_wrap()
                     .child(open)
                     .child(edit),
             ),
@@ -385,6 +392,53 @@ fn every_dictation(ui: &Ui, p: Paint, mode: &DictationMode) -> El {
     )
 }
 
+/// Labs › Dictation style: which of the iPhone app's four styles every
+/// dictation is written as. The row is here only while the lab is on.
+fn dictation_style(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
+    use crate::app_settings::DictationStyle;
+    let current = ui.settings.labs.dictation_style_choice;
+    let choices = DictationStyle::ALL
+        .into_iter()
+        .map(|style| Choice {
+            label: tr(style.name()).to_owned(),
+            detail: Some(tr(style.hint()).to_owned()),
+            selected: style == current,
+            choose: Box::new(move |ui| {
+                ui.open = None;
+                ui.update(|settings| settings.labs.dictation_style_choice = style);
+            }),
+        })
+        .collect();
+    let control = select_sized(
+        p,
+        "dictation-style-choice",
+        tr("Style"),
+        tr(current.name()),
+        None,
+        ui.open == Some(Menu::Pick("dictation-style")),
+        choices,
+        |ui| toggle_menu(ui, Menu::Pick("dictation-style")),
+        layer,
+        200.0,
+    );
+    labeled(
+        p,
+        "dictation-style",
+        tr("Dictation style"),
+        tr("After the rewrite"),
+        vec![
+            setting_row(
+                p,
+                "dictation-style-row",
+                tr("Style"),
+                Some(tr(current.hint())),
+                control,
+            )
+            .into(),
+        ],
+    )
+}
+
 /// Dictate without processing: a second dictation shortcut that skips
 /// every step above. Unbound until the person records one.
 fn without_processing(ui: &Ui, p: Paint) -> El {
@@ -440,7 +494,6 @@ fn step_row(p: Paint, key: &str, index: usize, step: &Step) -> El {
         Runner::BuiltIn => tone_tag(p, "runner", tr("Built in"), Tone::Neutral),
         Runner::Script => tone_tag(p, "runner", "JS", Tone::Accent),
         Runner::Rewrite => tone_tag(p, "runner", "AI", Tone::Accent),
-        Runner::LocalRefiner => tone_tag(p, "runner", tr("Local"), Tone::Neutral),
     };
     row()
         .key(key)
@@ -856,37 +909,6 @@ pub(super) fn trust_fixture(ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_local_refiner_replaces_the_cloud_step_without_changing_transformations() {
-        let mut ui = Ui::fixture_base();
-        ui.platform.caps = super::super::platform::Capabilities::MACOS;
-        let mut mode = DictationMode {
-            transformations: vec!["lowercase".into()],
-            ..Default::default()
-        };
-        mode.post_processing.enabled = true;
-        assert!(
-            steps(&ui, &mode)
-                .iter()
-                .any(|step| step.runner == Runner::Rewrite)
-        );
-        ui.settings.labs.phonon_refiner = true;
-        let local = steps(&ui, &mode);
-        assert!(local[0].runner == Runner::LocalRefiner);
-        assert!(local[1].runner == Runner::BuiltIn);
-        assert!(local.iter().all(|step| step.runner != Runner::Rewrite));
-        assert!(
-            mode.post_processing.enabled,
-            "the saved cloud choice is preserved"
-        );
-        ui.platform.caps = super::super::platform::Capabilities::LINUX;
-        assert!(
-            steps(&ui, &mode)
-                .iter()
-                .all(|step| step.runner != Runner::LocalRefiner)
-        );
-    }
 
     #[test]
     fn every_built_in_transformation_has_a_step_name() {

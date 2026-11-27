@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use scrawl_capture::bundle::resolve_bundle_dir_in;
+use scrawl_capture::bundle::{MANIFEST, manifest_name, read_manifest, resolve_bundle_dir_in};
 use scrawl_capture::delivery;
 use scrawl_capture::model::{CaptureMode, ScrawlBundle};
 
@@ -16,37 +16,53 @@ use crate::control::{
 const LIST: usize = 20;
 
 pub fn list(limit: Option<usize>) -> Result<ControlReply, ControlError> {
-    let captures = captures_dir();
-    let entries = match std::fs::read_dir(&captures) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ControlReply::ScrawlCaptures {
-                captures: Vec::new(),
-            });
-        }
-        Err(error) => {
-            return Err(ControlError::new(
-                "internal",
-                format!("couldn't read {}: {error}", captures.display()),
-            ));
-        }
-    };
-    let mut found: Vec<_> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "scrawl") && path.is_dir())
-        // One still being written has no scrawl.json yet.
-        .filter_map(|path| load(&path).map(|bundle| summary(&path, &bundle)))
-        .collect();
-    found.sort_by_key(|summary| std::cmp::Reverse(summary.created_at_ms));
+    let mut found = listed(&crate::app_settings::capture_settings().annotation_roots())?;
     found.truncate(limit.unwrap_or(LIST));
     Ok(ControlReply::ScrawlCaptures { captures: found })
+}
+
+fn listed(roots: &[PathBuf]) -> Result<Vec<ScrawlCaptureSummary>, ControlError> {
+    let mut found = Vec::new();
+    for root in roots {
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(ControlError::new(
+                    "internal",
+                    format!("couldn't read {}: {e}", root.display()),
+                ));
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(b) = read_manifest(&path) {
+                found.push((b.id.clone(), summary(&path, &b)));
+            }
+        }
+    }
+    found.sort_by(|(_, a), (_, b)| {
+        (manifest_name(&a.bundle) != Some(MANIFEST), &a.bundle)
+            .cmp(&(manifest_name(&b.bundle) != Some(MANIFEST), &b.bundle))
+    });
+    let mut ids = std::collections::HashSet::new();
+    let mut rows: Vec<_> = found
+        .into_iter()
+        .filter(|(id, _)| ids.insert(id.clone()))
+        .map(|(_, row)| row)
+        .collect();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.created_at_ms));
+    Ok(rows)
 }
 
 pub fn show(capture: &str) -> Result<ControlReply, ControlError> {
     let dir = resolve(capture)?;
     let bundle = load(&dir).ok_or_else(|| unreadable(&dir))?;
-    let file = |name: &Option<String>| name.as_ref().map(|name| dir.join(name));
+    let file = |name: &Option<String>| {
+        name.as_ref()
+            .map(|name| dir.join(name))
+            .filter(|p| p.is_file())
+    };
     Ok(ControlReply::ScrawlCaptureDetail(Box::new(
         ScrawlCaptureDetail {
             summary: summary(&dir, &bundle),
@@ -54,18 +70,26 @@ pub fn show(capture: &str) -> Result<ControlReply, ControlError> {
             transcript: bundle.transcript.text.clone(),
             note: bundle.note.clone(),
             missing_transcript: bundle.transcript.missing.as_ref().map(|m| m.reason.clone()),
+            audio_stopped_at_ms: bundle.audio_stopped_at_ms,
             marks: bundle.marks.len(),
             keyframes: bundle.keyframes.len(),
             video: file(&bundle.video),
             audio: file(&bundle.audio),
             contact_sheet: (!bundle.contact_sheet.is_empty())
-                .then(|| dir.join(&bundle.contact_sheet)),
+                .then(|| dir.join(&bundle.contact_sheet))
+                .filter(|p| p.is_file()),
         },
     )))
 }
 
 pub fn send(capture: &str, to: Option<String>, always: bool) -> Result<ControlReply, ControlError> {
     let dir = resolve(capture)?;
+    if manifest_name(&dir) != Some(MANIFEST) {
+        return Err(ControlError::new(
+            "unsupported",
+            "Legacy annotations open read-only; sending would change the original",
+        ));
+    }
     if load(&dir).is_none() {
         return Err(unreadable(&dir));
     }
@@ -85,26 +109,39 @@ pub fn explain(capture: &str, ask_jev: bool) -> Result<ControlReply, ControlErro
         .map_err(|error| ControlError::new("failed", format!("{error:#}")))
 }
 
-fn captures_dir() -> PathBuf {
-    crate::app_settings::capture_settings().captures_dir()
-}
-
 /// A bundle name, path, or `latest`, inside the captures folder or not.
-fn resolve(capture: &str) -> Result<PathBuf, ControlError> {
-    resolve_bundle_dir_in(Some(&captures_dir()), Path::new(capture))
-        .map_err(|error| ControlError::new("not-found", format!("{error:#}")))
+pub(super) fn resolve(capture: &str) -> Result<PathBuf, ControlError> {
+    let roots = crate::app_settings::capture_settings().annotation_roots();
+    if capture == "latest" {
+        return listed(&roots)?
+            .into_iter()
+            .next()
+            .map(|s| s.bundle)
+            .ok_or_else(|| ControlError::new("not-found", "No completed annotations found"));
+    }
+    let path = Path::new(capture);
+    if let Ok(dir) = resolve_bundle_dir_in(None, path) {
+        return Ok(dir);
+    }
+    roots
+        .iter()
+        .find_map(|r| resolve_bundle_dir_in(Some(r), path).ok())
+        .ok_or_else(|| ControlError::new("not-found", format!("Annotation not found: {capture}")))
 }
 
-fn load(dir: &Path) -> Option<ScrawlBundle> {
+pub(super) fn load(dir: &Path) -> Option<ScrawlBundle> {
     scrawl_capture::bundle::load_bundle_in(None, dir)
         .ok()
         .map(|(_, bundle)| bundle)
 }
 
-fn unreadable(dir: &Path) -> ControlError {
+pub(super) fn unreadable(dir: &Path) -> ControlError {
     ControlError::new(
         "not-found",
-        format!("{} has no readable scrawl.json yet", dir.display()),
+        format!(
+            "{} has no supported, complete annotation manifest",
+            dir.display()
+        ),
     )
 }
 
@@ -129,7 +166,7 @@ fn summary(dir: &Path, bundle: &ScrawlBundle) -> ScrawlCaptureSummary {
         duration_ms: bundle.duration_ms,
         mode: mode.into(),
         app: bundle.target.app.clone(),
-        words: bundle.transcript.words.len(),
+        words: scrawl_capture::transcribe::word_count(&bundle.transcript),
         sent_to: bundle
             .destination
             .as_ref()
@@ -144,6 +181,35 @@ fn summary(dir: &Path, bundle: &ScrawlBundle) -> ScrawlCaptureSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_annotation_cli_resolves_both_packages_but_lists_a_copied_identity_once() {
+        let root = std::env::temp_dir().join(format!("hex-library-{}", std::process::id()));
+        let legacy = root.join("leftover.scrawl");
+        let hex = root.join("chosen.hexannotation");
+        for dir in [&legacy, &hex] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let bytes = include_bytes!("../../tests/fixtures/annotations/marked-v1.json");
+        std::fs::write(legacy.join("scrawl.json"), bytes).unwrap();
+        let b = read_manifest(&legacy).unwrap();
+        scrawl_capture::bundle::publish(&hex, &b).unwrap();
+        let found = listed(std::slice::from_ref(&root)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].bundle, hex);
+        for dir in [&legacy, &hex] {
+            let ControlReply::ScrawlCaptureDetail(detail) = show(dir.to_str().unwrap()).unwrap()
+            else {
+                panic!("wrong projection")
+            };
+            assert_eq!(detail.summary.created_at_ms, b.created_at_ms);
+            assert_eq!(detail.transcript, "Move this");
+            assert_eq!(detail.marks, 1);
+            assert!(detail.video.is_none());
+        }
+        assert_eq!(std::fs::read(legacy.join("scrawl.json")).unwrap(), bytes);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn a_capture_on_disk_summarizes_its_mode_words_and_send() {
@@ -190,6 +256,40 @@ mod tests {
                 .unwrap_err()
                 .code,
             "not-found"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A model that gives no word times (GigaAM v3) said every word in the
+    /// text, so the list counts them and the capture never reads as silence.
+    #[test]
+    fn a_capture_without_word_times_counts_the_words_it_says() {
+        let root = std::env::temp_dir().join(format!(
+            "hex-capture-untimed-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let frame = r#"{"x":0,"y":0,"width":1,"height":1,"scale":2}"#;
+        let write = |name: &str, text: &str| {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let manifest = format!(
+                r#"{{"version":1,"id":"a","createdAtMs":1792933491953,"durationMs":4000,
+                "target":{{"mode":"display","displayId":1,"frame":{frame}}},
+                "transcript":{{"source":"hex","text":"{text}","segments":[],"words":[]}},
+                "strokes":[],"marks":[],"events":[],"keyframes":[],"contactSheet":"sheet.jpg"}}"#
+            );
+            std::fs::write(dir.join("scrawl.json"), manifest).unwrap();
+            let bundle = load(&dir).expect("the manifest reads");
+            summary(&dir, &bundle).words
+        };
+        assert_eq!(write("1792933491953.scrawl", " make it blue "), 3);
+        assert_eq!(
+            write("1792933491954.scrawl", "  "),
+            0,
+            "silence counts none"
         );
         let _ = std::fs::remove_dir_all(root);
     }

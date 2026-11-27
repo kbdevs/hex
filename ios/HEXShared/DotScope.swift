@@ -118,6 +118,7 @@ nonisolated struct DotScopeAutoLevel: Equatable, Sendable {
 
 nonisolated enum DotScopeStage: Equatable, Sendable {
     case idle
+    case starting
     case recording
     case processing
     case done
@@ -327,6 +328,34 @@ nonisolated struct DotScopePalette: Equatable, Sendable {
             shadow: SIMD4<Float>(0.0, 0.0, 0.0, isDark ? 0.22 : 0.10)
         )
     }
+
+    /// The keyboard strip's dots: graphite on light, and on dark the desktop HUD's warm pearl
+    /// (`dot_scope::palette` in `scope.rs`). The strip draws no plate.
+    static func strip(isDark: Bool, pose: DotScopePose, saturation: Float = 1.0) -> DotScopePalette {
+        func mix3(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ t: Float) -> SIMD3<Float> { a + (b - a) * t }
+        let clear = SIMD4<Float>(0, 0, 0, 0)
+        guard isDark else {
+            let coral = SIMD3<Float>(0.82, 0.22, 0.18)
+            return DotScopePalette(
+                base: mix3(SIMD3<Float>(0.20, 0.20, 0.23), coral, pose.fail),
+                core: mix3(SIMD3<Float>(0.07, 0.07, 0.09), coral, pose.fail),
+                plate: clear, rim: clear, shadow: clear
+            )
+        }
+        func sat(_ c: SIMD3<Float>) -> SIMD3<Float> {
+            let l = SIMD3<Float>(repeating: 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z)
+            return pointwiseMin(pointwiseMax(l + (c - l) * saturation, SIMD3<Float>(repeating: 0)), SIMD3<Float>(repeating: 1))
+        }
+        let you = SIMD3<Float>(0.86, 0.83, 0.77)
+        let youCore = SIMD3<Float>(0.98, 0.96, 0.92)
+        let agent = SIMD3<Float>(0.70, 0.78, 0.90)
+        let agentCore = SIMD3<Float>(0.92, 0.95, 1.0)
+        return DotScopePalette(
+            base: sat(mix3(mix3(you, agent, pose.cool), SIMD3<Float>(1.0, 0.38, 0.31), pose.fail)),
+            core: sat(mix3(mix3(youCore, agentCore, pose.cool), SIMD3<Float>(1.0, 0.66, 0.6), pose.fail)),
+            plate: clear, rim: clear, shadow: clear
+        )
+    }
 }
 
 // MARK: - 240 Hz Braided Oscilloscope Simulation (`src/dot_scope/scope.rs`)
@@ -488,6 +517,7 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
     private var softnessSpring = DotSpring(at: hiddenSoftness)
     private var coolSpring = DotSpring(at: 0.0)
     private var failSpring = DotSpring(at: 0.0)
+    private var startingDim: Float = 0.0
     private var enterFromHidden = true
 
     init(tuning: DotScopeTuning = .hud) {
@@ -527,7 +557,8 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
         return clamped <= 0.001 ? -90.0 : (-54.0 + 34.0 * clamped)
     }
 
-    func restart(reduceMotion: Bool) {
+    /// `shown`: the dots start fully present (their host fades them in), so only the trace wakes.
+    func restart(reduceMotion: Bool, shown: Bool = false) {
         let savedAuto = auto
         let currentTuning = tuning
         stage = .recording
@@ -563,9 +594,10 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
             scaleSpring = DotSpring(at: Self.hiddenScale)
             softnessSpring = DotSpring(at: Self.hiddenSoftness)
         }
-        opacitySpring = DotSpring(at: 0.0)
+        opacitySpring = DotSpring(at: shown ? 1.0 : 0.0)
         coolSpring = DotSpring(at: 0.0)
         failSpring = DotSpring(at: 0.0)
+        startingDim = 0.0
         columns = 0
         rows = 0
         tuning = currentTuning
@@ -606,7 +638,7 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
             return max(tuning.height, tuning.width - leadingInsetSpring.target - trailingInsetSpring.target)
         }
         return switch targetStage {
-        case .idle: tuning.idleWidth
+        case .idle, .starting: tuning.idleWidth
         case .recording: tuning.width
         case .processing, .done: tuning.processingWidth
         case .failed: widthSpring.target
@@ -666,8 +698,11 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
         reduceMotion: Bool
     ) {
         if targetStage != stage {
-            if stage == .idle {
+            if stage == .idle || stage == .starting {
                 enterFromHidden = false
+            }
+            if steps == 0 && targetStage == .starting {
+                startingDim = 1.0
             }
             if targetStage == .done {
                 armDone()
@@ -763,13 +798,20 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
 
         let liveTarget: Float = if isRecording {
             1.0
-        } else if stage == .idle && visible {
+        } else if (stage == .idle || stage == .starting) && visible {
             Self.idleLiveTarget
         } else {
             0.0
         }
         let liveTau: Float = liveTarget > live ? 0.22 : 0.36
         live += (liveTarget - live) * (1.0 - exp(-h / liveTau))
+
+        let startingTarget: Float = stage == .starting ? 1.0 : 0.0
+        if reduceMotion {
+            startingDim = startingTarget
+        } else {
+            startingDim += (startingTarget - startingDim) * (1.0 - exp(-h / 0.16))
+        }
 
         let speed: Float = reduceMotion ? 0.0 : tuning.braidSpeed
         traces.0.tick(voice: voices.0, live: live, speed: speed, tuning: tuning, h: h)
@@ -885,14 +927,14 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
         }
         let mode: Mode
 
-        if stage == .failed || stage == .idle || reduceMotion {
+        if stage == .failed || stage == .idle || stage == .starting || reduceMotion {
             scanHelix = stage == .idle ? 0.55 : 1.0
             scanDecay = 1.0; scanTail = 1.0; scanGrid = 1.0
             mode = .still
         } else {
             switch stage {
-            case .idle:
-                scanHelix = 0.55; scanDecay = 1.0; scanTail = 1.0; scanGrid = 1.0
+            case .idle, .starting:
+                scanHelix = stage == .idle ? 0.55 : 1.0; scanDecay = 1.0; scanTail = 1.0; scanGrid = 1.0
                 mode = .still
 
             case .recording:
@@ -938,7 +980,7 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
         let mid = Float(rws - 1) * 0.5
         let half = mid - 0.55
         let breath: Float = reduceMotion ? 0.5 : (0.5 + 0.5 * sin(time * Self.tau / Self.breathPeriod))
-        let idleScale: Float = stage == .idle ? 0.48 : 1.0
+        let idleScale: Float = stage == .idle ? 0.48 : (1.0 - 0.72 * startingDim)
         let rest = (0.55 + 0.35 * breath) * (0.35 + 0.65 * live) * scanHelix * idleScale
         let sf = Self.spatialFreqs
         let reachAttenuation: Float = tuning.fitsBounds ? 0.48 : 0.80
@@ -1000,7 +1042,7 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
                     * sin(Self.tau * tuning.helixCycles * xn - carrier)
                 let y = half * tanh((helix + half * 0.72 * spread * reach) / max(half, 0.01)) * ends * amp
                 ys[s] = mid - sign * y
-                let idleDim: Float = stage == .idle ? 0.58 : 1.0
+                let idleDim: Float = stage == .idle ? 0.58 : (1.0 - 0.55 * startingDim)
                 let spatial = (0.3 + 0.7 * min(1.0, a * 1.8)) * (0.45 + 0.55 * ends) * idleDim
                 brightness[s] = spatial * amp + 0.36 * max(0.0, bright - amp)
             }
@@ -1084,6 +1126,7 @@ nonisolated final class DotScopeSimulation: @unchecked Sendable {
 enum DotScopePhase: Equatable, Sendable {
     case hidden
     case idle
+    case starting
     case recording
     case processing
     case failed
@@ -1100,6 +1143,24 @@ private struct DotScopeMetalUniforms {
     var plate: SIMD4<Float>
     var rim: SIMD4<Float>
     var shadow: SIMD4<Float>
+    var look: SIMD4<Float>
+}
+
+/// How the dots are drawn: OpenCode iOS's bar look, or the keyboard strip's: the desktop HUD's
+/// dots (`src/rune_hud.wgsl`) without their bloom, with a soft glow under the lit trace.
+enum DotScopeLook: Equatable {
+    case ios
+    case strip
+
+    /// The glow under the strip's trace, half as strong as it was first drawn.
+    static let stripGlow: Float = 0.5
+
+    var uniform: SIMD4<Float> {
+        switch self {
+        case .ios: SIMD4<Float>(0, 0, 0, 0)
+        case .strip: SIMD4<Float>(1, Self.stripGlow, 0, 0)
+        }
+    }
 }
 
 struct DotSwipeCueMetalUniforms {
@@ -1172,6 +1233,17 @@ final class DotScopeMetalPipeline {
     }
 }
 
+extension CAMetalLayer {
+    /// Keeps the Metal Performance HUD (Settings › Developer › Graphics HUD) off Hex's dot
+    /// layers. It draws inside a layer, at its top right: on the home well its frame-rate
+    /// readout sat under the Dictate pill, which looked like a second label (TestFlight build
+    /// 56, "UI bug"). A launch with `MTL_HUD_ENABLED=1`, as from Xcode, keeps it.
+    func hidesDeveloperHUD() {
+        guard ProcessInfo.processInfo.environment["MTL_HUD_ENABLED"] != "1" else { return }
+        developerHUDProperties = ["mode": "disabled"]
+    }
+}
+
 final class DisplayLinkProxy: NSObject {
     var tickHandler: ((CADisplayLink) -> Void)?
 
@@ -1222,20 +1294,32 @@ final class DotScopeHostView: UIView {
         }
     }
 
+    var look: DotScopeLook = .ios {
+        didSet {
+            if look != oldValue {
+                renderCurrentFrame()
+            }
+        }
+    }
+
     var reduceMotion = false
+    /// The view around the scope fades it in and out, so its own opacity spring stays at 1
+    /// while shown and one fade, not two stacked, sets how it comes and goes.
+    var hostFades = false
     var useDemoVoice = false
     var loudnessProvider: (() -> Float)?
 
     /// Exposed for unit tests to verify simulation continuity across live meter updates.
     var debugElapsedTime: Float { simulation.elapsedTime }
     var debugIsPaused: Bool { displayLink?.isPaused ?? true }
+    var debugPose: DotScopePose { simulation.pose }
 
     private var metalLayer: CAMetalLayer {
         // swiftlint:disable:next force_cast
         layer as! CAMetalLayer
     }
 
-    init(tuning: DotScopeTuning) {
+    init(tuning: DotScopeTuning, maximumDrawableCount: Int = 3) {
         self.requestedTuning = tuning
         self.simulation = DotScopeSimulation(tuning: tuning)
         if let gpu = DotScopeMetalPipeline.shared {
@@ -1258,13 +1342,22 @@ final class DotScopeHostView: UIView {
             metalLayer.isOpaque = false
             metalLayer.framebufferOnly = true
             metalLayer.allowsNextDrawableTimeout = false
-            metalLayer.maximumDrawableCount = 3
+            metalLayer.hidesDeveloperHUD()
+            metalLayer.maximumDrawableCount = max(2, min(3, maximumDrawableCount))
             metalLayer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         }
 
         proxy.tickHandler = { [weak self] link in
             self?.stepAndRender(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
         }
+    }
+
+    /// Releases the display link and shrinks Metal drawables so keyboard extensions reclaim IOSurfaces.
+    func tearDown() {
+        displayLink?.invalidate()
+        displayLink = nil
+        visibilityObservations.removeAll()
+        metalLayer.drawableSize = CGSize(width: 1, height: 1)
     }
 
     @available(*, unavailable)
@@ -1417,7 +1510,7 @@ final class DotScopeHostView: UIView {
 
     private func handlePhaseChange(from old: DotScopePhase, to next: DotScopePhase) {
         if old == .hidden, next != .hidden, simulation.settled {
-            simulation.restart(reduceMotion: reduceMotion)
+            simulation.restart(reduceMotion: reduceMotion, shown: hostFades)
             if next == .idle {
                 settleIdleImmediately()
             }
@@ -1430,9 +1523,11 @@ final class DotScopeHostView: UIView {
     }
 
     private func seedForSnapshotIfNeeded() {
-        guard useDemoVoice, !hasSeededSnapshot, bounds.width > 8 else { return }
+        guard useDemoVoice, !hasSeededSnapshot, bounds.width > 8,
+              !ProcessInfo.processInfo.arguments.contains(where: { $0.hasSuffix("-sequence") || $0.hasSuffix("-sequence-dark") })
+        else { return }
         switch phase {
-        case .hidden, .idle:
+        case .hidden, .idle, .starting:
             return
         case .recording, .processing, .failed:
             break
@@ -1472,7 +1567,7 @@ final class DotScopeHostView: UIView {
                 !simulation.settled
             case .idle:
                 !simulation.isIdleSettled
-            case .recording, .processing, .failed:
+            case .starting, .recording, .processing, .failed:
                 true
             }
         }
@@ -1496,7 +1591,7 @@ final class DotScopeHostView: UIView {
 
         let (stage, visible, loudness) = simulationInputs()
         simulation.advance(
-            dt: dt,
+            dt: dt / Float(MotionDebug.slow),
             stage: stage,
             visible: visible,
             loudness: loudness,
@@ -1512,6 +1607,8 @@ final class DotScopeHostView: UIView {
             return (.done, false, -120.0)
         case .idle:
             return (.idle, true, -120.0)
+        case .starting:
+            return (.starting, true, -120.0)
         case .recording:
             let liveDB = loudnessProvider?() ?? -62.0
             let effectiveDB: Float
@@ -1543,11 +1640,10 @@ final class DotScopeHostView: UIView {
         }
 
         let pose = simulation.pose
-        let palette = DotScopePalette.palette(
-            isDark: isDark,
-            pose: pose,
-            saturation: simulation.tuning.saturation
-        )
+        let palette = switch look {
+        case .ios: DotScopePalette.palette(isDark: isDark, pose: pose, saturation: simulation.tuning.saturation)
+        case .strip: DotScopePalette.strip(isDark: isDark, pose: pose, saturation: simulation.tuning.saturation)
+        }
         let scale = Float(max(1.0, metalLayer.contentsScale))
         let resX = Float(metalLayer.drawableSize.width)
         let resY = Float(metalLayer.drawableSize.height)
@@ -1573,7 +1669,8 @@ final class DotScopeHostView: UIView {
             core: SIMD4<Float>(palette.core.x, palette.core.y, palette.core.z, pose.cool),
             plate: palette.plate,
             rim: palette.rim,
-            shadow: palette.shadow
+            shadow: palette.shadow,
+            look: look.uniform
         )
 
         let slotStride = DotScopeTuning.maxDots * MemoryLayout<SIMD2<UInt16>>.stride

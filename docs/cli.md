@@ -34,16 +34,18 @@ hex
 ├── quit [--force]                 refused while a meeting or dictation is active, or unconfirmed
 ├── restart [--force]              quit and reopen (opens Hex when it isn't running)
 ├── dictation start|stop|toggle
-│   ├── start --print              (Labs, macOS) answer with the transcript when the recording ends
+│   ├── start --print              (macOS) answer with the transcript when the recording ends
 │   ├── stop --print               print the transcript instead of pasting it (below)
 │   └── start|toggle --raw         paste the transcript as heard, skipping the Output steps
 ├── paste-last                     paste the last dictation (Option-Shift-V); refused while recording
 ├── typed-text                     Labs › Transform typed text (Linux): replace the focused field's text
-├── transcribe <file> [--model <id>] [--language L]  Labs › Transcribe files: print a WAV file's transcript
+├── transcribe <file> [--model <id>] [--language L]  print an audio or video file's transcript
 ├── meetings
 │   ├── record [--title T]         as the menu bar's Record Meeting; needs meetings.enabled
-│   ├── stop                       Stop & Transcribe
+│   │                              (busy while the last meeting stops or transcribes)
+│   ├── stop                       Stop & Transcribe; unchanged once it is stopping
 │   ├── copy-last                  copy the last meeting transcript to the clipboard
+│   ├── delete <id>                move a finished meeting's Markdown and recording to the Trash
 │   └── list | show | search       read-only (docs/transcript-cli.md)
 ├── settings
 │   ├── list                       every setting: key, value, kind, choices, writable, about
@@ -68,9 +70,6 @@ hex
 │   └── story <story> [--variant V] [--play]  the playground (Labs): open a story
 ├── onboarding reset (alias restart)  replay the first run now; every OS (below)
 ├── history clear --yes            delete every retained dictation
-├── import superwhisper            this fork: import local Superwhisper data while Hex is stopped
-│   └── --dry-run --json           scan only; no files or settings are changed
-├── meetings templates list|show   this fork: read imported meeting-template prompts
 ├── vocabulary                     the shared vocabulary (features/vocabulary.md)
 │   ├── list [--json]              every term and its "sounds like" spellings
 │   ├── add <term> [--sounds-like a,b]  add a term, or new spellings to an existing one
@@ -80,12 +79,14 @@ hex
 │   ├── list [--limit N]           the newest captures in the captures folder
 │   ├── show <capture>             one capture's words, files, and where it went
 │   ├── send <capture> [--to <session>] [--always]  send it to an OpenCode session
-│   └── route <capture> [--ask-jev]  what routing sees and decides; sends nothing
+│   ├── route <capture> [--ask-jev]  what routing sees and decides; sends nothing
+│   └── inspect|zoom|frames|skill  Labs: read a capture for a coding agent (off by default)
 ├── screenshot [--pick]           Labs (macOS): shoot the display under the pointer and print the PNG's path; --pick opens the ⌘⇧4 picker
 ├── labs [on|off <feature>]       list Labs features or turn one on/off; edits settings.json (features/labs.md)
 │   └── link <feature>             macOS: print hex://labs/<feature>, the link that opens Hex's Labs page on that lab's group
 ├── check-for-updates              check for an update now
 ├── launch-at-login [on|off]       report or change Launch at Login (macOS: installed Hex.app only; Windows Run key; Linux XDG autostart)
+├── completions <shell>            print a completion script for hex
 └── logs [--process] [-n N] [-f]   tail live.ndjson (or process.log); no running Hex needed
 ```
 
@@ -113,9 +114,8 @@ falls back to pasting. `--print` with `toggle` or `cancel` is a usage error
 and `hex paste-last` reach the listener's own queue as its shortcut would;
 Linux's `hex typed-text` does too.
 
-`dictation start --print` (Labs › Print-only CLI dictation, off by default,
-macOS) records a dictation that belongs to the command instead of the person's
-focused app: the command blocks and answers only when the recording ends,
+`dictation start --print` (macOS) records a dictation that belongs to the
+command instead of the person's focused app: the command blocks and answers only when the recording ends,
 however it ends, with the transcript (`transcript`, exit 0) instead of pasting
 or copying it. It starts exactly as `start` does and locks the recording; the
 shortcut press that finishes it, `dictation stop`, `dictation toggle`, and a
@@ -129,8 +129,8 @@ hangs. A printing `start` while anything already records is refused with
 A plain `dictation stop` of a print-only recording answers as any plain stop
 does (`done`, or `discarded` for no audio or silence) and the transcript still
 goes to the start; `stop --print` of it answers `done` too, and both commands
-wait for the one transcript. With the lab off, or on Linux
-and Windows, it answers `disabled` or `unsupported`. The text gets the same
+wait for the one transcript. On Linux and Windows it answers `unsupported`.
+The text gets the same
 processing as a paste and History keeps it as `printed`, as `stop --print`
 does; Paste Last skips it. A printing start waits at most 31 minutes; if it
 gives up, the recording stays print-only and is never pasted. `--raw` is
@@ -163,6 +163,11 @@ same.
 with `busy` while anything records or a shortcut gesture is in progress. The
 menu bar's Paste Last Dictation does nothing in that case.
 
+On a Mac with [Labs › Paste Last picker](features/dictation.md#paste-last-picker-labs-macos)
+on, the same command immediately pastes the newest eligible dictation or
+Annotate capture. It does not open a picker or send the capture anywhere. Its
+reply acknowledges queue admission, not receipt by the focused app.
+
 `typed-text` (Linux) runs the same job as Labs › Transform typed text's
 shortcut, for desktops without the shortcuts portal. It needs a listening Hex
 and the lab on (`disabled` when it is off), and refuses while Terminal paste
@@ -170,28 +175,52 @@ shortcut is on (`disabled`), because its Ctrl+V would become Ctrl+Shift+V. It
 sends Ctrl+A and Ctrl+C, so it is not meant for terminals. While a capture
 records or finishes, it answers done but the listener drops the job.
 
-`transcribe <file>` (Labs › Transcribe files, off by default) prints a saved
-WAV recording's transcript to stdout with the selected dictation model, or
-the one `--model` names; `--language` picks a language the model supports.
-It is refused with `disabled` while the lab is off. The file is opened and
-read through once here, so a file Hex can't read or decode is refused with
-`unsupported` (convert it first, for example with ffmpeg) and one with no
-audio with `no-speech`, before anything else runs. A recording of any length
-is read and sent in pieces of at most 30 seconds: a piece of only silence is
-skipped once the speech detector is installed, the rest of the text is joined
-with one space, and Hex holds about one piece rather than the whole file. With
-Hex running, each piece goes to its local API's `POST /transcriptions` with
-that model named: a piece that short runs on Hex's dictation engine when it
-already holds that model, so no second copy loads and dictation can run
-between pieces. With Hex stopped,
-Linux and Windows load the model in this process once, as `hex model
-transcribe` does; macOS answers `not-running`. A piece that hears no speech
-is skipped, and only a file with no speech at all answers `no-speech`
-(exit 4). It never pastes, records History, or runs mode processing. With
-`--json` the reply is the same `transcript` status `dictation stop --print`
-uses. The lab is read from `settings.json` (`AppSettings::read`), as `hex labs`
-reads it, whether or not Hex is running; a running Hex saves its Labs toggle
-there at once.
+`transcribe <file>` prints a recording's transcript to stdout with the
+selected dictation model, or the one `--model` names; `--language` picks a
+language the model supports. It reads WAV, AIFF, CAF, FLAC, MP3, Ogg (Vorbis
+and Opus), WebM/Matroska audio, and MP4/M4A/MOV audio (AAC-LC, HE-AAC, ALAC),
+from audio files or a video's soundtrack, decoded in this process with no
+external tool. The file is opened and its first audio decoded before anything
+else runs, so a file Hex can't read is refused with `unsupported`. A
+recording of any length is decoded and sent in pieces of at most 30 seconds,
+so Hex holds about one piece rather than the whole file; the pieces' text is
+joined with one space.
+
+Each piece goes to the local API's `POST /transcriptions` with that model
+named. With Hex running, that is the app's own API: a piece that short runs
+on Hex's dictation engine when it already holds that model, so no second copy
+loads and dictation can run between pieces. With Hex stopped, the command
+starts its own `hex service --embedded` (the TypeScript SDK's direct child),
+uses it for every piece, and ends it on every exit; it never publishes it or
+starts a second service beside a running Hex. A model that isn't downloaded
+is offered once, `Download <model> (<size>)? [Y/n]`, only when stdin and
+stderr are terminals and `--json` is off; yes downloads, verifies, and loads
+it, then the piece is tried again. Otherwise the command answers
+`model-unavailable` and names `hex model install`.
+
+The service skips silence (a piece the speech detector hears nothing in, once
+it is installed), and only a file with no speech at all answers `no-speech`
+(exit 4). stdout carries only the transcript or the `--json` reply (the same
+`transcript` status `dictation stop --print` uses); a progress line goes to
+stderr only when it is a terminal. Ctrl-C ends the command and its service,
+printing nothing, with exit 130. It never pastes, records History, runs mode
+processing, or logs the transcript.
+
+`completions <shell>` prints a completion script for `hex` to stdout and
+nothing else. The script is
+generated at runtime from the same clap definitions every command parses, so
+a new command or flag is in it without anyone writing the script out again;
+`bash`, `zsh`, `fish`, `elvish`, and `powershell` are the shells.
+
+```sh
+hex completions bash > ~/.local/share/bash-completion/completions/hex
+mkdir -p ~/.zfunc && hex completions zsh > ~/.zfunc/_hex
+hex completions fish > ~/.config/fish/completions/hex.fish
+```
+
+For zsh, put `~/.zfunc` on `fpath` before `compinit` runs, in `~/.zshrc`:
+`fpath=(~/.zfunc $fpath)`. Elsewhere, write the script into a directory
+already on `fpath`.
 
 `model import`, `rename`, `repair`, and `remove` run in this process on every
 OS; `hex models` is an alias for `hex model`. An import's id is `custom-` and
@@ -208,6 +237,19 @@ in full and uses it where it is. `remove` on a found file only forgets it
 downloads or repairs one (`model install` does). It keeps that model's own
 remembered language, as the menu bar does; `--language`
 overrides only the language, and must be one the model supports.
+
+`model switch` asks the running Hex to swap the dictation model and
+language with the other choice Labs › Model switch shortcut saved
+(`model_switch_other`), exactly as its key does, through the same
+installed-only preparation as `model use`. It answers `busy` while Hex
+records or has accepted dictation jobs pending, and once the new model loads
+both selections are saved together;
+a failed preparation keeps the active model and the saved choice. Pressing
+the key again, or running it again, swaps back. It never downloads: an other
+model that isn't installed answers `not-installed`, a current model that
+can't be the saved other choice (Apple Speech) answers `unavailable`, the
+selection already running answers `changed: false`, and with the Lab off it
+answers `unavailable`.
 
 `vocabulary` edits the [shared vocabulary](features/vocabulary.md) through the
 running Hex, which saves settings and reloads them as a window edit would.
@@ -228,10 +270,10 @@ build and waits for it to answer (#915); one not run by the unit has to be
 quit from its window or tray.
 
 `model install` with Hex running downloads in the background, as Settings
-does; on Linux and Windows with no Hex running it downloads here and then
-selects the model, printing progress (the source-install step `hex model
+does; with no Hex running it downloads here (on macOS through an embedded
+service, as `hex transcribe` does) and then selects the model, printing progress (the source-install step `hex model
 install`). A Hex that starts while the download runs makes the switch instead.
-`model status`, `devices`, `check`, and `transcribe` are local tools on Linux
+`model status`, `devices`, `check`, and `model transcribe` are local tools on Linux
 and Windows and take the selected model unless one is named; macOS answers
 `unsupported`.
 
@@ -255,11 +297,15 @@ same queue (`unsupported` outside macOS 27+, `feature-off` while
 `labs.annotate_replay` is off); `capture status`
 lists bundles still writing and the last outcome (`last`: `bundle`, `stage`
 of `done`, `failed`, or `cancelled`, and for a written bundle `words`, `gaps`,
-and `missing_transcript`, why it has no words). A start or replay while two captures
+`missing_transcript` (why it has no words), and `audio_stopped_at_ms` when Hex
+had to stop keeping its audio, a streamed capture past its 8 h disk guard or a
+failed audio write). A start or replay while two captures
 are still writing is refused with `busy`. Every action is idempotent.
 
-`<capture>` is a bundle name (`1792933491953.scrawl`, the extension
-optional), a path, or `latest`. `list`, `show`, and `route` read the captures
+`<capture>` is a bundle name (`<id>.hexannotation` or `<id>.scrawl`, the extension
+optional), a path, or `latest` (newest readable completed package, not a paste receipt).
+`show` reads [both formats](hex-annotation.md) in place. `send` on legacy originals
+is refused rather than modifying them. `list`, `show`, and `route` read the captures
 folder and need only the experiment; `send` needs captures on and a listening
 Hex. `send` with `--to` takes a session ID; for the newest capture it also
 takes a name its route lists, and it acts as the capsule's pick, so the
@@ -271,10 +317,136 @@ capsule's ⇧⏎ does. Its reply says what became of it (`Sent to …`,
 Scrawl's `route --explain` (`--explain` is accepted); `--ask-jev` asks Jev
 again, one network call. An unknown capture is refused with `not-found`.
 
+`inspect`, `zoom`, `frames`, and `skill` are Labs › Agent tools for captures
+(`labs.annotate_agent_tools`, off by default; `hex labs on
+annotate-agent-tools`). They run in the `hex` process on every OS, with Hex
+closed: they only read the bundle and decode its video, never starting a
+capture, sending one, or writing a setting. `frames` extracts with `ffmpeg`
+from PATH when one is installed, as the engine's own `extract_frames_range`
+does. While the lab is off they refuse
+with that switch's name. `inspect [<capture>]` prints `summary.md`; `--marks`
+prints one line per mark (`#2 ✎② 0:09 circled · m2`), or `No marks`; `--json`
+prints `scrawl.json` pretty, or with `--marks` the marks as a JSON array.
+`zoom [<capture>] (--at <M:SS|secs|phrase> | --mark <n|id> [--frame N])
+[--span secs] [--frames N] [--full]` writes a dense sheet of frames around
+that moment into `<bundle>/zoom/` and prints its path, `0:09.500 → 0:11.500,
+12 frames: #1 0:09.500, …`, and `Said: “…”` when anything was said over the
+window; for a mark it prints the mark's line first. `frames [<capture>]
+--from <M:SS|secs> --to <M:SS|secs> [--fps 4]` writes one PNG per frame into
+`<bundle>/zoom/range-*/`, clamped to the recording's length and at most 240
+frames a call, and prints each path. `skill` prints the
+[`hex-annotate`](../skills/hex-annotate/SKILL.md) skill this Hex ships: the
+same guide the Annotate pane's Agents section writes into a coding agent's
+folder while Labs › Install agent skill from Annotate is on.
+
 A CLI-started meeting is the same recording the menu bar starts: the menu-bar
 state, the recording capsule, and Stop & Transcribe all apply to it.
-`meetings record` replies once the recording has started (or after 8 s);
-`meetings stop` replies once transcription has begun.
+`meetings record` replies once the recording has started (or after 8 s), and
+`meetings stop` replies once the recorder is transcribing or has discarded a
+recording with no speech (macOS answers a failure with its error; Linux and
+Windows answer a stop that ends without transcribing as done); after 8 s it
+answers anyway, and `meeting.state` may still read `stopping`. A stop leaves
+the recorder finishing that meeting before it takes another — including a
+stop asked while it is still starting — so until then `meeting.state` reads
+`stopping` and `record` is refused with `busy` (exit 1), never "Already
+recording" or "already starting". Once `meeting.state` is `transcribing`,
+`record` is refused the same way, naming the transcription; only `idle`
+starts a new recording.
+
+`meetings delete <id>` is the Meetings pane's Delete, carried out by the
+running Hex on every OS: it moves the meeting's exported Markdown, any
+separate notes file Hex tracks, and then its recording folder to the Trash,
+never removing anything outright, so an open Meetings window drops the row at
+its next scan and the files stay recoverable from the Trash. The id is
+exactly the one `hex meetings list --json` prints (no prefixes). An unknown
+id, or a meeting that is recording, transcribing, writing notes, or waiting for
+the final transcript of a run Hex quit during, is refused with its own code
+(see Error codes) and exit 1, and nothing moves. It asks no confirmation and
+works whether or not Meetings is on, so a caller should ask the person first
+and offer the same two-step confirmation the pane does.
+
+## `hex dev call-window` (dev builds, macOS)
+
+`hex dev call-window` reads another app's windows through Accessibility and
+reports what is there. It exists to measure, before Hex names speakers from a
+call app's tiles, what those tiles expose and what a read costs
+([features/accessibility.md](features/accessibility.md#reading-another-app-dev-builds-macos)).
+It is not a control command and has no `/control` wire form.
+
+Dev builds only: a stable `hex` leaves it out of `hex dev --help` and refuses
+it as an unknown command (exit 2), and a stable Hex answers its route with
+`404 accessibility-probe-unavailable`. macOS only: Windows and Linux Hex have
+no Accessibility client (UI Automation, AT-SPI) to read another app with.
+
+```ts
+hex dev call-window
+├── dump  (--app <bundle-id> | --pid <pid>) --out <file>   one snapshot of every window's tree, as JSON
+└── watch (--app <bundle-id> | --pid <pid>) --out <file>   one JSON line per read, then a summary
+    ├── --interval-ms N (250, at least 50)   --duration SECONDS (60, at most 3600)
+    ├── --id-prefix P | --class-contains S | --label REGEX   report the elements any of these match
+    └── --cue-every SECONDS                  print "Speak now" and mark the moment in the file
+both:  --enable-web-accessibility            ask a Chromium or Electron app for its web tree
+       --max-nodes N (dump 20000, watch 4000; at most 20000)
+       --max-depth N (80; at most 200)       --deadline-ms N (dump 5000, watch 1000; at most 5000)
+```
+
+- **Where the read runs.** In the running Hex, on one of its local API workers,
+  not in the `hex` command. macOS grants Accessibility to the app; a command
+  started from a terminal is judged by that terminal's grant, and one over SSH
+  has none. The command posts each read to `POST /dev/accessibility-probe`
+  with the same discovery file and bearer token as every other route, and
+  writes the reply to the file itself. Hex not running, or not allowed to use
+  Accessibility, is an error (exit 1) that says which; nothing prompts.
+- **It only reads.** It never clicks, focuses, raises or types, and it reads
+  every window the app lists, in front or not. Hex's own window is refused
+  (`own-process`).
+- **Web content is off until asked.** A Chromium or Electron app (Slack, Teams,
+  Chrome, Arc, Brave, Edge) builds its web accessibility tree only when an
+  assistive app asks. The command asks only with
+  `--enable-web-accessibility`, and only on its first read: that sets
+  `AXManualAccessibility` on the app, which changes how it behaves until it
+  quits (it keeps computing the tree, and may act as it does for a screen
+  reader). Without the flag, a read with no web content says so and names the
+  flag. With it, `dump` waits up to 3 s for the tree to appear.
+- **Privacy.** The output holds other people's names and on-screen text. It is
+  written only to `--out`, created or replaced with mode 0600; a path that is
+  a symbolic link is refused. Hex's logs get counts and timings (`pid`,
+  elements, elapsed, matches), never the tree, and no event is recorded. A
+  password field's value is never asked for, nor anything below it; a value
+  over 4,096 characters is not asked for, and other strings keep their first
+  512 UTF-16 units.
+- **Budgets.** One read asks at most `--max-nodes` elements across all windows,
+  breadth first, `--max-depth` levels below a window, for `--deadline-ms`
+  (checked between elements), with the Accessibility client's 0.25 s timeout on
+  each message. An element costs two messages: its attributes and children
+  together, then its value. One read runs at a time (`busy` otherwise).
+
+`dump` writes one JSON object: `time_ms` (Unix), `pid`, `frontmost`,
+`elapsed_ms` (the read alone, measured in Hex), `windows`, `nodes` (elements
+asked), `unreadable` (elements that did not answer), `cut_short` (the budgets
+that stopped it: `nodes`, `depth`, `deadline`; empty for a whole tree),
+`web_areas`, `web_nodes` (elements below a web area), and `tree`: each window
+as nested elements with `role`, `subrole`, `title`, `description`, `value`,
+`dom_id`, `dom_classes` and `children`, empty ones left out.
+
+`watch` writes one line per read, `{"type":"read", …}` with the same fields
+but `matches` in place of `tree`: each matching element without its children,
+and its `path` (the window's index, then each child's index on the way down,
+so an element is below another when its path starts with the other's). A read
+that fails after the first is `{"type":"error","code":…}` and is counted;
+the first read's failure ends the watch. `--cue-every` adds
+`{"type":"cue","time_ms":…}` lines. A read that overruns the interval skips
+ticks rather than queueing reads. It ends by printing reads and failures,
+median and worst elapsed milliseconds, median element count, reads cut short,
+and reads with a match. Ctrl-C ends it without the summary; the lines written
+stay.
+
+```sh
+hex dev call-window dump --app com.tinyspeck.slackmacgap --enable-web-accessibility --out ~/huddle-tree.json
+hex dev call-window watch --app com.tinyspeck.slackmacgap --out ~/huddle-watch.jsonl \
+  --duration 120 --interval-ms 100 --cue-every 15 \
+  --id-prefix huddle-grid-gridcell- --class-contains active_speaker --label "profile|audio is"
+```
 
 ## Exit codes
 
@@ -284,6 +456,7 @@ state, the recording capsule, and Stop & Transcribe all apply to it.
 2  usage error (clap)
 3  Hex isn't running (code `not-running`); control commands never launch it
 4  `dictation start --print`, `dictation stop --print`, or `hex transcribe` heard no speech (code `no-speech`); nothing printed
+130  `hex transcribe` or `hex model install` ended by Ctrl-C; nothing printed
 ```
 
 ## Transport
@@ -314,8 +487,9 @@ transcription and `/streams`, but answer `/control` with
   `504 control-timeout`. Bad or missing tokens get `401` like every other
   route.
 
-`hex transcribe` uses that same owner-only discovery file and bearer token,
-but sends the file one 30 s piece at a time to
+`hex transcribe` uses that same owner-only discovery file and bearer token
+(or, with Hex stopped, the endpoint and token its embedded service prints),
+but sends the file one 30 s piece at a time, as 16 kHz mono WAV, to
 `POST /transcriptions?model=<id>&language=<code>` with `Content-Type:
 audio/wav`. The route answers each piece's transcript
 (`{"transcript": "…", "durationMs": …}`) or a code such as
@@ -339,7 +513,7 @@ dictation {action, print?, raw?}                 action: start | stop | toggle |
                                                  print (start and stop) answers `transcript`
 paste-last
 typed-text
-meeting-record {title?} | meeting-stop | meeting-copy-last
+meeting-record {title?} | meeting-stop | meeting-copy-last | meeting-delete {id}
 settings-get {key?} | settings-set {key, value}
 model-list | model-use {model, language?} | model-install {model, language?} | model-cancel
 window-show {pane?} | window-hide | window-story {story, variant?, play}
@@ -398,7 +572,10 @@ recording", "The window isn't open"). Setting `kind` is one of `bool`,
   "capture": {"state": "idle", "recording": null, "pending_jobs": 0},
   "meeting": {"state": "recording", "title": "Design sync", "elapsed_seconds": 723},
   "model": {"id": "parakeet_v3", "name": "…", "language": "en", "installed": true,
-            "preparing": null, "downloaded_bytes": 0, "error": null, "fallback": null},
+            "preparing": null, "downloaded_bytes": 0, "error": null,
+            "backend": {"kind": "vulkan", "device": "AMD Radeon RX 9060 XT",
+                        "crash_fallback": false},
+            "fallback": null},
   "features": {"meetings": true, "release_microphone_while_idle": false,
                "history_retention": "week"},
   "permissions": {"ready": true, "microphone": "ready", "accessibility": "ready",
@@ -415,8 +592,16 @@ listener.shortcuts  Wayland portal only: [{"name": "Dictation", "trigger": "Supe
                     granted (changed in its settings or not); trigger null when it refused one
 capture.state       idle | recording | transcribing | unknown (the listener didn't answer or stopped)
 capture.recording   dictation | service | null
-meeting.state       idle | starting | recording | transcribing
+meeting.state       idle | starting | recording | stopping | transcribing
+                    (stopping: stop was asked and the recorder is finishing that
+                    meeting, or the one it was still starting; a new recording
+                    can start once it reads idle)
 model               the saved selection; installed is about that model
+model.backend       {"kind", "device", "crash_fallback"} for the model actually loaded, or null before a
+                    load and once it unloads; kind is cpu, vulkan, cuda, rocm, metal, or another backend's
+                    name, device is the backend's own description (usually the processor name on the CPU), and
+                    crash_fallback is true when the GPU crashed twice starting and this launch stays on
+                    the CPU. macOS omits it (null)
 model.fallback      {"id", "name", "language", "reason": "missing" | "changed" | "labs-off"}, the
                     model Hex runs while the saved one can't, or null
 permissions.*       ready | needs-request | needs-settings | needs-restart
@@ -441,17 +626,23 @@ read-only              the key can't be set here (the message says where)
 invalid-value          the value doesn't parse or is out of range
 confirmation-required  clears history; pass --yes
 shortcut-in-use        another Hex shortcut already uses that binding
-not-found              no such capture, or it has no scrawl.json yet
+not-found              no such capture (or no readable supported annotation manifest), or no meeting with that id
+meeting-recording      deleting a meeting that is still recording
+meeting-transcribing   deleting a meeting that is still transcribing
+meeting-notes          deleting a meeting while Hex writes its notes
+meeting-final-pending  deleting a meeting that is waiting for its final transcript
+                       (Hex quit during it; the next launch finishes it)
 unknown-model          no such model id (`hex model list`)
 model-unavailable      an imported model that is missing, changed, or behind its Labs toggle,
-                       or one `hex transcribe` named that the running Hex can't use
+                       or one `hex transcribe` named that isn't downloaded or ready
 not-installed          `model use` on a model that isn't downloaded (`hex model install`)
 feature-off            the command needs an opt-in that is off (Meetings)
 disabled               a Labs toggle the command needs is off (the message names it)
 not-ready              Hex is waiting for setup (permissions or the dictation model)
-meeting-active         quit/restart while a meeting records (pass --force)
-busy                   something is in progress (recording, transcribing, a full queue),
-                       or the listener couldn't confirm it's idle
+meeting-active         quit/restart while a meeting records, stops, or transcribes (pass --force)
+busy                   something is in progress (recording, a meeting stopping or
+                       transcribing, a full queue), or the listener couldn't confirm
+                       it's idle
 resource-exhausted     a running Hex refused a `hex transcribe` piece as too large or too long
 discarded              `stop` dropped the clip: no audio yet, or silent; nothing transcribes
 no-speech              `dictation start --print` or `stop --print` heard no speech, or `hex transcribe`'s file had none; nothing printed (exit 4)
@@ -526,27 +717,40 @@ support this lab.
   Off, they are refused with `invalid-value`, and turning the toggle off puts
   a shortcut on one back to its default. Elsewhere one alone still needs a
   modifier.
+- On Windows, `capslock` may be a shortcut alone out of the box, for example
+  `hex settings set dictation_hotkey capslock`. Hex keeps the Caps Lock
+  presses it records or the shortcut fires on, so the lock does not flip.
+  Only `insert`, `home`, `end`, `pageup`, and `pagedown` alone need
+  Labs › Special keys alone.
 - `second_dictation_hotkey` (unbound by default; `none` clears it) is a
   second shortcut that dictates exactly as `dictation_hotkey` does, such as a
   key on an external keyboard. It acts only while
   `labs.second_dictation_shortcut` is on (`hex labs on
   second-dictation-shortcut`) and shares no key with another shortcut. Linux
   and Windows need a key in it, as every shortcut there does.
+- `model_switch_hotkey` (unbound by default; `none` clears it) swaps the
+  dictation model and language with `model_switch_other`, and back. It acts
+  only while `labs.model_switch_shortcut` is on
+  (`hex labs on model-switch-shortcut`) and `model_switch_other` names an
+  installed model and language, and shares no key with another shortcut.
+  Every OS needs a key in it. Hex never downloads the other model for it:
+  while it is missing, the key does nothing and says so.
 - `extra_dictation_hotkeys` (macOS, an empty array by default) holds up to
   four more dictation shortcuts, each `{"binding": ..., "mode": ...}`. A row
   acts only while `labs.more_dictation_shortcuts` is on (`hex labs on
   more-dictation-shortcuts`) and shares no key with another active shortcut.
   `mode` is `hold_or_double_tap` (the default), `hold`, `tap`, or `double_tap`;
   `double_tap` needs a binding with a key and otherwise reads as
-  `hold_or_double_tap`, except that Labs › Double-tap on a lone modifier also
+  `hold_or_double_tap`, except that Labs › Double-tap Option, Command, or Globe also
   allows a binding without one. Turning the Lab off keeps the rows saved.
 - `json` settings (modes, extra dictation shortcuts, meeting providers,
   excluded calendars) take the JSON value the file stores.
 - `ui_language` takes `en`, `pl`, `zh` (Simplified Chinese), `zh-Hant`
-  (Traditional Chinese), `ja`, `de`, `es`, `uk`, `pt`, `fr`, `ru`, or `none`
-  (follow the system language), the same languages Settings offers. Following
-  the system, a Chinese locale with the Hant script or the TW, HK, or MO
-  region shows Traditional Chinese; other Chinese locales show Simplified.
+  (Traditional Chinese), `ja`, `de`, `es`, `uk`, `pt`, `fr`, `ru`, `hu`, or
+  `none` (follow the system language), the same languages Settings offers.
+  Following the system, a Chinese locale with the Hant script or the TW, HK,
+  or MO region shows Traditional Chinese; other Chinese locales show
+  Simplified.
 - `updates.channel` takes `stable`, `dev`, or `none` (follow the build: the
   channel it was published on), and checks for updates at once. Choosing
   another channel than the build's offers that channel's current release
@@ -564,15 +768,16 @@ support this lab.
   capture shortcuts need a key, and `capture.enabled on` needs both free; on
   a Mac whose Paste Last is still ⌥⇧V, rebind one of the two first.
 - `meetings.retention` is `day`, `week`, `month`, `forever`, or `none` (the
-  default: meetings recorded since the default began are kept 24 hours, and
+  default: meetings recorded since the default began are kept 7 days, and
   older ones stay until you choose). Hex moves meetings that ended longer
-  ago than that to the Trash at launch and hourly, Meetings on or off, and
+  ago than that to the Trash at launch and hourly (their recording folder; the
+  exported Markdown stays), Meetings on or off, and
   `hex meetings` and `hex mcp` no longer list them.
 - `meetings.audio_retention` is `day`, `week`, `month`, `forever`, or `none`
-  (the default). With Labs › Expire meeting audio separately on, a finished
-  meeting's WAVs move to the Trash on that window while its transcript,
-  notes, summary, and Markdown stay; `none` follows `meetings.retention`.
-  With the lab off it does nothing.
+  (the default; Meetings › Settings › After a meeting › Keep audio). A
+  finished meeting's WAVs move to the Trash on that window while its
+  transcript, notes, summary, and Markdown stay; `none` follows
+  `meetings.retention`.
 - `transcription.model` and `transcription.language` are read-only here: use
   `hex model use`. `transcription_recents` and `meetings.calendar.connected`
   are read-only (connecting a calendar asks macOS for access from Settings).
@@ -586,14 +791,16 @@ Writable keys: `release_microphone_while_idle`,
 `sound_effects`, `sound_effect_volume`, `sound_theme`, `microphone`,
 `avoid_bluetooth_microphone`, `recording_audio_behavior`, `recording_duck_volume`, `double_tap_lock`, `double_tap_only`,
 `shortcut_mode`, `dictation_hotkey`, `paste_last_hotkey`, `raw_dictation_hotkey`,
-`second_dictation_hotkey`, `extra_dictation_hotkeys`, `labs.second_dictation_shortcut`,
+`second_dictation_hotkey`, `model_switch_hotkey`, `model_switch_other`,
+`labs.model_switch_shortcut`, `extra_dictation_hotkeys`, `labs.second_dictation_shortcut`,
 `labs.more_dictation_shortcuts`, `labs.standalone_special_keys`, `labs.app_model_switching`, `show_dock_icon`, `vocabulary_boost`,
 `labs.keep_microphone_open`, `labs.keep_microphone_open_seconds`,
+`labs.hud_height`, `labs.hud_bottom_gap`,
 `dictation_processing.default_mode`, `dictation_processing.modes`,
 `history_retention`, `meetings.enabled`,
 `meetings.output_folder`, `meetings.summaries`, `meetings.opencode_model`,
 `meetings.show_recording_indicator`, `meetings.recording_indicator_corner`,
-`meetings.retention`, `meetings.audio_retention`, `meetings.providers`, `meetings.calendar.excluded_calendars`,
+`meetings.retention`, `meetings.audio_retention`, `meetings.default_policy`, `meetings.providers`, `meetings.calendar.excluded_calendars`,
 `meetings.calendar.remind`, `meetings.calendar.lead_minutes`,
 `experimental.hex_microphone`, `experimental.hex_microphone_mode`,
 `experimental.hex_microphone_comfort_noise`,
@@ -610,10 +817,19 @@ comma-separated, and `set` (or `apply`) adds the comma-separated names to it;
 `meetings.summaries` chooses who titles and summarizes meetings: `off`, `mac`
 (Apple Intelligence; nothing leaves this Mac, and nothing falls back to
 OpenCode), or `opencode` (sends the transcript to `meetings.opencode_model`,
-or a fast model Hex picks when that is `none`). Off a Mac it is `off` or
-`opencode`. The retired `meetings.summarize_with_apple_intelligence` and
+or OpenCode's own default model when that is `none`, never another provider).
+Off a Mac it is `off` or `opencode`. The retired
+`meetings.summarize_with_apple_intelligence` and
 `meetings.summarize_with_opencode` are refused with the `meetings.summaries`
 command to use instead.
+
+`meetings.default_policy` is the answer a call gets when its app or website
+has none of its own in `meetings.providers`: `ask` (Ask each time, the
+default), `always_record` (Always record), or `never_offer` (Don't
+offer); the window calls these the same names. Setting it changes only the
+default; the Calls sheet's radios also move every entry that matched the old
+one. The list of apps and websites Hex has seen a call in
+(`seen-calls.json`) is not a setting and has no key.
 
 A test (`control::settings::tests::every_persisted_setting_has_a_cli_key`)
 fails when a new persisted setting has no key here.

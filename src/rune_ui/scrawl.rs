@@ -1,29 +1,45 @@
-//! The Annotate pane (macOS and Linux): Scrawl's captures inside Hex. The opt-in, the capture shortcut,
-//! the send-to list's shortcut, Screen Recording, the transcriber, the captures folder and how long
-//! captures are kept, and Scrawl's own app, which keeps the shortcut while
-//! it runs until "Use Hex for annotations" asks it to quit.
+//! The Annotate pane (macOS, Linux, and Windows): Scrawl's captures inside
+//! Hex. The opt-in with Screen Recording while it's missing and the capture
+//! shortcut, collapsed How it works, what happens after an annotation (how
+//! long it's kept and its folder), optional Agents setup, and an Advanced fold
+//! for the transcriber, demos, and the replay Lab. Scrawl's own app keeps the
+//! shortcut while it runs until "Use Hex for annotations" asks it to quit.
 
-use rune::{El, row};
+#[cfg(not(target_os = "macos"))]
+pub(super) mod folder;
+pub(super) mod routing_rules;
+
+use rune::{El, Tx, col, row, text};
 use scrawl_capture::retention::{Policy, Preset};
 
 use super::controls::{
-    ButtonKind, Choice, Paint, button, card, described_row, folding, note, page, section,
-    segmented, select, setting_row, step_row, toggle_row,
+    ButtonKind, CardRow, Choice, METRICS, Paint, button, card, folder_label, folding, icon_row,
+    icon_toggle_row, nested, note, page, section, section_with, segmented, segmented_tx, select,
+    setting_row, step_row,
 };
-use super::general::keys_button;
+use super::general::{advanced_open, advanced_toggle, disclosure_link, keys_button};
+use super::icons::{CLOCK, FOLDER, KEYBOARD, WAVE};
 use super::lists::permission_control;
 use super::platform::{PlatformRequest, ScrawlRequest, ScrawlView};
 use super::settings::cancel_capture;
-use super::{Menu, ShortcutTarget, Ui};
+use super::sidebar::SCRAWL_ICON;
+use super::{Menu, Pane, ShortcutTarget, Ui};
+use crate::agent_install::{self, Agent, AgentStatus, SkillState};
 use crate::app_settings::{AppSettings, CaptureTranscriber};
 use crate::desktop::i18n::{tr, tr_fill};
 use crate::desktop::onboarding::{PermissionAction, PermissionKind};
 
-fn description(enabled: bool) -> &'static str {
-    if enabled {
-        tr("Record your screen, draw on it, and talk over it with the shortcut below")
+/// The switch's second line: the whole gesture with the bound shortcut while
+/// on and a shortcut is bound, else what Annotate does.
+fn description(ui: &Ui, enabled: bool) -> String {
+    if enabled && ui.records_shortcuts() {
+        let separator = if cfg!(target_os = "macos") { "" } else { "+" };
+        tr_fill(
+            "Tap {}, talk and draw; tap again and it's copied",
+            &ui.settings.capture.hotkey.keycaps().join(separator),
+        )
     } else {
-        tr("Off. Hex records nothing and keeps no shortcut until you turn this on.")
+        tr("Record your screen, draw on it, and talk over it").into()
     }
 }
 
@@ -69,10 +85,8 @@ pub(super) fn toggle(ui: &mut Ui) {
 
 fn transcriber_description(transcriber: CaptureTranscriber) -> &'static str {
     match transcriber {
-        CaptureTranscriber::Parakeet => {
-            tr("The model Hex dictates with, with a time for every word")
-        }
-        CaptureTranscriber::Apple => tr("Apple's speech recognizer, as Scrawl uses"),
+        CaptureTranscriber::Parakeet => tr("Uses Hex's dictation model"),
+        CaptureTranscriber::Apple => tr("Apple's speech recognizer"),
     }
 }
 
@@ -93,36 +107,20 @@ fn retention_label(policy: Policy) -> String {
     }
 }
 
-fn retention_description(policy: Policy) -> String {
-    match policy.bundle_days {
-        Some(days) => tr_fill(
-            "Video and audio go first; annotations are removed after {} days",
-            &days.to_string(),
-        ),
-        None if policy.media_days.is_some() => {
-            tr("Video and audio go first; annotations stay until you remove them").into()
-        }
-        None => tr("Annotations stay until you remove them").into(),
+/// The non-obvious half of retention: the dropdown already names video days,
+/// so the caption only notes how long the annotation itself lasts.
+fn retention_description(policy: Policy) -> Option<String> {
+    match (policy.media_days, policy.bundle_days) {
+        (_, Some(days)) => Some(tr_fill("Annotations for {} days", &days.to_string())),
+        (Some(_), None) => Some(tr("Annotations stay until you remove them").into()),
+        (None, None) => None,
     }
-}
-
-/// The captures folder, with the home folder as `~`.
-fn folder_label(ui: &Ui) -> String {
-    let folder = ui.settings.capture.captures_dir();
-    crate::app_paths::home_dir()
-        .and_then(|home| {
-            folder
-                .strip_prefix(home)
-                .ok()
-                .map(|relative| format!("~/{}", relative.display()))
-        })
-        .unwrap_or_else(|| folder.display().to_string())
 }
 
 /// The steps in order, each with its keys where it has any: one key taps
 /// to start and stop and is held to draw; the capsule's pen draws without
 /// it; Esc stops drawing.
-fn how_it_works(ui: &Ui, p: Paint) -> Vec<El> {
+fn how_it_works_steps(ui: &Ui, p: Paint) -> Vec<El> {
     let shortcut = ui.settings.capture.hotkey.keycaps();
     let keys = |key: &str, parts: &[String]| Some(super::controls::keycaps(p, key, parts));
     // Wayland tells Hex nothing of Shift outside its own windows.
@@ -179,8 +177,47 @@ fn how_it_works(ui: &Ui, p: Paint) -> Vec<El> {
     ]
 }
 
+/// A fold's link, and under it, while open, its card.
+fn fold(p: Paint, key: &str, link: El, rows: Option<Vec<El>>) -> El {
+    col()
+        .key(key)
+        .gap(METRICS.label_gap)
+        .child(link)
+        .children(rows.map(|rows| card(p, "card", rows)))
+}
+
+/// How it works, closed until its link is pressed.
+fn how_it_works(ui: &Ui, p: Paint, view: &ScrawlView) -> El {
+    let link = disclosure_link(
+        p,
+        "how-toggle",
+        tr("How it works"),
+        view.how_it_works,
+        |ui: &mut Ui| {
+            if let Some(view) = ui.platform.scrawl.as_mut() {
+                view.how_it_works = !view.how_it_works;
+            }
+        },
+    );
+    fold(
+        p,
+        "how",
+        link,
+        view.how_it_works.then(|| how_it_works_steps(ui, p)),
+    )
+}
+
 fn scrawl_request(ui: &mut Ui, request: ScrawlRequest) {
     ui.ask(PlatformRequest::Scrawl(request));
+}
+
+/// macOS's host opens the chooser and saves the pick; elsewhere the window
+/// does.
+fn choose_folder(ui: &mut Ui) {
+    #[cfg(target_os = "macos")]
+    scrawl_request(ui, ScrawlRequest::ChooseFolder);
+    #[cfg(not(target_os = "macos"))]
+    folder::choose(ui);
 }
 
 /// While Scrawl's own app runs it keeps the shortcut; only this card's
@@ -199,7 +236,7 @@ fn scrawl_running(p: Paint, view: &ScrawlView) -> El {
             "scrawl-running-row",
             tr("Scrawl is running"),
             Some(description),
-            super::controls::button(
+            button(
                 p,
                 "use-hex-for-captures",
                 tr("Use Hex for annotations"),
@@ -210,56 +247,88 @@ fn scrawl_running(p: Paint, view: &ScrawlView) -> El {
     )
 }
 
-fn shortcut_rows(ui: &Ui, p: Paint, view: &ScrawlView) -> Vec<El> {
+/// The switch, Screen Recording while Annotate can't record yet, and the
+/// shortcut (or desktop command on Linux without a shortcuts portal).
+fn top_rows(ui: &Ui, p: Paint, view: &ScrawlView) -> Vec<CardRow> {
     let enabled = ui.settings.capture.enabled;
-    let purpose = if enabled {
-        tr("Tap to start and stop; hold while recording to draw")
+    let switch = if crate::policy::Policy::current().locks(crate::policy::Lock::Annotate) {
+        super::controls::managed_row(p, "capture-enabled", Some(&SCRAWL_ICON), tr("Annotate"))
     } else {
-        tr("Saved for when Annotate is on")
-    };
-    let mut rows = vec![described_row(
-        p,
-        "capture-shortcut",
-        tr("Shortcut"),
-        Some((purpose.to_string(), p.muted())),
-        keys_button(ui, p, ShortcutTarget::Capture),
-    )];
-    #[cfg(target_os = "macos")]
-    if crate::labs::Feature::AnnotateReplay.on_this_os()
-        && crate::labs::Feature::AnnotateReplay.on(&ui.settings)
-    {
-        let mut control = row()
-            .key("capture-replay-shortcut-control")
-            .gap(4.0)
-            .center_y()
-            .child(keys_button(ui, p, ShortcutTarget::CaptureReplay));
-        if ui.settings.capture.replay_hotkey.is_some() {
-            control = control.child(super::controls::icon_button(
-                p,
-                "clear-capture-replay-shortcut",
-                &rune_theme_opencode::icons::TRASH,
-                tr("Clear shortcut"),
-                |ui: &mut Ui| {
-                    ui.update(|settings| settings.capture.replay_hotkey = None);
-                },
-            ));
-        }
-        rows.push(described_row(
+        icon_toggle_row(
             p,
-            "capture-replay-shortcut",
-            tr("Replay last 15 s"),
-            Some((
-                tr("Press to save the last 15 s; hold to narrate over it").to_string(),
-                p.muted(),
-            )),
-            control,
-        ));
+            "capture-enabled",
+            &SCRAWL_ICON,
+            tr("Annotate"),
+            description(ui, enabled).as_str(),
+            enabled,
+            toggle,
+        )
+    };
+    let mut rows = vec![
+        switch.into(),
+        folding(
+            "capture-error-fold",
+            view.enable_error.as_ref().map(|error| {
+                note(
+                    "capture-error",
+                    &format!("{} {error}", tr("Could not update Annotate:")),
+                    p.danger(),
+                )
+            }),
+        ),
+        folding("screen-recording-fold", screen_recording_row(ui, p, view)),
+    ];
+    // Without a shortcuts portal nothing registers the key: the row says
+    // which command to bind in the desktop's own keyboard settings.
+    if !ui.records_shortcuts() {
+        if enabled {
+            rows.push(
+                note(
+                    "no-portal",
+                    tr(
+                        "Your desktop has no shortcuts portal. Bind this command in its keyboard settings.",
+                    ),
+                    p.muted(),
+                )
+                .into(),
+            );
+            rows.push(
+                super::settings::command_row(
+                    p,
+                    "capture-command",
+                    tr("Annotate"),
+                    tr("Start and stop an annotation"),
+                    &["hex annotate toggle"],
+                )
+                .into(),
+            );
+        }
+        return rows;
     }
-    // Linux asks through the desktop's screen-cast portal when a capture
-    // starts, and Wayland can't keep an overlay out of a recording.
-    if enabled && cfg!(target_os = "macos") && view.screen_needs_restart {
+    rows.push(
+        icon_row(
+            p,
+            "capture-shortcut",
+            &KEYBOARD,
+            tr("Shortcut"),
+            enabled.then(|| tr("Hold while recording to draw")),
+            keys_button(ui, p, ShortcutTarget::Capture),
+        )
+        .into(),
+    );
+    rows
+}
+
+/// Screen Recording, only while Annotate is on and can't record the screen.
+/// Linux asks through the desktop's screen-cast portal when a capture
+/// starts, so it has none.
+fn screen_recording_row(ui: &Ui, p: Paint, view: &ScrawlView) -> Option<El> {
+    if !ui.settings.capture.enabled || !cfg!(target_os = "macos") {
+        return None;
+    }
+    if view.screen_needs_restart {
         // macOS lets a running app use the grant only after it relaunches.
-        rows.push(setting_row(
+        return Some(nested(setting_row(
             p,
             "screen-recording",
             tr("Screen Recording"),
@@ -271,86 +340,41 @@ fn shortcut_rows(ui: &Ui, p: Paint, view: &ScrawlView) -> Vec<El> {
                 ButtonKind::Secondary,
                 |ui: &mut Ui, _| ui.ask(PlatformRequest::Permission(PermissionAction::Restart)),
             ),
-        ));
-        rows.push(recordings_row(ui, p));
-    } else if enabled && cfg!(target_os = "macos") {
-        let stale = !view.screen_recording && ui.platform.stale(PermissionKind::ScreenRecording);
-        rows.push(setting_row(
-            p,
-            "screen-recording",
-            tr("Screen Recording"),
-            Some(if view.screen_recording {
-                tr("Lets Annotate record your screen")
-            } else if stale {
-                tr("An older Hex entry can keep this off")
-            } else {
-                tr("Required to record your screen. macOS asks the first time you annotate, or allow it here.")
-            }),
-            permission_control(
-                p,
-                "screen-recording-allow",
-                ui.platform
-                    .control_for(PermissionKind::ScreenRecording, view.screen_recording),
-                ButtonKind::Secondary,
-                move |ui: &mut Ui| {
-                    let action = if stale {
-                        PermissionAction::ResetAndPrompt(PermissionKind::ScreenRecording)
-                    } else {
-                        PermissionAction::ShowGuide(PermissionKind::ScreenRecording)
-                    };
-                    ui.ask(PlatformRequest::Permission(action))
-                },
-            ),
-        ));
-        rows.push(recordings_row(ui, p));
+        )));
     }
-    rows
-}
-
-/// Lets screen recordings, captures included, show Hex's overlays, for
-/// showing someone how captures work.
-fn recordings_row(ui: &Ui, p: Paint) -> El {
-    toggle_row(
+    if view.screen_recording {
+        return None;
+    }
+    let stale = ui.platform.stale(PermissionKind::ScreenRecording);
+    Some(nested(setting_row(
         p,
-        "capture-show-in-recordings",
-        tr("Show in screen recordings"),
-        tr("Lets recordings, annotations included, show Hex's capsule, ink, and HUD, for demos"),
-        ui.settings.capture.show_overlays_in_recordings,
-        |ui: &mut Ui| {
-            ui.update(|settings| {
-                settings.capture.show_overlays_in_recordings =
-                    !settings.capture.show_overlays_in_recordings;
-            });
-        },
-    )
-}
-
-fn transcriber_row(ui: &Ui, p: Paint) -> El {
-    let transcriber = ui.settings.capture.transcriber;
-    let selected = CaptureTranscriber::ALL
-        .iter()
-        .position(|choice| *choice == transcriber)
-        .unwrap_or(0);
-    setting_row(
-        p,
-        "capture-transcriber",
-        tr("Transcriber"),
-        Some(transcriber_description(transcriber)),
-        segmented(
+        "screen-recording",
+        tr("Screen Recording"),
+        Some(if stale {
+            tr("An older Hex entry can keep this off")
+        } else {
+            tr("Hex can't see your screen yet")
+        }),
+        permission_control(
             p,
-            "capture-transcriber-choice",
-            &["Parakeet", "Apple"],
-            selected,
-            |ui: &mut Ui, index| {
-                let transcriber = CaptureTranscriber::ALL[index];
-                ui.update(|settings| settings.capture.transcriber = transcriber);
+            "screen-recording-allow",
+            ui.platform
+                .control_for(PermissionKind::ScreenRecording, false),
+            ButtonKind::Secondary,
+            move |ui: &mut Ui| {
+                let action = if stale {
+                    PermissionAction::ResetAndPrompt(PermissionKind::ScreenRecording)
+                } else {
+                    PermissionAction::ShowGuide(PermissionKind::ScreenRecording)
+                };
+                ui.ask(PlatformRequest::Permission(action))
             },
         ),
-    )
+    )))
 }
 
-fn storage_rows(ui: &Ui, p: Paint, view: &ScrawlView, layer: &mut Vec<El>) -> Vec<El> {
-    use super::controls::button;
+/// Keep, then the folder.
+fn after_rows(ui: &Ui, p: Paint, view: &ScrawlView, layer: &mut Vec<El>) -> Vec<El> {
     let policy = ui.settings.capture.retention();
     let mut choices: Vec<Choice> = Preset::ALL
         .into_iter()
@@ -373,36 +397,15 @@ fn storage_rows(ui: &Ui, p: Paint, view: &ScrawlView, layer: &mut Vec<El>) -> Ve
         });
     }
     let kept = retention_description(policy);
+    let folder = folder_label(&ui.settings.capture.captures_dir());
     let mut rows = vec![
-        setting_row(
-            p,
-            "capture-folder",
-            tr("Annotations folder"),
-            Some(tr("Shared with Scrawl, so both list the same annotations")),
-            row()
-                .key("controls")
-                .gap(8.0)
-                .center_y()
-                .child(button(
-                    p,
-                    "reveal-capture-folder",
-                    tr("Reveal"),
-                    ButtonKind::Secondary,
-                    |ui: &mut Ui, _| scrawl_request(ui, ScrawlRequest::RevealFolder),
-                ))
-                .child(button(
-                    p,
-                    "choose-capture-folder",
-                    &folder_label(ui),
-                    ButtonKind::Secondary,
-                    |ui: &mut Ui, _| scrawl_request(ui, ScrawlRequest::ChooseFolder),
-                )),
-        ),
-        setting_row(
+        routing_rules::settings_row(ui, p),
+        icon_row(
             p,
             "capture-retention",
+            &CLOCK,
             tr("Keep"),
-            Some(kept.as_str()),
+            kept.as_deref(),
             select(
                 p,
                 "capture-retention-menu",
@@ -417,6 +420,31 @@ fn storage_rows(ui: &Ui, p: Paint, view: &ScrawlView, layer: &mut Vec<El>) -> Ve
                 layer,
             ),
         ),
+        icon_row(
+            p,
+            "capture-folder",
+            &FOLDER,
+            tr("Folder"),
+            Some(folder.as_str()),
+            row()
+                .key("controls")
+                .gap(8.0)
+                .center_y()
+                .child(button(
+                    p,
+                    "reveal-capture-folder",
+                    tr("Reveal"),
+                    ButtonKind::Secondary,
+                    |ui: &mut Ui, _| scrawl_request(ui, ScrawlRequest::RevealFolder),
+                ))
+                .child(button(
+                    p,
+                    "choose-capture-folder",
+                    tr("Change…"),
+                    ButtonKind::Secondary,
+                    |ui: &mut Ui, _| choose_folder(ui),
+                )),
+        ),
     ];
     if let Some(error) = &view.folder_error {
         rows.push(note("capture-folder-error", error, p.danger()));
@@ -424,67 +452,496 @@ fn storage_rows(ui: &Ui, p: Paint, view: &ScrawlView, layer: &mut Vec<El>) -> Ve
     rows
 }
 
+/// The transcriber, showing Hex in screen recordings for demos, and the
+/// replay Lab: settings most people never change. macOS only.
+fn more_rows(ui: &Ui, p: Paint) -> Vec<El> {
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut rows = vec![transcriber_row(ui, p), recordings_row(ui, p)];
+    #[cfg(target_os = "macos")]
+    if crate::labs::Feature::AnnotateReplay.on_this_os()
+        && crate::labs::Feature::AnnotateReplay.on(&ui.settings)
+    {
+        let mut control = row()
+            .key("capture-replay-shortcut-control")
+            .gap(4.0)
+            .center_y()
+            .child(keys_button(ui, p, ShortcutTarget::CaptureReplay));
+        if ui.settings.capture.replay_hotkey.is_some() {
+            control = control.child(super::controls::icon_button(
+                p,
+                "clear-capture-replay-shortcut",
+                &rune_theme_opencode::icons::TRASH,
+                tr("Clear shortcut"),
+                |ui: &mut Ui| {
+                    ui.update(|settings| settings.capture.replay_hotkey = None);
+                },
+            ));
+        }
+        use super::lists::{Tone, tone_tag};
+        rows.push(super::controls::icon_row_tagged(
+            p,
+            "capture-replay-shortcut",
+            &super::icons::REFRESH,
+            tr("Replay last 15 s"),
+            Some(tone_tag(p, "lab", tr("Lab"), Tone::Accent)),
+            Some(tr("Press to save; hold to narrate")),
+            control,
+        ));
+    }
+    rows
+}
+
+/// Lets screen recordings, captures included, show Hex's overlays.
+fn recordings_row(ui: &Ui, p: Paint) -> El {
+    icon_toggle_row(
+        p,
+        "capture-show-in-recordings",
+        &rune_kit::glyphs::EYE,
+        tr("Show Hex in screen recordings"),
+        tr("Include the capsule, ink, and HUD"),
+        ui.settings.capture.show_overlays_in_recordings,
+        |ui: &mut Ui| {
+            ui.update(|settings| {
+                settings.capture.show_overlays_in_recordings =
+                    !settings.capture.show_overlays_in_recordings;
+            });
+        },
+    )
+}
+
+fn transcriber_row(ui: &Ui, p: Paint) -> El {
+    let transcriber = ui.settings.capture.transcriber;
+    let selected = CaptureTranscriber::ALL
+        .iter()
+        .position(|choice| *choice == transcriber)
+        .unwrap_or(0);
+    icon_row(
+        p,
+        "capture-transcriber",
+        &WAVE,
+        tr("Transcriber"),
+        Some(transcriber_description(transcriber)),
+        segmented(
+            p,
+            "capture-transcriber-choice",
+            &["Parakeet", "Apple"],
+            selected,
+            |ui: &mut Ui, index| {
+                let transcriber = CaptureTranscriber::ALL[index];
+                ui.update(|settings| settings.capture.transcriber = transcriber);
+            },
+        ),
+    )
+}
+
+/// The command the copy row hands to people who manage skills themselves.
+const SKILLS_COMMAND: &str = "npx skills add anomalyco/hex --skill hex-annotate";
+
+/// The Annotate pane's Agents section (Labs › Install agent skill from
+/// Annotate): each coding agent's skill folder and, on macOS, the hex link.
+/// The folders are read when the pane opens and after an install, never
+/// while drawing.
+#[derive(Default)]
+pub(super) struct Agents {
+    paths: Option<agent_install::Paths>,
+    statuses: Vec<AgentStatus>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    cli: Option<agent_install::cli::Status>,
+    /// One per `statuses` row: checked means Install writes there.
+    selected: Vec<bool>,
+    error: Option<String>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    cli_error: Option<String>,
+}
+
+impl Agents {
+    /// Reads every agent's folder and the hex link, and checks each found
+    /// agent that cannot read this Hex's skill.
+    pub(super) fn refresh(&mut self) {
+        self.paths = agent_install::Paths::current();
+        self.read();
+    }
+
+    fn read(&mut self) {
+        if let Some(paths) = &self.paths {
+            self.statuses = agent_install::status(paths);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.cli = Some(agent_install::cli::status(
+                &agent_install::cli::Environment::current(),
+            ));
+        }
+        self.selected = self
+            .statuses
+            .iter()
+            .map(|status| status.found && !status.linked && status.skill != SkillState::Current)
+            .collect();
+    }
+
+    /// Whether Install has anything to write.
+    fn any_selected(&self) -> bool {
+        self.selected.iter().any(|selected| *selected)
+    }
+
+    fn selected_for(&self, agent: Agent) -> bool {
+        self.statuses
+            .iter()
+            .position(|status| status.agent == agent)
+            .and_then(|index| self.selected.get(index).copied())
+            .unwrap_or(false)
+    }
+
+    fn toggle(&mut self, agent: Agent) {
+        let Some(index) = self
+            .statuses
+            .iter()
+            .position(|status| status.agent == agent && status.found && !status.linked)
+        else {
+            return;
+        };
+        if let Some(selected) = self.selected.get_mut(index) {
+            *selected = !*selected;
+        }
+    }
+
+    /// Writes the skill into every checked agent's folder, then reads them
+    /// again so each row says Installed.
+    fn install(&mut self) {
+        let Some(paths) = self.paths.clone() else {
+            return;
+        };
+        let mut failure = None;
+        for (index, status) in self.statuses.iter().enumerate() {
+            if !self.selected.get(index).copied().unwrap_or(false) || status.linked {
+                continue;
+            }
+            if let Err(error) = agent_install::install(&paths, status.agent) {
+                failure.get_or_insert(error);
+            }
+        }
+        self.read();
+        self.error = failure;
+    }
+
+    #[cfg(target_os = "macos")]
+    fn install_cli(&mut self) {
+        use agent_install::cli::LinkError;
+        self.cli_error = None;
+        match agent_install::cli::install(&agent_install::cli::Environment::current()) {
+            Ok(status) => self.cli = Some(status),
+            Err(LinkError::Translocation) => {
+                self.cli_error = Some(tr("Move Hex to Applications first").to_string());
+            }
+            Err(LinkError::Io(error)) => self.cli_error = Some(error),
+        }
+    }
+
+    /// A scene's rows: one ready to install, one outdated, one current, one
+    /// not found, and the link already installed.
+    pub(super) fn fixture() -> Self {
+        let home = std::path::PathBuf::from("/Users/you");
+        Self {
+            statuses: vec![
+                AgentStatus {
+                    agent: Agent::ClaudeCode,
+                    found: true,
+                    skill: SkillState::Missing,
+                    path: home.join(".claude/skills/hex-annotate/SKILL.md"),
+                    linked: false,
+                },
+                AgentStatus {
+                    agent: Agent::Codex,
+                    found: true,
+                    skill: SkillState::Outdated,
+                    path: home.join(".agents/skills/hex-annotate/SKILL.md"),
+                    linked: false,
+                },
+                AgentStatus {
+                    agent: Agent::OpenCode,
+                    found: true,
+                    skill: SkillState::Current,
+                    path: home.join(".config/opencode/skills/hex-annotate/SKILL.md"),
+                    linked: false,
+                },
+                AgentStatus {
+                    agent: Agent::Pi,
+                    found: false,
+                    skill: SkillState::Missing,
+                    path: home.join(".pi/agent/skills/hex-annotate/SKILL.md"),
+                    linked: false,
+                },
+            ],
+            selected: vec![true, true, false, false],
+            cli: Some(agent_install::cli::Status {
+                state: agent_install::cli::State::Installed,
+                path: std::path::PathBuf::from("/opt/homebrew/bin/hex"),
+                off_path: false,
+            }),
+            ..Self::default()
+        }
+    }
+}
+
+/// One agent's row: its name, whether it is found and has this Hex's skill,
+/// and a switch that checks it for Install. A not-found agent, and a skill
+/// someone else manages through a symlink, has no switch: it is read by
+/// content and never written here.
+fn agent_row(ui: &Ui, p: Paint, status: &AgentStatus) -> El {
+    // A symlinked skill or folder is someone else's to update; the row says
+    // so rather than offering a state Hex can't change.
+    let label = if status.linked {
+        tr("Managed elsewhere")
+    } else {
+        match (status.found, status.skill) {
+            (false, _) => tr("Not found"),
+            (true, SkillState::Missing) => tr("Not installed"),
+            (true, SkillState::Current) => tr("Installed"),
+            (true, SkillState::Outdated) => tr("Update available"),
+        }
+    };
+    let key = format!("agent-{}", status.agent.key());
+    if !status.found || status.linked {
+        return setting_row(p, &key, status.agent.name(), Some(label), row());
+    }
+    let checked = ui.agents.selected_for(status.agent);
+    let row = setting_row(
+        p,
+        &key,
+        status.agent.name(),
+        Some(label),
+        super::controls::row_switch(p, checked),
+    );
+    let agent = status.agent;
+    super::controls::pressable_row(row, checked)
+        .on_press(move |ui: &mut Ui| ui.agents.toggle(agent))
+}
+
+/// The command people who manage skills themselves run, with its copy.
+fn agent_command_row(p: Paint) -> El {
+    let command = row()
+        .key("command")
+        .gap(8.0)
+        .center_y()
+        .child(
+            text(SKILLS_COMMAND)
+                .key("line")
+                .font(p.k.ty.mono)
+                .color(p.muted())
+                .a11y_hidden(),
+        )
+        .child(button(
+            p,
+            "agents-skill-copy",
+            tr("Copy"),
+            ButtonKind::Secondary,
+            |_, tx| tx.copy(SKILLS_COMMAND.to_owned()),
+        ));
+    setting_row(
+        p,
+        "agents-skill-command",
+        tr("Install with the skills CLI"),
+        Some(tr("For skills you manage yourself")),
+        command,
+    )
+}
+
+/// The macOS Command-line tool row, with its Install, and where the link is
+/// when it landed in `~/.local/bin`, which may not be on PATH.
+#[cfg(target_os = "macos")]
+fn cli_rows(ui: &Ui, p: Paint) -> Vec<El> {
+    use agent_install::cli::{State, Status};
+    let status: Option<&Status> = ui.agents.cli.as_ref();
+    let (label, installable) = match status {
+        Some(Status {
+            state: State::Installed,
+            path,
+            ..
+        }) => (tr_fill("Installed at {}", &folder_label(path)), false),
+        Some(Status {
+            state: State::OwnedByAnother,
+            ..
+        }) => (tr("Owned by another program").to_string(), false),
+        Some(_) | None => (tr("Not installed").to_string(), true),
+    };
+    let control = if installable {
+        button(
+            p,
+            "agents-cli-install",
+            tr("Install"),
+            ButtonKind::Secondary,
+            |ui: &mut Ui, _| ui.agents.install_cli(),
+        )
+    } else {
+        row()
+    };
+    let mut rows = vec![setting_row(
+        p,
+        "agents-cli",
+        tr("Command-line tool"),
+        Some(label.as_str()),
+        control,
+    )];
+    if let Some(Status {
+        path,
+        off_path: true,
+        ..
+    }) = status
+    {
+        let folder = path.parent().unwrap_or(path);
+        rows.push(note(
+            "agents-cli-path",
+            &tr_fill("{} isn't on your PATH", &folder_label(folder)),
+            p.muted(),
+        ));
+    }
+    if let Some(error) = &ui.agents.cli_error {
+        rows.push(note(
+            "agents-cli-error",
+            &tr_fill("Couldn't link the command-line tool: {}", error),
+            p.danger(),
+        ));
+    }
+    rows
+}
+
+/// The Agents section: the intro, each agent's row, the copyable skills
+/// command, and on macOS the Command-line tool.
+fn agents_section(ui: &Ui, p: Paint) -> El {
+    let mut rows = vec![note(
+        "agents-intro",
+        tr("Let coding agents read your captures with the hex-annotate skill"),
+        p.muted(),
+    )];
+    for status in &ui.agents.statuses {
+        rows.push(agent_row(ui, p, status));
+    }
+    if let Some(error) = &ui.agents.error {
+        rows.push(note(
+            "agents-error",
+            &tr_fill("Couldn't install the skill: {}", error),
+            p.danger(),
+        ));
+    }
+    rows.push(agent_command_row(p));
+    #[cfg(target_os = "macos")]
+    rows.extend(cli_rows(ui, p));
+    if !ui.settings.labs.annotate_agent_tools {
+        rows.push(note(
+            "agents-tools-off",
+            tr("The skill's zoom, inspect, and frames commands need Labs › Agent tools for captures on"),
+            p.muted(),
+        ));
+    }
+    section_with(
+        p,
+        "agents",
+        tr("Agents"),
+        super::controls::button_enabled(
+            p,
+            "agents-install",
+            tr("Install"),
+            ButtonKind::Secondary,
+            ui.agents.any_selected(),
+            |ui: &mut Ui, _| ui.agents.install(),
+        ),
+        rows,
+    )
+}
+
+/// What the Annotate pane shows, picked in its header.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum View {
+    #[default]
+    Annotations,
+    Settings,
+}
+
+/// Whether the Annotations/Captures tab is reachable beside Settings.
+pub(super) fn has_list(ui: &Ui) -> bool {
+    ui.settings.capture.enabled || ui.settings.labs.screenshots
+}
+
+/// Polls the Annotations/Captures list only while its tab is visible.
+pub(super) fn poll_list(ui: &mut Ui) -> bool {
+    let visible = ui.pane == Pane::Annotate
+        && ui.captures.view == View::Annotations
+        && has_list(ui)
+        && !ui.labs_open;
+    #[cfg(not(target_os = "macos"))]
+    let chosen = folder::poll(ui);
+    #[cfg(target_os = "macos")]
+    let chosen = false;
+    ui.captures.poll(visible) | chosen
+}
+
+/// The header's `Annotations | Settings` switch (or `Captures | Settings`
+/// while Labs › Screenshots is on), beside the title as in Meetings; hidden
+/// while Annotate and Screenshots are both off.
+pub(super) fn view_switch(ui: &Ui, p: Paint) -> Option<El> {
+    if !has_list(ui) {
+        return None;
+    }
+    let list_label = if ui.settings.labs.screenshots {
+        tr("Captures")
+    } else {
+        tr("Annotations")
+    };
+    let views = [list_label, tr("Settings")];
+    let selected = match ui.captures.view {
+        View::Annotations => 0,
+        View::Settings => 1,
+    };
+    Some(segmented_tx(
+        p,
+        "annotate-view",
+        &views,
+        selected,
+        |ui: &mut Ui, index: usize, tx: &mut Tx| {
+            let view = if index == 0 {
+                View::Annotations
+            } else {
+                View::Settings
+            };
+            if ui.captures.view != view {
+                tx.settle();
+                ui.flush_drafts();
+                ui.open = None;
+                ui.captures.view = view;
+                ui.captures.confirm_trash = None;
+            }
+        },
+    ))
+}
+
 pub(super) fn pane(ui: &Ui, p: Paint, layer: &mut Vec<El>) -> El {
+    if has_list(ui) && ui.captures.view == View::Annotations {
+        return super::captures::pane(ui, p);
+    }
     let view = ui.platform.scrawl.clone().unwrap_or_default();
     let enabled = ui.settings.capture.enabled;
-    let mut content = page("content");
-    content = content.child(card(
-        p,
-        "enable",
-        vec![
-            if crate::policy::Policy::current().locks(crate::policy::Lock::Annotate) {
-                super::controls::managed_row(p, "capture-enabled", None, tr("Annotate"))
-            } else {
-                toggle_row(
-                    p,
-                    "capture-enabled",
-                    tr("Annotate"),
-                    description(enabled),
-                    enabled,
-                    toggle,
-                )
-            }
-            .into(),
-            folding(
-                "capture-error-fold",
-                view.enable_error.as_ref().map(|error| {
-                    note(
-                        "capture-error",
-                        &format!("{} {error}", tr("Could not update Annotate:")),
-                        p.danger(),
-                    )
-                }),
-            ),
-        ],
-    ));
-    if enabled && view.scrawl_running {
+    let mut content = page("content").child(card(p, "enable", top_rows(ui, p, &view)));
+    if !enabled {
+        return super::scroll_body(p.k, "scroll", content);
+    }
+    if view.scrawl_running {
         content = content.child(scrawl_running(p, &view));
     }
-    content = content.child(section(
+    content = content.child(how_it_works(ui, p, &view)).child(section(
         p,
-        "capture",
-        tr("Shortcuts"),
-        shortcut_rows(ui, p, &view),
+        "after",
+        tr("After an annotation"),
+        after_rows(ui, p, &view, layer),
     ));
-    if enabled {
-        content = content.child(section(p, "how", tr("How it works"), how_it_works(ui, p)));
+    if ui.settings.labs.annotate_agent_install {
+        content = content.child(agents_section(ui, p));
     }
-    // Apple's speech recognizer is macOS's; Linux transcribes with Hex's model.
-    if enabled && cfg!(target_os = "macos") {
-        content = content.child(section(
-            p,
-            "transcription",
-            tr("Transcription"),
-            vec![transcriber_row(ui, p)],
-        ));
-    }
-    if enabled {
-        content = content.child(section(
-            p,
-            "storage",
-            tr("Storage"),
-            storage_rows(ui, p, &view, layer),
-        ));
+    // Apple's speech recognizer, keeping Hex out of recordings, and replay
+    // are macOS's; Linux and Windows transcribe with Hex's model.
+    if cfg!(target_os = "macos") {
+        let link = advanced_toggle(ui, p, Pane::Annotate);
+        let open = advanced_open(ui, Pane::Annotate);
+        content = content.child(fold(p, "advanced", link, open.then(|| more_rows(ui, p))));
     }
     super::scroll_body(p.k, "scroll", content)
 }
@@ -539,16 +996,13 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(&settings).unwrap(), before);
 
-        // With the Lab off, the saved record shortcut still holds the key:
-        // Annotate can't take it until the record shortcut is cleared.
+        // With the Lab off, every Mac's saved record shortcut doesn't hold
+        // the key, and turning the Lab on lets the record shortcut go.
         settings.labs.screenshots = false;
-        assert!(
-            set_enabled(&mut settings, true)
-                .unwrap_err()
-                .contains("already in use")
-        );
-        settings.screenshots.record_hotkey = None;
         set_enabled(&mut settings, true).unwrap();
+        assert!(settings.capture.enabled);
+        crate::labs::Feature::Screenshots.set(&mut settings, true);
+        assert_eq!(settings.screenshots.record_hotkey, None);
         assert!(settings.capture.enabled);
     }
 
@@ -558,22 +1012,79 @@ mod tests {
         let mut state = Ui::with(AppSettings::default(), Service::Fixture(Vec::new()));
         let (_, apply) = SCENES.iter().find(|(name, _)| *name == scene).unwrap();
         apply(&mut state);
+        render(state, (980.0, 760.0))
+    }
+
+    fn render(state: Ui, size: (f32, f32)) -> rune::Runtime<Ui> {
         let env = rune::Env {
             system_dark: true,
             scale: 1.0,
         };
         let text =
             rune::text::TextSystem::new(rune_theme_opencode::FONTS, rune_theme_opencode::FAMILIES);
-        let mut rt = crate::rune_ui::offscreen::runtime(
-            state,
-            crate::rune_ui::view,
-            (980.0, 760.0),
-            env,
-            text,
-        );
+        let mut rt =
+            crate::rune_ui::offscreen::runtime(state, crate::rune_ui::view, size, env, text);
         rt.settle_all();
         rt.frame(0.0);
         rt
+    }
+
+    /// A fresh folder under the temp directory, removed when the test ends,
+    /// panic or not.
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static SEQUENCE: AtomicU32 = AtomicU32::new(0);
+            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "hex-scrawl-agents-{}-{name}-{sequence}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// The Annotate pane with the Agents lab on and these agents' folders.
+    fn agents_pane(home: &std::path::Path) -> rune::Runtime<Ui> {
+        use crate::rune_ui::{Pane, Service};
+        let mut state = Ui::with(AppSettings::default(), Service::Fixture(Vec::new()));
+        state.settings.capture.enabled = true;
+        state.settings.labs.annotate_agent_install = true;
+        state.platform.scrawl = Some(ScrawlView::preview());
+        state.captures.view = View::Settings;
+        state.pane = Pane::Annotate;
+        state.agents.paths = Some(agent_install::Paths {
+            home: home.to_path_buf(),
+            ..agent_install::Paths::default()
+        });
+        state.agents.read();
+        // Tall enough that every agent row and the CLI row are on screen.
+        render(state, (980.0, 1720.0))
+    }
+
+    /// The text shown, without the recorder's invisible sizing faces.
+    fn texts(rt: &rune::Runtime<Ui>) -> Vec<String> {
+        rt.elements()
+            .into_iter()
+            .filter(|e| !e.path.contains("/faces/size"))
+            .filter_map(|e| e.text)
+            .collect()
     }
 
     fn tap(rt: &mut rune::Runtime<Ui>, key: &str) {
@@ -597,15 +1108,10 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn granted_screen_recording_shows_allowed_and_asks_nothing() {
-        let mut rt = pane("mac-scrawl");
-        assert!(
-            rt.find(&format!("{ALLOW}-control/mark/ink/check"))
-                .is_some(),
-            "already granted reads Allowed"
-        );
-        tap(&mut rt, ALLOW);
-        assert!(asked(&rt).is_empty(), "Allowed is not a button");
+    fn granted_screen_recording_hides_its_row() {
+        let rt = pane("mac-scrawl");
+        assert!(rt.find("screen-recording").is_none());
+        assert!(rt.find(ALLOW).is_none());
     }
 
     #[cfg(target_os = "macos")]
@@ -626,10 +1132,37 @@ mod tests {
         // The fixture grants on the second ask.
         tap(&mut rt, ALLOW);
         assert!(rt.state.platform.scrawl.as_ref().unwrap().screen_recording);
-        assert!(
-            rt.find(&format!("{ALLOW}-control/mark/ink/check"))
-                .is_some()
-        );
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.find(ALLOW).is_none(), "the row folds away once granted");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rare_settings_stay_folded_until_opened() {
+        let mut rt = pane("mac-scrawl");
+        assert!(rt.find("capture-transcriber").is_none());
+        tap(&mut rt, "advanced-toggle");
+        assert!(rt.find("capture-transcriber").is_some());
+        assert!(rt.find("capture-show-in-recordings").is_some());
+    }
+
+    #[test]
+    fn how_it_works_opens_from_its_link() {
+        let mut rt = pane("mac-scrawl");
+        assert!(rt.find("how-start").is_none());
+        tap(&mut rt, "how-toggle");
+        assert!(rt.find("how-start").is_some());
+    }
+
+    #[test]
+    fn off_shows_only_the_top_card() {
+        let rt = pane("mac-scrawl-off");
+        assert!(rt.find("capture-enabled").is_some());
+        assert!(rt.find("capture-shortcut").is_some());
+        assert!(rt.find("how-toggle").is_none());
+        assert!(rt.find("after").is_none());
+        assert!(rt.find("advanced-toggle").is_none());
     }
 
     #[cfg(target_os = "macos")]
@@ -687,11 +1220,210 @@ mod tests {
     fn retention_names_presets_and_imported_days() {
         assert_eq!(retention_label(Preset::Week.policy()), "Video for 7 days");
         assert_eq!(retention_label(Preset::Forever.policy()), "Forever");
+        assert_eq!(retention_description(Preset::Forever.policy()), None);
         let imported = Policy {
             media_days: Some(3),
             bundle_days: Some(30),
         };
         assert_eq!(retention_label(imported), "Video for 3 days");
-        assert!(retention_description(imported).contains("30 days"));
+        assert_eq!(
+            retention_description(imported).as_deref(),
+            Some("Annotations for 30 days")
+        );
+        let video_only = Policy {
+            media_days: Some(3),
+            bundle_days: None,
+        };
+        assert_eq!(
+            retention_description(video_only).as_deref(),
+            Some("Annotations stay until you remove them")
+        );
+    }
+
+    /// The Agents section is exactly absent while its lab is off.
+    #[test]
+    fn the_agents_section_needs_its_lab() {
+        let off = pane("mac-scrawl");
+        assert!(off.find("agents").is_none());
+        assert!(off.find("agents-install").is_none());
+        assert!(
+            !texts(&off)
+                .iter()
+                .any(|text| text
+                    == "Let coding agents read your captures with the hex-annotate skill")
+        );
+
+        let on = pane("mac-scrawl-agents");
+        assert!(on.find("agents").is_some());
+        assert!(on.find("agents-install").is_some());
+        assert!(on.find("agents-skill-copy").is_some());
+        for agent in Agent::ALL {
+            assert!(
+                on.find(&format!("agent-{}", agent.key())).is_some(),
+                "{} has no row",
+                agent.name()
+            );
+        }
+        let shown = texts(&on);
+        for status in [
+            "Not installed",
+            "Update available",
+            "Installed",
+            "Not found",
+        ] {
+            assert!(shown.iter().any(|text| text == status), "{status}");
+        }
+        // The skill's agent commands are their own lab, named here while off.
+        assert!(shown.iter().any(|text| text
+            == "The skill's zoom, inspect, and frames commands need Labs › Agent tools for captures on"));
+        #[cfg(target_os = "macos")]
+        {
+            assert!(on.find("agents-cli").is_some());
+            assert!(
+                shown
+                    .iter()
+                    .any(|text| text == "Installed at /opt/homebrew/bin/hex")
+            );
+        }
+    }
+
+    /// Install writes the skill into each checked, found agent's own folder
+    /// and never creates one for an agent this computer doesn't have.
+    #[test]
+    fn installing_writes_each_checked_agents_skill() {
+        let temp = TempDir::new("install");
+        let home = temp.path();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        let mut rt = agents_pane(home);
+        assert_eq!(
+            rt.state.agents.selected,
+            vec![true, true, false, false],
+            "found agents without the skill start checked"
+        );
+        tap(&mut rt, "agents-install");
+        assert_eq!(
+            std::fs::read(home.join(".claude/skills/hex-annotate/SKILL.md")).unwrap(),
+            agent_install::SKILL.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(home.join(".agents/skills/hex-annotate/SKILL.md")).unwrap(),
+            agent_install::SKILL.as_bytes(),
+            "Codex reads the shared copy"
+        );
+        assert!(
+            std::fs::read(home.join(".pi/agent/skills/hex-annotate/SKILL.md")).is_err(),
+            "Pi was not found, so nothing was written for it"
+        );
+        assert_eq!(
+            rt.state.agents.statuses[0].skill,
+            SkillState::Current,
+            "the row says Installed now"
+        );
+        assert_eq!(rt.state.agents.selected, vec![false; 4]);
+        // Nothing is checked now, so Install is disabled.
+        let install = crate::rune_ui::accessibility_tests::node(&rt, "agents-install");
+        assert!(
+            install["states"]
+                .as_array()
+                .is_some_and(|states| states.iter().any(|state| state == "disabled")),
+            "Install is disabled while nothing is checked: {install}"
+        );
+    }
+
+    /// Clicking one agent's row checks or unchecks only that agent, and a
+    /// not-found agent's row does nothing.
+    #[test]
+    fn an_agents_row_checks_only_that_agent() {
+        let temp = TempDir::new("toggle");
+        let home = temp.path();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir_all(home.join(".pi")).unwrap();
+        let mut rt = agents_pane(home);
+        assert_eq!(rt.state.agents.selected, vec![true, false, false, true]);
+        tap(&mut rt, "agent-claude-code");
+        assert_eq!(rt.state.agents.selected, vec![false, false, false, true]);
+        tap(&mut rt, "agent-claude-code");
+        assert_eq!(rt.state.agents.selected, vec![true, false, false, true]);
+        // Pi is found, so its row toggles; OpenCode is not found, so its row
+        // has no switch and tapping it does nothing.
+        tap(&mut rt, "agent-pi");
+        assert_eq!(rt.state.agents.selected, vec![true, false, false, false]);
+        tap(&mut rt, "agent-opencode");
+        assert_eq!(rt.state.agents.selected, vec![true, false, false, false]);
+    }
+
+    /// A skill someone else manages through a symlink is read by content but
+    /// has no switch, so Install never writes through the link.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_skill_has_no_switch() {
+        let temp = TempDir::new("linked");
+        let home = temp.path().join("home");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(home.join(".claude/skills")).unwrap();
+        std::fs::create_dir_all(outside.join("hex-annotate")).unwrap();
+        std::fs::write(outside.join("hex-annotate/SKILL.md"), "an older skill").unwrap();
+        std::os::unix::fs::symlink(
+            outside.join("hex-annotate"),
+            home.join(".claude/skills/hex-annotate"),
+        )
+        .unwrap();
+        let mut rt = agents_pane(&home);
+        assert!(rt.state.agents.statuses[0].linked);
+        assert_eq!(rt.state.agents.statuses[0].skill, SkillState::Outdated);
+        assert!(
+            texts(&rt).iter().any(|text| text == "Managed elsewhere"),
+            "the row says someone else manages it: {:?}",
+            texts(&rt)
+        );
+        assert_eq!(
+            rt.state.agents.selected,
+            vec![false; 4],
+            "a linked skill is never checked"
+        );
+        tap(&mut rt, "agent-claude-code");
+        assert_eq!(rt.state.agents.selected, vec![false; 4]);
+        tap(&mut rt, "agents-install");
+        assert_eq!(
+            std::fs::read_to_string(outside.join("hex-annotate/SKILL.md")).unwrap(),
+            "an older skill",
+            "nothing was written through the link"
+        );
+    }
+
+    #[test]
+    fn annotate_tabs_switch_between_annotations_and_settings() {
+        let mut rt = pane("mac-annotate");
+        assert!(rt.find("nav-annotate").is_some());
+        assert!(rt.find("nav-captures").is_none());
+        assert!(rt.find("annotate-view").is_some());
+        assert!(rt.find("captures-list").is_some());
+        assert!(rt.find("capture-enabled").is_none());
+        assert!(texts(&rt).iter().any(|t| t == "Annotations"));
+        assert!(texts(&rt).iter().any(|t| t == "Settings"));
+
+        tap(&mut rt, "annotate-view/segment1");
+        assert_eq!(rt.state.captures.view, View::Settings);
+        assert!(rt.find("capture-enabled").is_some());
+        assert!(rt.find("captures-list").is_none());
+
+        tap(&mut rt, "annotate-view/segment0");
+        assert_eq!(rt.state.captures.view, View::Annotations);
+        assert!(rt.find("captures-list").is_some());
+
+        // With Labs › Screenshots on, the same Annotate item labels the tab
+        // Captures without adding a separate sidebar row.
+        let shots = pane("captures");
+        assert!(shots.find("nav-annotate").is_some());
+        assert!(shots.find("nav-captures").is_none());
+        assert!(shots.find("annotate-view").is_some());
+        assert!(shots.find("captures-list").is_some());
+        assert!(texts(&shots).iter().any(|t| t == "Captures"));
+
+        // Off (and Screenshots off): the header switch hides so the opt-in card shows.
+        let off = pane("mac-scrawl-off");
+        assert!(off.find("annotate-view").is_none());
+        assert!(off.find("capture-enabled").is_some());
     }
 }

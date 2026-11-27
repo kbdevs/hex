@@ -10,12 +10,16 @@ use crate::app_settings::{
     AppSettings, HotkeyBinding, HotkeyKey, HotkeySlot, MAX_EXTRA_DICTATION_SHORTCUTS,
 };
 
+mod access;
+#[cfg(test)]
+mod choice_tests;
 mod hotkeys;
 mod registry;
+mod tones;
 
 use hotkeys::check_shortcut;
 pub use hotkeys::{format_hotkey, parse_hotkey};
-use registry::{CAPTURE_KEYS, KEYS, Key, Kind, RETIRED, needs};
+use registry::{CAPTURE_KEYS, KEYS, Key, Kind, RETIRED};
 
 /// One setting as `hex settings get` reports it.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -28,7 +32,7 @@ pub struct SettingValue {
     pub choices: Vec<String>,
     pub writable: bool,
     pub about: String,
-    /// False where this OS's Hex lacks what the setting needs ([`needs`]):
+    /// False where this OS or build lacks what the setting needs:
     /// it is kept, but does nothing here and `set` refuses it.
     #[serde(default = "available")]
     pub available: bool,
@@ -38,64 +42,19 @@ fn available() -> bool {
     true
 }
 
-fn setting_available(key: &str) -> bool {
-    (key != "labs.phonon_refiner" || crate::labs::Feature::PhononRefiner.supported())
-        && (key != "labs.shift_to_submit" || crate::labs::Feature::ShiftToSubmit.supported())
-        && needs(key).is_none_or(crate::rune_ui::capability)
-}
-
 /// Why `hex settings set` refuses `name` on this OS, if it does.
 pub fn unavailable(name: &str) -> Option<ControlError> {
     unavailable_under(name, crate::policy::Policy::current())
 }
 
 fn unavailable_under(name: &str, policy: crate::policy::Policy) -> Option<ControlError> {
-    if let Some(lock) = policy.setting_lock(name) {
-        return Some(managed(name, lock));
-    }
-    if let Some(feature) = crate::labs::Feature::for_settings_key(name)
-        && !feature.shipped()
-    {
-        return Some(ControlError::new(
-            "unsupported",
-            format!("`{name}` belongs to a Labs feature that only dev builds have"),
-        ));
-    }
-    if name == "labs.phonon_refiner" && !crate::labs::Feature::PhononRefiner.supported() {
-        return Some(ControlError::new(
-            "unsupported",
-            "`labs.phonon_refiner` requires Apple silicon macOS",
-        ));
-    }
-    // A `labs.` key is only its feature's switch, so off its OS it does nothing.
-    if let Some(feature) = crate::labs::Feature::for_settings_key(name)
-        && (name.starts_with("labs.") || name == "capture.replay_hotkey")
-        && !feature.on_this_os()
-    {
-        return Some(ControlError::new(
-            "unsupported",
-            format!("`{name}` belongs to a Labs feature this OS doesn't have"),
-        ));
-    }
-    if name.starts_with("screenshots.") && !cfg!(target_os = "macos") {
-        return Some(ControlError::new(
-            "unsupported",
-            format!("`{name}` belongs to Labs › Screenshots, which only macOS has"),
-        ));
-    }
-    if name == "extra_dictation_hotkeys" && !cfg!(target_os = "macos") {
-        return Some(ControlError::new(
-            "unsupported",
-            format!("`{name}` belongs to Labs › More dictation shortcuts, which only macOS has"),
-        ));
-    }
-    let capability = needs(name).filter(|capability| !crate::rune_ui::capability(capability))?;
-    Some(ControlError::new(
-        "unsupported",
-        format!(
-            "`{name}` does nothing on this OS: it needs {capability}, which Hex has only elsewhere"
-        ),
-    ))
+    let environment = access::Environment {
+        policy,
+        ..access::Environment::current()
+    };
+    keys()
+        .find(|key| key.key == name)
+        .and_then(|key| access::check_write(key, &environment).err())
 }
 
 fn managed(name: &str, lock: crate::policy::Lock) -> ControlError {
@@ -196,6 +155,12 @@ pub fn get(settings: &AppSettings, name: &str) -> Result<Vec<SettingValue>, Cont
 }
 
 fn unknown(name: &str) -> ControlError {
+    if name == "labs.settings_search" {
+        return ControlError::new(
+            "unknown-setting",
+            "Settings search no longer needs a lab. Use Cmd+K (Ctrl+K off macOS) in the Hex window.",
+        );
+    }
     if let Some((_, replacement)) = RETIRED.iter().find(|(retired, _)| *retired == name) {
         return ControlError::new(
             "unknown-setting",
@@ -218,6 +183,11 @@ fn unknown(name: &str) -> ControlError {
 }
 
 fn value_of(key: &Key, json: &Value) -> SettingValue {
+    describe(key, json, &access::Environment::current())
+}
+
+fn describe(key: &Key, json: &Value, environment: &access::Environment<'_>) -> SettingValue {
+    let access = access::setting_access(key, environment);
     let raw = json
         .pointer(&pointer(key.key))
         .cloned()
@@ -240,12 +210,9 @@ fn value_of(key: &Key, json: &Value) -> SettingValue {
             }
             _ => Vec::new(),
         },
-        writable: key.read_only.is_none()
-            && crate::policy::Policy::current()
-                .setting_lock(key.key)
-                .is_none(),
+        writable: access.writable,
         about: key.about.into(),
-        available: setting_available(key.key),
+        available: access.supported,
     }
 }
 
@@ -282,6 +249,15 @@ pub fn apply(
         ));
     }
     let value = parse(key, raw, shortcuts)?;
+    if let Some(patch) = tones::TonePatch::single(name, &value) {
+        let mut candidate = settings.clone();
+        patch.resolve(settings)?.apply(&mut candidate);
+        return Ok(Change {
+            settings: candidate,
+            effects: Vec::new(),
+            message: format!("Set {name}"),
+        });
+    }
     let mut json = serde_json::to_value(settings)
         .map_err(|error| ControlError::new("internal", error.to_string()))?;
     // An unset optional setting is left out of the file, so give it a slot.
@@ -301,22 +277,12 @@ pub fn apply(
     let mut effects = Vec::new();
     let message = format!("Set {name}");
     match key.key {
-        "sound_effects" if candidate.sound_effects && candidate.sound_effect_volume <= 0.0 => {
-            candidate.sound_effect_volume = AppSettings::default().sound_effect_volume;
-        }
         "meetings.summaries"
             if candidate.meetings.summaries == crate::app_settings::MeetingSummaries::OpenCode
                 && crate::policy::Policy::current()
                     .locks(crate::policy::Lock::OpenCodeProcessing) =>
         {
             return Err(managed(name, crate::policy::Lock::OpenCodeProcessing));
-        }
-        "sound_effect_volume" => {
-            let volume = candidate.sound_effect_volume;
-            candidate.sound_effects = volume > 0.0;
-            if volume <= 0.0 {
-                candidate.sound_effect_volume = settings.sound_effect_volume;
-            }
         }
         "double_tap_lock" if !candidate.double_tap_lock => candidate.double_tap_only = false,
         "double_tap_only" if candidate.double_tap_only => {
@@ -325,7 +291,7 @@ pub fn apply(
                     && !candidate.double_tap_modifiers_allowed())
             {
                 let modifier_only = if cfg!(target_os = "macos") {
-                    ", or with Labs › Double-tap on a lone modifier on, a shortcut without a key"
+                    ", or with Labs › Double-tap Option, Command, or Globe on, a shortcut without a key"
                 } else {
                     ""
                 };
@@ -338,44 +304,11 @@ pub fn apply(
                 ));
             }
         }
-        "labs.double_tap_modifiers" => candidate.normalize_double_tap_settings(),
-        "labs.api_browser_origins" => {
-            candidate.labs.api_browser_origins =
-                crate::app_settings::normalize_browser_origins(&candidate.labs.api_browser_origins);
-        }
-        "dictation_hotkey"
-        | "paste_last_hotkey"
-        | "raw_dictation_hotkey"
-        | "typed_text_hotkey"
-        | "second_dictation_hotkey"
-        | "terminal_paste_hotkey"
-        | "cancel_hotkey"
-        | "screenshots.hotkey"
-        | "screenshots.record_hotkey"
-        | "capture.hotkey"
-        | "capture.replay_hotkey" => {
+        _ if matches!(key.kind, Kind::Shortcut(_)) => {
             let Kind::Shortcut(slot) = key.kind else {
                 unreachable!("shortcut keys have the shortcut kind");
             };
-            let binding = match slot {
-                HotkeySlot::Dictation => Some(&candidate.dictation_hotkey),
-                HotkeySlot::PasteLast => candidate.paste_last_hotkey.as_ref(),
-                HotkeySlot::RawDictation => candidate.raw_dictation_hotkey.as_ref(),
-                HotkeySlot::TypedText => candidate.typed_text_hotkey.as_ref(),
-                HotkeySlot::SecondDictation => candidate.second_dictation_hotkey.as_ref(),
-                // Each row of `extra_dictation_hotkeys` is validated from
-                // its own JSON list, not a shortcut key.
-                HotkeySlot::ExtraDictation(_) => None,
-                HotkeySlot::TerminalPaste => candidate.terminal_paste_hotkey.as_ref(),
-                HotkeySlot::Cancel => Some(&candidate.cancel_hotkey),
-                HotkeySlot::Screenshot => Some(&candidate.screenshots.hotkey),
-                HotkeySlot::ScreenshotRecord => candidate.screenshots.record_hotkey.as_ref(),
-                #[cfg(hex_capture)]
-                HotkeySlot::Capture => Some(&candidate.capture.hotkey),
-                #[cfg(hex_capture)]
-                HotkeySlot::CaptureReplay => candidate.capture.replay_hotkey.as_ref(),
-            };
-            if let Some(binding) = binding {
+            if let Some(binding) = slot.get(&candidate) {
                 check_shortcut(settings, &candidate, name, slot, binding, shortcuts)?;
             }
             if candidate.dictation_hotkey.key.is_none() && !candidate.double_tap_modifiers_allowed()
@@ -403,7 +336,7 @@ pub fn apply(
                 }
             }
             // A row can't be double-tap only without a key, or with Labs ›
-            // Double-tap on a lone modifier, without a key but modifiers.
+            // Double-tap Option, Command, or Globe, without a key but modifiers.
             let modifiers_allowed = candidate.double_tap_modifiers_allowed();
             for row in &mut candidate.extra_dictation_hotkeys {
                 row.mode = row
@@ -413,6 +346,13 @@ pub fn apply(
         }
         "keyboard_model_switching.mappings" => {
             for choice in candidate.keyboard_model_switching.mappings.values() {
+                choice
+                    .validate()
+                    .map_err(|error| invalid(name, &error.to_string()))?;
+            }
+        }
+        "model_switch_other" => {
+            if let Some(choice) = &candidate.model_switch_other {
                 choice
                     .validate()
                     .map_err(|error| invalid(name, &error.to_string()))?;
@@ -454,8 +394,6 @@ pub fn apply(
                  shortcut first",
             ));
         }
-        "labs.standalone_special_keys" => candidate.repair_special_keys(),
-        "labs.section_key_alone" => candidate.repair_section_key(),
         "labs.parakeet_ultra" if !candidate.labs.parakeet_ultra => {
             if let Some(why) = crate::labs::Feature::ParakeetUltra.off_refusal(settings) {
                 return Err(invalid(name, why));
@@ -464,6 +402,11 @@ pub fn apply(
         "show_dock_icon" => effects.push(Effect::DockIcon),
         "updates.channel" => effects.push(Effect::CheckForUpdates),
         _ => {}
+    }
+    if let Some(feature) = crate::labs::Feature::for_settings_key(key.key)
+        && feature.settings_key() == key.key
+    {
+        feature.apply_side_effects(&mut candidate);
     }
     Ok(Change {
         settings: candidate,
@@ -485,6 +428,9 @@ pub fn apply_all(
     shortcuts: &ShortcutRules,
 ) -> Result<Change, ControlError> {
     let mut candidate = settings.clone();
+    tones::TonePatch::parse(values, shortcuts)?
+        .resolve(settings)?
+        .apply(&mut candidate);
     let model = values.get("transcription.model");
     let language = values.get("transcription.language");
     if model.is_some() || language.is_some() {
@@ -502,7 +448,10 @@ pub fn apply_all(
     for (name, value) in values {
         if matches!(
             name.as_str(),
-            "transcription.model" | "transcription.language"
+            "transcription.model"
+                | "transcription.language"
+                | "sound_effects"
+                | "sound_effect_volume"
         ) {
             continue;
         }
@@ -685,33 +634,14 @@ mod tests {
         } else {
             assert_eq!(refused, Some("unsupported"));
         }
-    }
-
-    #[test]
-    fn macos_output_labs_settings_are_registered_and_macos_only() {
-        for key in ["labs.type_dictation", "labs.shift_to_submit"] {
-            let setting = keys()
-                .find(|setting| setting.key == key)
-                .unwrap_or_else(|| panic!("missing {key}"));
-            assert_eq!(setting_available(setting.key), cfg!(target_os = "macos"));
-            assert_eq!(
-                unavailable_under(key, crate::policy::Policy::default()).map(|error| error.code),
-                (!cfg!(target_os = "macos")).then_some("unsupported")
-            );
-        }
-    }
-
-    #[test]
-    fn phonon_refiner_setting_requires_apple_silicon_macos() {
-        let setting = keys()
-            .find(|setting| setting.key == "labs.phonon_refiner")
-            .expect("Phonon refiner setting");
-        let supported = cfg!(all(target_os = "macos", target_arch = "aarch64"));
-        assert_eq!(setting_available(setting.key), supported);
-        assert_eq!(
-            unavailable_under("labs.phonon_refiner", crate::policy::Policy::default())
-                .map(|error| error.code),
-            (!supported).then_some("unsupported")
+        // Stop every call recording ships on all three OSes.
+        assert!(
+            unavailable_under(
+                "labs.stop_any_call_recording",
+                crate::policy::Policy::default()
+            )
+            .is_none(),
+            "the lab is refused on this OS"
         );
     }
 
@@ -796,6 +726,10 @@ mod tests {
                     code: 123,
                     label: "Left".into(),
                 }),
+                "microphone" => Ok(HotkeyKey {
+                    code: 176,
+                    label: "Mic".into(),
+                }),
                 "menu" => Ok(HotkeyKey {
                     code: 0,
                     label: "Menu".into(),
@@ -842,6 +776,7 @@ mod tests {
                 retention: Some(crate::app_settings::MeetingRetention::Day),
                 audio_retention: Some(crate::app_settings::MeetingRetention::Day),
                 opencode_model: Some("anthropic/claude-haiku".into()),
+                recording_indicator_display: Some(r"\\.\DISPLAY2".into()),
                 ..Default::default()
             },
             ..Default::default()
@@ -873,19 +808,85 @@ mod tests {
         assert_eq!(names.len(), keys().count(), "a key is listed twice");
     }
 
+    /// Fails when a Labs feature's `settings_key()` is missing from `keys()`,
+    /// is not a boolean key, or points to a different `AppSettings` field than
+    /// `Feature::on` / `Feature::set`.
     #[test]
-    fn browser_origin_entries_keep_only_real_origins() {
-        let change = apply(
-            &AppSettings::default(),
-            "labs.api_browser_origins",
-            r#"["HTTPS://Example.com:443/", "*", "not an origin", "http://localhost:5173"]"#,
-            &rules(),
-        )
-        .unwrap();
-        assert_eq!(
-            change.settings.labs.api_browser_origins,
-            vec!["https://example.com", "http://localhost:5173"]
-        );
+    fn every_labs_feature_has_a_matching_bool_cli_key() {
+        for feature in crate::labs::Feature::ALL {
+            let name = feature.settings_key();
+            let key = keys().find(|key| key.key == name).unwrap_or_else(|| {
+                panic!(
+                    "Labs feature `{}` names no `hex settings` key `{name}`",
+                    feature.name()
+                )
+            });
+            assert!(
+                matches!(key.kind, Kind::Bool),
+                "Labs feature `{}` key `{name}` is {:?}, expected Bool",
+                feature.name(),
+                key.kind
+            );
+
+            let default = AppSettings::default();
+            assert!(!feature.on(&default), "{} defaults on", feature.name());
+            assert_eq!(
+                get(&default, name).unwrap()[0].value,
+                Value::Bool(false),
+                "`{name}` did not read false for default {}",
+                feature.name()
+            );
+
+            let mut via_feature = default.clone();
+            feature.set(&mut via_feature, true);
+            assert!(feature.on(&via_feature), "{}", feature.name());
+            assert_eq!(
+                get(&via_feature, name).unwrap()[0].value,
+                Value::Bool(true),
+                "`{name}` does not read the bool `Feature::set` wrote for {}",
+                feature.name()
+            );
+
+            let via_cli = apply(&default, name, "true", &rules()).unwrap().settings;
+            assert!(
+                feature.on(&via_cli),
+                "applying `{name} true` did not turn on `Feature::on` for {}",
+                feature.name()
+            );
+            assert_eq!(
+                via_cli,
+                via_feature,
+                "applying `{name} true` diverged from `Feature::set(true)` for {}",
+                feature.name()
+            );
+
+            let mut off_via_feature = via_feature.clone();
+            feature.set(&mut off_via_feature, false);
+            let off_via_cli = apply(&via_feature, name, "false", &rules())
+                .unwrap()
+                .settings;
+            assert!(!feature.on(&off_via_cli), "{}", feature.name());
+            assert_eq!(
+                off_via_cli,
+                off_via_feature,
+                "applying `{name} false` diverged from `Feature::set(false)` for {}",
+                feature.name()
+            );
+
+            for extra in feature.extra_settings_keys() {
+                assert!(
+                    keys().any(|key| key.key == *extra),
+                    "Labs feature `{}` companion key `{extra}` is missing from `keys()`",
+                    feature.name()
+                );
+                assert_eq!(
+                    crate::labs::Feature::for_settings_key(extra),
+                    Some(feature),
+                    "companion key `{extra}` did not map back to `{}`",
+                    feature.name()
+                );
+            }
+        }
     }
 
     #[test]
@@ -898,6 +899,40 @@ mod tests {
         let change = apply(&AppSettings::default(), "ui_language", "zh", &rules()).unwrap();
         let shown = get(&change.settings, "ui_language").unwrap();
         assert_eq!(shown[0].value, Value::String("zh".into()));
+    }
+
+    #[test]
+    fn the_hud_height_gap_is_whole_points_in_range() {
+        let change = apply(
+            &AppSettings::default(),
+            "labs.hud_bottom_gap",
+            "120",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(change.settings.labs.hud_bottom_gap, 120);
+        assert_eq!(
+            apply(
+                &AppSettings::default(),
+                "labs.hud_bottom_gap",
+                "401",
+                &rules()
+            )
+            .unwrap_err()
+            .code,
+            "invalid-value"
+        );
+        assert_eq!(
+            apply(
+                &AppSettings::default(),
+                "labs.hud_bottom_gap",
+                "-1",
+                &rules()
+            )
+            .unwrap_err()
+            .code,
+            "invalid-value"
+        );
     }
 
     #[test]
@@ -974,6 +1009,134 @@ mod tests {
         assert_eq!(
             change.settings.labs.voice_prompt_phrase, "say it better",
             "a refused draft leaves the saved phrase"
+        );
+    }
+
+    #[test]
+    fn a_clipboard_phrase_needs_two_words_and_six_letters() {
+        let change = apply(
+            &AppSettings::default(),
+            "labs.clipboard_phrase",
+            "on",
+            &rules(),
+        )
+        .unwrap();
+        assert!(change.settings.labs.clipboard_phrase);
+        assert_eq!(
+            change.settings.labs.clipboard_phrase_text,
+            crate::dictation::clipboard_phrase::DEFAULT_PHRASE
+        );
+        let change = apply(
+            &change.settings,
+            "labs.clipboard_phrase_text",
+            "  what I copied ",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            change.settings.labs.clipboard_phrase_text, "what I copied",
+            "a saved phrase is trimmed"
+        );
+        for (raw, reason) in [
+            ("clipboard", "two words"),
+            ("a clip", "six letters"),
+            ("", "two words"),
+        ] {
+            let error = apply(
+                &change.settings,
+                "labs.clipboard_phrase_text",
+                raw,
+                &rules(),
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "invalid-value", "{raw}");
+            assert!(error.message.contains(reason), "{raw}: {}", error.message);
+        }
+        assert_eq!(
+            change.settings.labs.clipboard_phrase_text, "what I copied",
+            "a refused draft leaves the saved phrase"
+        );
+    }
+
+    #[test]
+    fn a_stop_phrase_needs_two_words_and_six_letters() {
+        let change = apply(&AppSettings::default(), "labs.stop_phrase", "on", &rules()).unwrap();
+        assert!(change.settings.labs.stop_phrase);
+        assert_eq!(
+            change.settings.labs.stop_phrase_text,
+            crate::dictation::stop_phrase::DEFAULT_PHRASE
+        );
+        let change = apply(
+            &change.settings,
+            "labs.stop_phrase_text",
+            "  that's all ",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            change.settings.labs.stop_phrase_text, "that's all",
+            "a saved phrase is trimmed"
+        );
+        for (raw, reason) in [
+            ("stop", "two words"),
+            ("a b c", "six letters"),
+            ("", "two words"),
+        ] {
+            let error =
+                apply(&change.settings, "labs.stop_phrase_text", raw, &rules()).unwrap_err();
+            assert_eq!(error.code, "invalid-value", "{raw}");
+            assert!(error.message.contains(reason), "{raw}: {}", error.message);
+        }
+        assert_eq!(
+            change.settings.labs.stop_phrase_text, "that's all",
+            "a refused draft leaves the saved phrase"
+        );
+        assert_eq!(
+            get(&change.settings, "labs.stop_phrase_text").unwrap()[0].value,
+            Value::String("that's all".into())
+        );
+    }
+
+    #[test]
+    fn a_signature_is_trimmed_and_must_be_one_line() {
+        let change = apply(&AppSettings::default(), "labs.signature", "on", &rules()).unwrap();
+        assert!(change.settings.labs.signature);
+        assert_eq!(
+            change.settings.labs.signature_text,
+            crate::dictation::signature::DEFAULT_TEXT
+        );
+        let change = apply(
+            &change.settings,
+            "labs.signature_text",
+            "  Dax, from Hex ",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            change.settings.labs.signature_text, "Dax, from Hex",
+            "a saved signature is trimmed"
+        );
+        let error = apply(
+            &change.settings,
+            "labs.signature_text",
+            "two\nlines",
+            &rules(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "invalid-value");
+        assert!(error.message.contains("one line"), "{}", error.message);
+        assert_eq!(
+            change.settings.labs.signature_text, "Dax, from Hex",
+            "a refused draft leaves the saved signature"
+        );
+        let change = apply(&change.settings, "labs.signature_text", "", &rules()).unwrap();
+        assert!(
+            change.settings.labs.signature_text.is_empty(),
+            "empty is allowed and appends nothing"
+        );
+        assert_eq!(
+            get(&change.settings, "labs.signature_text").unwrap()[0].value,
+            Value::String(String::new())
         );
     }
 
@@ -1192,6 +1355,39 @@ mod tests {
             get(&change.settings, "labs.appearance_theme").unwrap()[0].value,
             Value::String("dark".into())
         );
+        let change = apply(&settings, "labs.dictation_style", "on", &rules()).unwrap();
+        assert!(change.settings.labs.dictation_style);
+        assert_eq!(
+            change.settings.labs.dictation_style_choice,
+            crate::app_settings::DictationStyle::Polished,
+            "polished is the default"
+        );
+        let change = apply(
+            &change.settings,
+            "labs.dictation_style_choice",
+            "notes",
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            change.settings.labs.dictation_style_choice,
+            crate::app_settings::DictationStyle::Notes
+        );
+        assert_eq!(
+            get(&change.settings, "labs.dictation_style_choice").unwrap()[0].value,
+            Value::String("notes".into())
+        );
+        assert_eq!(
+            apply(
+                &change.settings,
+                "labs.dictation_style_choice",
+                "song",
+                &rules()
+            )
+            .unwrap_err()
+            .code,
+            "invalid-value"
+        );
         let change = apply(&settings, "ui_language", "none", &rules()).unwrap();
         assert_eq!(change.settings.ui_language, None);
         let change = apply(
@@ -1300,6 +1496,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn caps_lock_alone_needs_no_lab_on_windows_but_navigation_still_does() {
+        let rules = ShortcutRules {
+            key_named: |name| Ok(HotkeyKey::named(name)),
+            rule: |_, _| Ok(()),
+        };
+        let settings = AppSettings::default();
+        assert!(!settings.labs.standalone_special_keys);
+        for name in ["capslock", "caps_lock", "Caps Lock"] {
+            let result = apply(&settings, "dictation_hotkey", name, &rules);
+            if cfg!(target_os = "windows") {
+                let saved = result.unwrap().settings;
+                assert_eq!(format_hotkey(&saved.dictation_hotkey), "capslock");
+                let on = apply(&saved, "labs.standalone_special_keys", "on", &rules)
+                    .unwrap()
+                    .settings;
+                let off = apply(&on, "labs.standalone_special_keys", "off", &rules)
+                    .unwrap()
+                    .settings;
+                assert_eq!(off.dictation_hotkey, saved.dictation_hotkey);
+            } else {
+                assert_eq!(result.unwrap_err().code, "invalid-value");
+            }
+        }
+        for name in ["insert", "home", "end", "pageup", "pagedown"] {
+            let error = apply(&settings, "dictation_hotkey", name, &rules).unwrap_err();
+            assert_eq!(error.code, "invalid-value", "{name}");
+            if cfg!(target_os = "windows") {
+                assert!(error.message.contains("Special keys alone"), "{name}");
+                let on = apply(&settings, "labs.standalone_special_keys", "on", &rules)
+                    .unwrap()
+                    .settings;
+                let saved = apply(&on, "dictation_hotkey", name, &rules)
+                    .unwrap()
+                    .settings;
+                let off = apply(&saved, "labs.standalone_special_keys", "off", &rules)
+                    .unwrap()
+                    .settings;
+                assert_eq!(off.dictation_hotkey, HotkeyBinding::default(), "{name}");
+            }
+        }
+    }
+
     /// Issue 1050: § alone is a Linux shortcut only with Labs › Section key
     /// alone on, and turning the toggle off puts it back to the default.
     #[test]
@@ -1317,6 +1556,55 @@ mod tests {
         assert!(change.settings.dictation_hotkey.is_lone_section_key());
         assert_eq!(format_hotkey(&change.settings.dictation_hotkey), "§");
         let off = apply(&change.settings, "labs.section_key_alone", "off", &rules()).unwrap();
+        assert_eq!(off.settings.dictation_hotkey, HotkeyBinding::default());
+    }
+
+    /// Issue 181: any shortcut on the microphone (dictation) key needs Labs ›
+    /// Microphone key alone on macOS, with or without a modifier. Off, both
+    /// are refused pointing at the lab, and turning the toggle off puts a
+    /// saved one back to its default.
+    #[test]
+    fn the_microphone_key_needs_its_labs_toggle() {
+        let settings = AppSettings::default();
+        let without_toggle = apply(&settings, "dictation_hotkey", "microphone", &rules());
+        assert_eq!(without_toggle.unwrap_err().code, "invalid-value");
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let with_modifier = apply(&settings, "dictation_hotkey", "option+microphone", &rules());
+        let error = with_modifier.unwrap_err();
+        assert_eq!(error.code, "invalid-value");
+        assert!(error.message.contains("mic key"), "{}", error.message);
+        assert!(
+            error.message.contains("microphone-key"),
+            "{}",
+            error.message
+        );
+        for name in ["cancel_hotkey", "screenshots.hotkey"] {
+            let error = apply(&settings, name, "microphone", &rules()).unwrap_err();
+            assert_eq!(error.code, "invalid-value", "{name}");
+            assert!(error.message.contains("mic key"), "{}", error.message);
+        }
+        let on = apply(&settings, "labs.microphone_key", "on", &rules())
+            .unwrap()
+            .settings;
+        assert!(on.labs.microphone_key);
+        let change = apply(&on, "dictation_hotkey", "option+microphone", &rules()).unwrap();
+        assert!(change.settings.dictation_hotkey.uses_microphone_key());
+        assert_eq!(
+            format_hotkey(&change.settings.dictation_hotkey),
+            "option+mic"
+        );
+        // Screenshots never take it: their keys are read after Hex's session
+        // tap has taken the press.
+        let error = apply(&on, "screenshots.hotkey", "microphone", &rules()).unwrap_err();
+        assert_eq!(error.code, "invalid-value");
+        assert!(
+            error.message.contains("mic key") && error.message.contains("screenshot"),
+            "{}",
+            error.message
+        );
+        let off = apply(&change.settings, "labs.microphone_key", "off", &rules()).unwrap();
         assert_eq!(off.settings.dictation_hotkey, HotkeyBinding::default());
     }
 
@@ -1361,8 +1649,8 @@ mod tests {
         assert_eq!(change.settings.sound_effect_volume, 0.25);
     }
 
-    /// The Labs card and the key's help are constants, so they can't be
-    /// formatted from the grace; this keeps them saying it.
+    /// The key's help is a constant, so it can't be formatted from the
+    /// grace; this keeps it saying it.
     #[test]
     fn stop_when_call_ends_copy_names_the_grace() {
         let grace = format!(
@@ -1370,11 +1658,9 @@ mod tests {
             crate::meeting::detection::AUTO_STOP_GRACE.as_secs()
         );
         let key = keys()
-            .find(|key| key.key == "labs.stop_when_call_ends")
+            .find(|key| key.key == "meetings.stop_when_call_ends")
             .unwrap();
         assert!(key.about.contains(&grace), "{}", key.about);
-        let card = crate::labs::Feature::StopWhenCallEnds.description();
-        assert!(card.contains(&grace), "{card}");
     }
 
     #[test]
@@ -1666,7 +1952,7 @@ mod tests {
         assert_eq!(
             refused
                 .message
-                .contains("Labs › Double-tap on a lone modifier"),
+                .contains("Labs › Double-tap Option, Command, or Globe"),
             cfg!(target_os = "macos"),
             "{}",
             refused.message

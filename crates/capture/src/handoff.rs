@@ -119,10 +119,16 @@ pub fn reveal_path(target: &Path) -> Result<()> {
 }
 
 pub fn resolve_bundle_dir(path_or_id: &Path) -> Result<PathBuf> {
+    if path_or_id.is_absolute() {
+        return scrawl_router::bundle::resolve_bundle_dir_in(None, path_or_id);
+    }
     scrawl_router::bundle::resolve_bundle_dir_in(Some(&default_captures_dir()), path_or_id)
 }
 
 pub fn load_bundle(bundle_dir: &Path) -> Result<(PathBuf, ScrawlBundle)> {
+    if bundle_dir.is_absolute() {
+        return scrawl_router::bundle::load_bundle_in(None, bundle_dir);
+    }
     scrawl_router::bundle::load_bundle_in(Some(&default_captures_dir()), bundle_dir)
 }
 
@@ -167,40 +173,44 @@ impl Clipboard for SystemClipboard {
 
 #[cfg(target_os = "macos")]
 pub fn copy_string_to_clipboard(content: &str) -> Result<()> {
-    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
-    use objc2_foundation::{NSArray, NSString};
+    objc2::rc::autoreleasepool(|_| {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+        use objc2_foundation::{NSArray, NSString};
 
-    let text = NSString::from_str(content);
-    let pasteboard = NSPasteboard::generalPasteboard();
-    unsafe {
-        let types = NSArray::from_slice(&[NSPasteboardTypeString]);
-        pasteboard.clearContents();
-        pasteboard.declareTypes_owner(&types, None);
-        ensure!(
-            pasteboard.setString_forType(&text, NSPasteboardTypeString),
-            "Could not copy text to clipboard"
-        );
-    }
-    Ok(())
+        let text = NSString::from_str(content);
+        let pasteboard = NSPasteboard::generalPasteboard();
+        unsafe {
+            let types = NSArray::from_slice(&[NSPasteboardTypeString]);
+            pasteboard.clearContents();
+            pasteboard.declareTypes_owner(&types, None);
+            ensure!(
+                pasteboard.setString_forType(&text, NSPasteboardTypeString),
+                "Could not copy text to clipboard"
+            );
+        }
+        Ok(())
+    })
 }
 
 #[cfg(target_os = "macos")]
 pub fn copy_png_to_clipboard(png_bytes: &[u8]) -> Result<()> {
-    use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
-    use objc2_foundation::{NSArray, NSData};
+    objc2::rc::autoreleasepool(|_| {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
+        use objc2_foundation::{NSArray, NSData};
 
-    let data = NSData::with_bytes(png_bytes);
-    let pasteboard = NSPasteboard::generalPasteboard();
-    unsafe {
-        let types = NSArray::from_slice(&[NSPasteboardTypePNG]);
-        pasteboard.clearContents();
-        pasteboard.declareTypes_owner(&types, None);
-        ensure!(
-            pasteboard.setData_forType(Some(&data), NSPasteboardTypePNG),
-            "Could not copy PNG image to clipboard"
-        );
-    }
-    Ok(())
+        let data = NSData::with_bytes(png_bytes);
+        let pasteboard = NSPasteboard::generalPasteboard();
+        unsafe {
+            let types = NSArray::from_slice(&[NSPasteboardTypePNG]);
+            pasteboard.clearContents();
+            pasteboard.declareTypes_owner(&types, None);
+            ensure!(
+                pasteboard.setData_forType(Some(&data), NSPasteboardTypePNG),
+                "Could not copy PNG image to clipboard"
+            );
+        }
+        Ok(())
+    })
 }
 
 /// `path` alone on the clipboard, as a file URL, so a paste into Finder, an

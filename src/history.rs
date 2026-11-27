@@ -4,11 +4,12 @@
 //! History is a product record, deliberately separate from the diagnostic
 //! Activity event stream. Entries hold text and bounded metadata; audio is
 //! kept only while Labs › Keep recordings is on ([`recordings`]), as a file
-//! per entry that follows the entry's retention plus its own byte cap. Every
-//! retention choice remains subject to hard entry and byte caps, writes are
-//! atomic, and files are owner-only.
+//! per entry that follows the entry's retention plus its own byte cap. Labs ›
+//! Dictation stats keeps a separate daily rollup ([`usage`]) with counts but
+//! no text, so it can outlive the retention window. Every retention
+//! choice remains subject to hard entry and byte caps, writes are atomic, and
+//! files are owner-only.
 
-use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -21,9 +22,14 @@ use serde::{Deserialize, Serialize};
 #[cfg(hex_capture)]
 pub mod annotations;
 pub mod captures;
+#[cfg(target_os = "macos")]
+pub(crate) mod paste_source;
 pub mod playback;
 pub mod recordings;
 pub mod stats;
+#[cfg(all(target_os = "macos", hex_capture))]
+pub(crate) mod timeline;
+pub mod usage;
 pub mod versions;
 
 pub use recordings::Recording;
@@ -82,6 +88,18 @@ impl HistoryRetention {
     }
 }
 
+/// How a retained history entry may be reused by Paste Last or Copy Recent Dictations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PasteReuse {
+    /// Reusable as Paste Last, Copy Recent Dictation, and in the Paste Last picker.
+    Paste,
+    /// Cancelled dictation whose local words were kept: excluded from Paste Last
+    /// and Copy Recent Dictation, but shown flagged and pickable in the picker.
+    CancelledRecovery,
+    /// Not reusable (retention off, expired, Printed/VoiceAction, or blank).
+    None,
+}
+
 /// Which successful output produced an entry.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,6 +131,9 @@ pub type HistoryProcessing = crate::desktop::events::DictationProcessing;
 /// One retained successful result.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct HistoryEntry {
+    /// The local transcript of a deliberate cancel. Never inserted automatically.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cancelled: bool,
     pub id: u64,
     pub timestamp_ms: u64,
     pub kind: HistoryKind,
@@ -130,11 +151,6 @@ pub struct HistoryEntry {
     pub inference_ms: u64,
     #[serde(default)]
     pub total_ms: u64,
-    /// Stable source identity for imported entries. It keeps a repeated
-    /// migration from creating duplicates while leaving normal dictations
-    /// without an external identity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
     /// The size of this entry's kept audio (Labs › Keep recordings); 0
     /// when it has none.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -167,7 +183,6 @@ impl HistoryEntry {
     fn text_bytes(&self) -> usize {
         self.raw_text.len()
             + self.final_text.len()
-            + self.source.as_ref().map_or(0, String::len)
             + self
                 .versions
                 .iter()
@@ -256,7 +271,7 @@ pub fn read_snapshot(path: &std::path::Path) -> io::Result<Vec<HistoryEntry>> {
     use std::io::Read;
     // Text can expand sixfold when JSON-escaped, plus bounded metadata.
     const MAX_FILE_BYTES: u64 = (MAX_TOTAL_TEXT_BYTES * 6
-        + MAX_ENTRIES * (6 * (4 * MAX_LABEL_BYTES + MAX_FALLBACK_BYTES) + 1_024))
+        + MAX_ENTRIES * (6 * (2 * MAX_LABEL_BYTES + MAX_FALLBACK_BYTES) + 1_024))
         as u64;
     let file = match fs::File::open(path) {
         Ok(file) => file,
@@ -277,9 +292,15 @@ pub fn read_snapshot(path: &std::path::Path) -> io::Result<Vec<HistoryEntry>> {
 
 /// Owner-only bounded history store. Entries are held oldest-first.
 pub struct HistoryStore {
+    #[cfg(all(target_os = "macos", hex_capture))]
+    cancel_generation: u64,
+    #[cfg(target_os = "macos")]
+    recovery: Option<paste_source::Recovery>,
     path: PathBuf,
     /// Labs › Keep recordings' audio, one file per entry.
     recordings: PathBuf,
+    /// Labs › Dictation stats' daily rollup, beside the store.
+    usage: PathBuf,
     recording_cap: u64,
     entries: Vec<HistoryEntry>,
     next_id: u64,
@@ -307,7 +328,12 @@ impl HistoryStore {
     /// being silently destroyed.
     pub fn open(path: PathBuf, retention: HistoryRetention, now_ms: u64) -> Self {
         let mut store = Self {
+            #[cfg(all(target_os = "macos", hex_capture))]
+            cancel_generation: 0,
+            #[cfg(target_os = "macos")]
+            recovery: None,
             recordings: recordings::directory(&path),
+            usage: usage::path(&path),
             recording_cap: recordings::MAX_RECORDING_BYTES,
             path,
             entries: Vec::new(),
@@ -327,9 +353,7 @@ impl HistoryStore {
                         .next_id
                         .max(max_entry_id.map_or(1, |id| id.saturating_add(1)));
                     store.entries = loaded.entries;
-                    store
-                        .entries
-                        .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
+                    store.entries.sort_by_key(|entry| entry.id);
                 }
                 Ok(loaded) => {
                     tracing::warn!(version = loaded.version, "unsupported history version");
@@ -378,8 +402,7 @@ impl HistoryStore {
             .max(loaded.next_id)
             .max(max_entry_id.map_or(1, |id| id.saturating_add(1)));
         self.entries = loaded.entries;
-        self.entries
-            .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
+        self.entries.sort_by_key(|entry| entry.id);
         self.touch();
     }
 
@@ -406,9 +429,25 @@ impl HistoryStore {
     /// Record one successful result. Returns the stable entry ID, or `None`
     /// while retention is off.
     pub fn record(&mut self, draft: HistoryDraft, now_ms: u64) -> io::Result<Option<u64>> {
+        self.record_result(draft, now_ms, false)
+    }
+
+    fn record_result(
+        &mut self,
+        draft: HistoryDraft,
+        now_ms: u64,
+        cancelled: bool,
+    ) -> io::Result<Option<u64>> {
         if self.retention.is_off() {
             return Ok(None);
         }
+        let words = draft.final_text.split_whitespace().count() as u64;
+        let audio_ms = draft.audio_ms;
+        // The rollup's first write seeds itself from what History still
+        // retains, so enabling Labs › Dictation stats doesn't make the
+        // dialog's totals drop. The new entry is added after, exactly once.
+        let yearly = crate::labs::history_stats();
+        let seed = (yearly && !self.usage.exists()).then(|| self.usage_seed(now_ms));
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         let recording_bytes = draft.recording.as_ref().map_or(0, |recording| {
@@ -418,6 +457,7 @@ impl HistoryStore {
             })
         });
         self.entries.push(HistoryEntry {
+            cancelled,
             id,
             timestamp_ms: now_ms,
             kind: draft.kind,
@@ -429,6 +469,9 @@ impl HistoryStore {
             processing: draft.processing.map(|processing| HistoryProcessing {
                 profile: truncated(&processing.profile, MAX_LABEL_BYTES),
                 latency_ms: processing.latency_ms,
+                model: processing
+                    .model
+                    .map(|model| truncated(&model, MAX_LABEL_BYTES)),
                 fallback: processing
                     .fallback
                     .map(|fallback| truncated(&fallback, MAX_FALLBACK_BYTES)),
@@ -436,75 +479,62 @@ impl HistoryStore {
             audio_ms: draft.audio_ms,
             inference_ms: draft.inference_ms,
             total_ms: draft.total_ms,
-            source: None,
             recording_bytes,
             model: draft.model.map(|model| truncated(&model, MAX_LABEL_BYTES)),
             language: None,
             text_ms: None,
             versions: Vec::new(),
         });
-        self.entries
-            .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
         self.prune(now_ms);
         self.persist()?;
+        // Labs › Dictation stats: a daily rollup that outlives retention. It
+        // holds no text or applications, and never fails a record: capture
+        // and paste never wait on this file.
+        if yearly {
+            self.note_usage(seed, now_ms, words, audio_ms);
+        }
+        #[cfg(target_os = "macos")]
+        if self
+            .entries
+            .last()
+            .is_some_and(|e| e.id == id && self.paste_reuse(e, now_ms) == PasteReuse::Paste)
+        {
+            self.recovery = None;
+        }
         Ok(Some(id))
     }
 
-    /// Merge entries from an external history, using each entry's source as
-    /// its idempotency key. Imported records get fresh local ids and use the
-    /// same retention and size limits as new dictations.
-    pub fn import(
-        &mut self,
-        imported: impl IntoIterator<Item = HistoryEntry>,
-        now_ms: u64,
-    ) -> io::Result<usize> {
-        if self.retention.is_off() {
-            return Ok(0);
-        }
-        let cutoff = self
-            .retention
-            .max_age_ms()
-            .map(|age| now_ms.saturating_sub(age));
-        let mut known: HashSet<String> = self
-            .entries
-            .iter()
-            .filter_map(|entry| entry.source.clone())
-            .collect();
-        let first_id = self.next_id;
-        let mut added = 0;
-        for mut entry in imported {
-            let Some(source) = entry.source.as_deref().filter(|source| !source.is_empty()) else {
-                continue;
-            };
-            let source = truncated(source, MAX_LABEL_BYTES);
-            if cutoff.is_some_and(|cutoff| entry.timestamp_ms < cutoff)
-                || !known.insert(source.clone())
-            {
-                continue;
+    /// Every retained entry as a fresh rollup, for its first write.
+    fn usage_seed(&self, now_ms: u64) -> usage::Usage {
+        let cutoff = self.retention.cutoff(now_ms);
+        let mut seed = usage::Usage::default();
+        for entry in &self.entries {
+            if cutoff.is_none_or(|cutoff| entry.timestamp_ms >= cutoff) {
+                seed.add(
+                    stats::local_day(entry.timestamp_ms),
+                    stats::local_hour(entry.timestamp_ms),
+                    entry.final_text.split_whitespace().count() as u64,
+                    entry.audio_ms,
+                );
             }
-            entry.source = Some(source);
-            entry.bound_import_text();
-            entry.recording_bytes = 0;
-            entry.application = entry
-                .application
-                .map(|label| truncated(&label, MAX_LABEL_BYTES));
-            entry.id = self.next_id;
-            self.next_id = self.next_id.saturating_add(1);
-            self.entries.push(entry);
-            added += 1;
         }
-        if added == 0 {
-            return Ok(0);
+        seed
+    }
+
+    /// Adds this entry to the rollup, seeded when the file was missing. A
+    /// failure is logged and ignored.
+    fn note_usage(&self, seed: Option<usage::Usage>, now_ms: u64, words: u64, audio_ms: u64) {
+        let today = stats::local_day(now_ms);
+        let result = match seed {
+            Some(mut usage) => {
+                usage.add(today, stats::local_hour(now_ms), words, audio_ms);
+                usage.save(&self.usage, today)
+            }
+            None => usage::count(&self.usage, now_ms, words, audio_ms),
+        };
+        if let Err(error) = result {
+            tracing::warn!(%error, "could not record the usage rollup");
         }
-        self.entries
-            .sort_by_key(|entry| (entry.timestamp_ms, entry.id));
-        self.prune(now_ms);
-        self.persist()?;
-        Ok(self
-            .entries
-            .iter()
-            .filter(|entry| entry.id >= first_id)
-            .count())
     }
 
     /// Delete one entry. Returns whether it existed.
@@ -598,17 +628,44 @@ impl HistoryStore {
             .map(|_| recordings::path(&self.recordings, id))
     }
 
-    /// Delete every entry. A failed save keeps them, so the clear can be
-    /// retried.
+    /// Entry `id`'s kept recording, when it kept one and the file is still
+    /// there (Labs › Copy dictation audio).
+    pub fn saved_recording(&self, id: u64) -> Option<PathBuf> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .and_then(|entry| recordings::saved(&self.recordings, entry))
+    }
+
+    /// The newest entry that kept its audio and still has the file within
+    /// `now_ms`'s retention, if any (Labs › Copy dictation audio's menu and
+    /// tray item).
+    pub fn newest_recording(&self, now_ms: u64) -> Option<PathBuf> {
+        let cutoff = self.retention.cutoff(now_ms);
+        self.entries()
+            .filter(|entry| cutoff.is_none_or(|cutoff| entry.timestamp_ms >= cutoff))
+            .find_map(|entry| recordings::saved(&self.recordings, entry))
+    }
+
+    /// Delete every entry, and the Labs › Dictation stats rollup with them. A
+    /// failed save keeps the entries, so the clear can be retried.
     pub fn clear(&mut self) -> io::Result<()> {
-        if self.entries.is_empty() && !self.prune_pending {
-            return Ok(());
+        #[cfg(all(target_os = "macos", hex_capture))]
+        {
+            self.cancel_generation += 1;
         }
-        let entries = std::mem::take(&mut self.entries);
-        if let Err(error) = self.persist() {
-            self.entries = entries;
-            return Err(error);
+        #[cfg(target_os = "macos")]
+        {
+            self.recovery = None;
         }
+        if !self.entries.is_empty() || self.prune_pending {
+            let entries = std::mem::take(&mut self.entries);
+            if let Err(error) = self.persist() {
+                self.entries = entries;
+                return Err(error);
+            }
+        }
+        usage::clear(&self.usage);
         Ok(())
     }
 
@@ -620,6 +677,14 @@ impl HistoryStore {
             return Ok(());
         }
         self.retention = retention;
+        #[cfg(all(target_os = "macos", hex_capture))]
+        {
+            self.cancel_generation += 1;
+        }
+        #[cfg(target_os = "macos")]
+        if retention.is_off() {
+            self.recovery = None;
+        }
         self.touch();
         if self.prune(now_ms) {
             self.persist()?;
@@ -630,6 +695,27 @@ impl HistoryStore {
     /// All entries, newest first.
     pub fn entries(&self) -> impl Iterator<Item = &HistoryEntry> {
         self.entries.iter().rev()
+    }
+
+    /// Where Labs › Dictation stats keeps its daily rollup.
+    pub fn usage_path(&self) -> &std::path::Path {
+        &self.usage
+    }
+
+    /// Whether a Labs › Dictation stats rollup file exists, even with no
+    /// retained entries: Clear all history must still be able to delete it.
+    pub fn has_usage(&self) -> bool {
+        self.usage.exists()
+    }
+
+    /// The daily rollup, bounded to its most recent days.
+    pub fn usage(&self) -> usage::Usage {
+        self.usage_at(now_ms())
+    }
+
+    /// [`Self::usage`] at an explicit time, whose local day bounds the days.
+    pub fn usage_at(&self, now_ms: u64) -> usage::Usage {
+        usage::Usage::load(self.usage_path(), stats::local_day(now_ms))
     }
 
     #[cfg(test)]
@@ -655,18 +741,35 @@ impl HistoryStore {
             .collect()
     }
 
+    /// Single source of truth for whether `entry` is reusable for Paste Last
+    /// or Copy Recent Dictations at `now_ms`.
+    pub(crate) fn paste_reuse(&self, entry: &HistoryEntry, now_ms: u64) -> PasteReuse {
+        if self.retention.is_off()
+            || !self
+                .retention
+                .cutoff(now_ms)
+                .is_none_or(|cutoff| entry.timestamp_ms >= cutoff)
+            || !matches!(
+                entry.kind,
+                HistoryKind::Dictation | HistoryKind::Raw | HistoryKind::Send
+            )
+            || entry.final_text.trim().is_empty()
+        {
+            return PasteReuse::None;
+        }
+        if entry.cancelled {
+            PasteReuse::CancelledRecovery
+        } else {
+            PasteReuse::Paste
+        }
+    }
+
     /// The newest `count` entries within retention that a paste could
-    /// reuse: never a printed one or one with no text, as Paste Last.
+    /// reuse: never a printed, voice-action, cancelled, or blank one.
     /// Nothing while retention is Off.
     pub fn recent(&self, count: usize, now_ms: u64) -> Vec<&HistoryEntry> {
-        if self.retention.is_off() {
-            return Vec::new();
-        }
-        let cutoff = self.retention.cutoff(now_ms);
         self.entries()
-            .filter(|entry| cutoff.is_none_or(|cutoff| entry.timestamp_ms >= cutoff))
-            .filter(|entry| entry.kind != HistoryKind::Printed)
-            .filter(|entry| !entry.final_text.trim().is_empty())
+            .filter(|entry| self.paste_reuse(entry, now_ms) == PasteReuse::Paste)
             .take(count)
             .collect()
     }
@@ -848,6 +951,30 @@ impl History {
         self.synced().recording_path(id)
     }
 
+    /// Labs › Dictation stats' daily rollup, read from disk (the caller
+    /// gates it on the lab).
+    pub fn usage(&self) -> usage::Usage {
+        self.synced().usage()
+    }
+
+    /// Whether a Labs › Dictation stats rollup file exists, even with no
+    /// retained entries.
+    pub fn has_usage(&self) -> bool {
+        self.synced().has_usage()
+    }
+
+    /// Entry `id`'s kept recording, when the file is still there
+    /// ([`HistoryStore::saved_recording`]).
+    pub fn saved_recording(&self, id: u64) -> Option<PathBuf> {
+        self.synced().saved_recording(id)
+    }
+
+    /// The newest entry's kept recording within `now_ms`'s retention, when
+    /// the file is still there ([`HistoryStore::newest_recording`]).
+    pub fn newest_recording(&self, now_ms: u64) -> Option<PathBuf> {
+        self.synced().newest_recording(now_ms)
+    }
+
     pub fn set_retention(&self, retention: HistoryRetention) -> io::Result<()> {
         self.synced().set_retention(retention, now_ms())
     }
@@ -884,12 +1011,14 @@ impl History {
             .collect()
     }
 
-    /// The text entry `id` inserted, if it is still retained.
+    /// The text entry `id` inserted, if it is still reusable under retention.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn final_text(&self, id: u64) -> Option<String> {
-        self.synced()
+        let now = now_ms();
+        let store = self.synced();
+        store
             .entries()
-            .find(|entry| entry.id == id)
+            .find(|entry| entry.id == id && store.paste_reuse(entry, now) == PasteReuse::Paste)
             .map(|entry| entry.final_text.clone())
     }
 
@@ -940,6 +1069,7 @@ mod tests {
             processing: Some(HistoryProcessing {
                 profile: "Messages".into(),
                 latency_ms: 120,
+                model: Some("anthropic/claude-haiku-4-5".into()),
                 fallback: None,
             }),
             audio_ms: 900,
@@ -1025,6 +1155,29 @@ mod tests {
     }
 
     #[test]
+    fn the_newest_kept_recording_skips_entries_without_audio_or_without_the_file() {
+        let path = temp_path("newest-recording");
+        let mut store = HistoryStore::open(path, HistoryRetention::Day, 0);
+        assert!(store.newest_recording(0).is_none());
+        let older = store.record(recorded("older"), 1_000).unwrap().unwrap();
+        let plain = store.record(draft("plain"), 2_000).unwrap().unwrap();
+        assert_eq!(store.saved_recording(plain), None);
+        assert_eq!(store.newest_recording(3_000), store.recording_path(older));
+        let newest = store.record(recorded("newest"), 3_000).unwrap().unwrap();
+        assert_eq!(store.newest_recording(4_000), store.recording_path(newest));
+        // A file deleted behind the store's back is skipped, not copied.
+        fs::remove_file(store.recording_path(newest).unwrap()).unwrap();
+        assert_eq!(store.newest_recording(4_000), store.recording_path(older));
+        // Retention applies: exactly at the cutoff remains, past it nothing.
+        let day = HistoryRetention::Day.max_age_ms().unwrap();
+        assert_eq!(
+            store.newest_recording(1_000 + day),
+            store.recording_path(older)
+        );
+        assert_eq!(store.newest_recording(1_000 + day + 1), None);
+    }
+
+    #[test]
     fn a_kept_recording_is_an_owner_only_wav_that_reads_back() {
         let path = temp_path("recording");
         let mut store = HistoryStore::open(path.clone(), HistoryRetention::Week, 0);
@@ -1107,111 +1260,6 @@ mod tests {
         assert!(store.entry(second).unwrap().has_recording());
         assert!(store.entry(third).unwrap().has_recording());
         assert_eq!(recording_ids(&path), [second, third]);
-    }
-
-    #[test]
-    fn imported_identity_survives_transcript_versions_and_repeated_imports() {
-        let path = temp_path("import-versions");
-        let mut store = HistoryStore::open(path.clone(), HistoryRetention::Forever, 0);
-        let native = store.record(draft("native"), 5_000).unwrap().unwrap();
-        let mut imported = store.entry(native).unwrap().clone();
-        imported.id = 0;
-        imported.timestamp_ms = 1_000;
-        imported.source = Some("superwhisper:fixture".into());
-        let revision = store.revision(6_000);
-        assert_eq!(store.import([imported.clone()], 6_000).unwrap(), 1);
-        assert!(store.revision(6_000) > revision);
-        let imported_id = store.entries[0].id;
-        assert_eq!(store.entries[0].timestamp_ms, 1_000);
-        assert_eq!(store.entries[1].timestamp_ms, 5_000);
-        assert!(
-            store
-                .replace_text(
-                    imported_id,
-                    Transcript {
-                        text: "Updated transcript".into(),
-                        model: Some("fixture-model".into()),
-                        language: Some("en".into()),
-                    },
-                    7_000
-                )
-                .unwrap()
-        );
-        assert_eq!(store.import([imported], 8_000).unwrap(), 0);
-        let reopened = HistoryStore::open(path, HistoryRetention::Forever, 8_000);
-        let entry = reopened.entry(imported_id).unwrap();
-        assert_eq!(entry.source.as_deref(), Some("superwhisper:fixture"));
-        assert_eq!(entry.timestamp_ms, 1_000);
-        assert_eq!(entry.model.as_deref(), Some("fixture-model"));
-        assert_eq!(entry.versions.len(), 1);
-        assert_eq!(reopened.entries.len(), 2);
-    }
-
-    #[test]
-    fn imported_text_versions_are_bounded_and_cannot_claim_unmapped_audio() {
-        let path = temp_path("import-bounds");
-        let mut store = HistoryStore::open(path.clone(), HistoryRetention::Forever, 0);
-        let native = store.record(draft("native"), 0).unwrap().unwrap();
-        let mut entry = store.entry(native).unwrap().clone();
-        entry.source = Some("import:bounded".into());
-        entry.recording_bytes = u64::MAX;
-        entry.model = Some("m".repeat(1_000));
-        entry.language = Some("l".repeat(1_000));
-        entry.versions = vec![
-            HistoryVersion {
-                raw_text: "é".repeat(MAX_TEXT_BYTES),
-                final_text: "é".repeat(MAX_TEXT_BYTES),
-                processing: Some(HistoryProcessing {
-                    profile: "p".repeat(1_000),
-                    latency_ms: 0,
-                    fallback: Some("f".repeat(2_000)),
-                }),
-                model: Some("m".repeat(1_000)),
-                language: Some("l".repeat(1_000)),
-                timestamp_ms: 0,
-            };
-            versions::MAX_VERSIONS + 2
-        ];
-        assert_eq!(store.import([entry], 0).unwrap(), 1);
-        let reopened = HistoryStore::open(path, HistoryRetention::Forever, 0);
-        let saved = reopened
-            .entries
-            .iter()
-            .find(|entry| entry.source.is_some())
-            .unwrap();
-        assert!(!saved.has_recording());
-        assert_eq!(saved.model.as_ref().unwrap().len(), MAX_LABEL_BYTES);
-        assert_eq!(saved.language.as_ref().unwrap().len(), MAX_LABEL_BYTES);
-        assert_eq!(saved.versions.len(), versions::MAX_VERSIONS);
-        for version in &saved.versions {
-            assert_eq!(version.raw_text, "é".repeat(MAX_TEXT_BYTES / 2));
-            assert_eq!(version.final_text, "é".repeat(MAX_TEXT_BYTES / 2));
-            assert_eq!(version.model.as_ref().unwrap().len(), MAX_LABEL_BYTES);
-            assert_eq!(version.language.as_ref().unwrap().len(), MAX_LABEL_BYTES);
-            let processing = version.processing.as_ref().unwrap();
-            assert_eq!(processing.profile.len(), MAX_LABEL_BYTES);
-            assert_eq!(
-                processing.fallback.as_ref().unwrap().len(),
-                MAX_FALLBACK_BYTES
-            );
-        }
-    }
-
-    #[test]
-    fn import_reports_only_entries_that_survive_retention_caps() {
-        let path = temp_path("import-count");
-        let mut store = HistoryStore::open(path, HistoryRetention::Forever, 0);
-        let native = store.record(draft("native"), 0).unwrap().unwrap();
-        let entry = store.entry(native).unwrap().clone();
-        let imported = (0..=MAX_ENTRIES).map(|n| {
-            let mut entry = entry.clone();
-            entry.source = Some(format!("fixture:{n}"));
-            entry.timestamp_ms = 1;
-            entry
-        });
-        assert_eq!(store.import(imported, 0).unwrap(), MAX_ENTRIES);
-        assert_eq!(store.entries.len(), MAX_ENTRIES);
-        assert!(store.entries.iter().all(|entry| entry.source.is_some()));
     }
 
     #[test]
@@ -1679,6 +1727,150 @@ mod tests {
     }
 
     #[test]
+    fn paste_reuse_unifies_recent_final_text_and_paste_source_rules() {
+        let path = temp_path("paste-reuse");
+        let now = now_ms();
+        let mut store = HistoryStore::open(path, HistoryRetention::Day, now);
+        let dict_id = store.record(draft("dictated"), now).unwrap().unwrap();
+        let raw_id = store
+            .record(
+                HistoryDraft {
+                    kind: HistoryKind::Raw,
+                    ..draft("raw")
+                },
+                now + 1,
+            )
+            .unwrap()
+            .unwrap();
+        let send_id = store
+            .record(
+                HistoryDraft {
+                    kind: HistoryKind::Send,
+                    ..draft("sent")
+                },
+                now + 2,
+            )
+            .unwrap()
+            .unwrap();
+        let voice_action_id = store
+            .record(
+                HistoryDraft {
+                    kind: HistoryKind::VoiceAction,
+                    ..draft("action")
+                },
+                now + 3,
+            )
+            .unwrap()
+            .unwrap();
+        let printed_id = store
+            .record(
+                HistoryDraft {
+                    kind: HistoryKind::Printed,
+                    ..draft("printed")
+                },
+                now + 4,
+            )
+            .unwrap()
+            .unwrap();
+        let cancelled_id = store
+            .record_result(draft("cancelled words"), now + 5, true)
+            .unwrap()
+            .unwrap();
+
+        let check = now + 6;
+        assert_eq!(
+            store.paste_reuse(store.entry(dict_id).unwrap(), check),
+            PasteReuse::Paste
+        );
+        assert_eq!(
+            store.paste_reuse(store.entry(raw_id).unwrap(), check),
+            PasteReuse::Paste
+        );
+        assert_eq!(
+            store.paste_reuse(store.entry(send_id).unwrap(), check),
+            PasteReuse::Paste
+        );
+        assert_eq!(
+            store.paste_reuse(store.entry(voice_action_id).unwrap(), check),
+            PasteReuse::None
+        );
+        assert_eq!(
+            store.paste_reuse(store.entry(printed_id).unwrap(), check),
+            PasteReuse::None
+        );
+        assert_eq!(
+            store.paste_reuse(store.entry(cancelled_id).unwrap(), check),
+            PasteReuse::CancelledRecovery
+        );
+
+        let recent_ids: Vec<_> = store.recent(10, check).into_iter().map(|e| e.id).collect();
+        assert_eq!(recent_ids, [send_id, raw_id, dict_id]);
+
+        #[cfg(target_os = "macos")]
+        {
+            let picker_ids: Vec<_> = store
+                .paste_rows(10, check)
+                .into_iter()
+                .map(|row| (row.id, row.cancelled))
+                .collect();
+            assert_eq!(
+                picker_ids,
+                [
+                    (paste_source::Id::Retained(cancelled_id), true),
+                    (paste_source::Id::Retained(send_id), false),
+                    (paste_source::Id::Retained(raw_id), false),
+                    (paste_source::Id::Retained(dict_id), false),
+                ]
+            );
+            assert_eq!(
+                store.resolve_paste(paste_source::Id::Retained(voice_action_id), check),
+                None
+            );
+            assert_eq!(
+                store.resolve_paste(paste_source::Id::Retained(cancelled_id), check),
+                Some("cancelled words")
+            );
+        }
+
+        let history = History::new(store);
+        assert_eq!(history.final_text(dict_id).as_deref(), Some("dictated"));
+        assert_eq!(history.final_text(voice_action_id), None);
+        assert_eq!(history.final_text(printed_id), None);
+        assert_eq!(history.final_text(cancelled_id), None);
+        history.set_retention(HistoryRetention::Off).unwrap();
+        assert_eq!(history.final_text(dict_id), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_paste_appears_once_and_clear_invalidates_even_a_selected_session_row() {
+        let path = temp_path("paste-source");
+        let mut store = HistoryStore::open(path.clone(), HistoryRetention::Day, 100);
+        let older = store.record(draft("older"), 100).unwrap().unwrap();
+        let before = fs::read(&path).unwrap();
+        store.recover_paste(
+            crate::dictation::paste_last::LastDictation::new("could not insert".into(), false),
+            101,
+        );
+        let rows = store.paste_rows(8, 102);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            store.resolve_paste(rows[0].id, 102),
+            Some("could not insert")
+        );
+        assert_eq!(rows[1].id, paste_source::Id::Retained(older));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            HistoryStore::open(path, HistoryRetention::Day, 102)
+                .paste_rows(8, 102)
+                .len(),
+            1
+        );
+        store.clear().unwrap();
+        assert_eq!(store.resolve_paste(rows[0].id, 102), None);
+    }
+
+    #[test]
     fn clear_removes_everything_durably() {
         let path = temp_path("clear");
         let mut store = HistoryStore::open(path.clone(), HistoryRetention::Week, 0);
@@ -1689,6 +1881,104 @@ mod tests {
         assert_eq!(store.len(), 0);
         let reopened = HistoryStore::open(path, HistoryRetention::Week, 3_000);
         assert_eq!(reopened.len(), 0);
+    }
+
+    /// Turns Labs › Dictation stats on for one test, and back off after.
+    struct DictationStats;
+
+    /// Serializes the tests that turn the global Labs gate on, so one can't
+    /// observe another's switch.
+    static STATS_LABS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    impl DictationStats {
+        fn on() -> Self {
+            crate::labs::apply(&crate::app_settings::LabsSettings {
+                history_stats: true,
+                ..crate::app_settings::LabsSettings::default()
+            });
+            Self
+        }
+    }
+
+    impl Drop for DictationStats {
+        fn drop(&mut self) {
+            crate::labs::apply(&crate::app_settings::LabsSettings::default());
+        }
+    }
+
+    #[test]
+    fn dictation_stats_rolls_every_recorded_day_up_and_clear_removes_it() {
+        let _lock = STATS_LABS.lock().unwrap_or_else(|error| error.into_inner());
+        let _labs = DictationStats::on();
+        assert!(crate::labs::history_stats(), "the gate is on for the test");
+        let path = temp_path("usage-rollup");
+        let day_ms = HistoryRetention::Day.max_age_ms().unwrap();
+        let mut store = HistoryStore::open(path.clone(), HistoryRetention::Day, 0);
+        store.record(draft("one two"), 1_000).unwrap();
+        // A day later the first entry is pruned from History, while the
+        // rollup still holds both days.
+        store.record(draft("three"), 1_000 + day_ms).unwrap();
+        assert!(
+            store.usage_path().exists(),
+            "the rollup exists at {}",
+            store.usage_path().display()
+        );
+        let usage = store.usage_at(1_000 + day_ms);
+        assert_eq!(usage.dictations(), 2);
+        assert_eq!(usage.words(), 3);
+        assert_eq!(usage.days().len(), 2);
+        assert_eq!(store.len(), 2);
+
+        store.clear().unwrap();
+        assert!(!store.usage_path().exists());
+        assert_eq!(store.usage().dictations(), 0);
+    }
+
+    #[test]
+    fn history_off_records_no_usage_rollup() {
+        let _lock = STATS_LABS.lock().unwrap_or_else(|error| error.into_inner());
+        let _labs = DictationStats::on();
+        let path = temp_path("usage-off");
+        let mut store = HistoryStore::open(path, HistoryRetention::Off, 0);
+        assert_eq!(store.record(draft("one two"), 1_000).unwrap(), None);
+        assert!(
+            !store.usage_path().exists(),
+            "retention Off keeps nothing, rollup included"
+        );
+    }
+
+    #[test]
+    fn the_first_rollup_write_seeds_itself_from_retained_history_once() {
+        let _lock = STATS_LABS.lock().unwrap_or_else(|error| error.into_inner());
+        crate::labs::apply(&crate::app_settings::LabsSettings::default());
+        let path = temp_path("usage-seed");
+        let day_ms = HistoryRetention::Day.max_age_ms().unwrap();
+        let mut store = HistoryStore::open(path, HistoryRetention::Day, 0);
+        // Two entries while the lab is off: History has them, the rollup
+        // does not exist yet.
+        store.record(draft("one two three"), 1_000).unwrap();
+        store.record(draft("four five"), day_ms / 2).unwrap();
+        assert!(!store.usage_path().exists());
+
+        // The lab turns on, and the next record seeds from both retained
+        // entries and adds itself once.
+        let _labs = DictationStats::on();
+        store.record(draft("six seven"), day_ms + 1_000).unwrap();
+        let usage = store.usage_at(day_ms + 1_000);
+        assert_eq!(usage.dictations(), 3);
+        assert_eq!(usage.words(), 7);
+        assert_eq!(usage.audio_ms(), 2_700);
+        assert_eq!(usage.days().len(), 2);
+    }
+
+    #[test]
+    fn clear_removes_a_rollup_even_with_no_entries() {
+        let path = temp_path("usage-clear-empty");
+        let mut store = HistoryStore::open(path.clone(), HistoryRetention::Week, 0);
+        crate::history::usage::count(&crate::history::usage::path(&path), 1_000, 5, 1_000).unwrap();
+        assert!(store.has_usage());
+        store.clear().unwrap();
+        assert!(!store.has_usage());
     }
 
     #[test]

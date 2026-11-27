@@ -14,6 +14,8 @@
 //! Ported from Scrawl's Rune capsule (`scrawl-pill-lab`, `rune_pill`); its
 //! colours are the OpenCode theme's, so it follows the system appearance.
 
+mod always_view;
+mod dock;
 pub(crate) mod feed;
 pub(crate) mod flow;
 pub(crate) mod ink;
@@ -22,13 +24,17 @@ pub(crate) mod notch;
 pub(crate) mod picker;
 #[cfg(target_os = "macos")]
 pub(crate) mod playground;
+#[cfg(target_os = "macos")]
+pub(crate) mod recording_dim;
 pub(crate) mod surface;
+#[cfg(target_os = "macos")]
+pub(crate) mod toolbar;
 pub(crate) mod tuning;
 mod undo_ring;
 mod view;
 
-// Its scenes and goldens are macOS's chips and labels.
-#[cfg(all(test, target_os = "macos"))]
+// The macOS fixture is also rendered on the Linux golden runner.
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests;
 
 use std::cell::Cell;
@@ -45,14 +51,14 @@ use rune_kit::TextInput;
 use self::flow::{Action, Cue, Done, Flow, Footer, Input, Lead, List, Mode, Pres};
 use self::list_view::*;
 use self::surface::{
-    CHIP_H, CHIP_PX, HEADER_H, HINT_GAP, Id, LEAD_TEXT_X, LIST_PAD, LIST_Y, PANEL_H, PANEL_W,
-    PROCESSING_TEXT_X, ROW_H, SEG_ICON, SEG_ICON_GAP, Shown, Surface, THUMB_H, THUMB_W, THUMB_X,
-    chord, clock_style, clock_width, corner, done_style, done_text_x, ellipsize, measure, medium,
-    processing, small,
+    CHIP_H, CHIP_PX, HEADER_H, HINT_GAP, Id, LEAD_TEXT_X, LEVEL_GAP, LEVEL_W, LIST_PAD, LIST_Y,
+    PANEL_H, PANEL_W, PROCESSING_TEXT_X, ROW_H, SEG_ICON, SEG_ICON_GAP, Shown, Surface, THUMB_H,
+    THUMB_RADIUS, THUMB_W, THUMB_X, chord, clock_width, corner, done_style, done_text_x, ellipsize,
+    measure, medium, processing, small,
 };
 use self::tuning::ListFooter;
 use self::view::*;
-use super::controls::Paint;
+use super::controls::{CAPSULE, Paint};
 use crate::desktop::i18n::{tr, tr_fill};
 
 /// Peak blur (pt) of the picker's badge and the list's rows softening in
@@ -63,8 +69,8 @@ const PRESENCE_BLUR: f32 = 1.5;
 const HIDE_AFTER_S: f64 = 0.5;
 /// The list's corners, and its rows'.
 const LIST_RADIUS: f32 = surface::SHELL_RADIUS;
-const ROW_RADIUS: f32 = 8.0;
-const ROW_PX: f32 = 10.0;
+const ROW_RADIUS: f32 = CAPSULE.inner(CAPSULE.row_inset);
+const ROW_PX: f32 = CAPSULE.row_px;
 /// Under the list header's words.
 const HEADER_PB: f32 = 4.0;
 /// Between one hint and the next.
@@ -113,6 +119,13 @@ struct Meter {
     shimmer_at: [f32; GLYPHS],
     /// The glow inside the capsule's edge while it changes width.
     glow: Live<f32>,
+    /// The microphone's level after the timer: each bar's rect, and how
+    /// lit they are.
+    level_bars: [Live<[f32; 4]>; 3],
+    level_ink: Live<f32>,
+    /// The level the bars show and the animation second it was last
+    /// followed at.
+    heard: Arc<Mutex<(f32, f64)>>,
     /// A morph's settle time in seconds (`f32` bits) for the thread to
     /// start a glow; 0 when none.
     kick: Arc<AtomicU32>,
@@ -156,6 +169,9 @@ impl Meter {
                 std::array::from_fn(|k| (glyphs[k].1 + glyphs[k].2 * 0.5) / total)
             },
             glow: Live::new(0.0),
+            level_bars: std::array::from_fn(|k| Live::new(level_bar(k, 0.0))),
+            level_ink: Live::new(level_ink(0.0)),
+            heard: Arc::default(),
             kick: Arc::default(),
             activity: Arc::default(),
             reduced: Arc::default(),
@@ -202,9 +218,14 @@ impl Meter {
     /// Everything at animation second `t`: the loops while something runs,
     /// and the edge glow while a morph lights it. False when idle.
     fn advance(&self, t: f64) -> bool {
-        let active = self.activity.load(Ordering::Relaxed) != 0;
+        let activity = self.activity.load(Ordering::Relaxed);
+        let active = activity != 0;
         if active {
             self.publish(t);
+        }
+        if activity == 1 {
+            let peak = crate::capture_host::recording_level().unwrap_or(0.0);
+            self.hear(peak, t);
         }
         let kick = f32::from_bits(self.kick.swap(0, Ordering::AcqRel));
         let mut glow = self.glowing.lock().unwrap_or_else(|e| e.into_inner());
@@ -248,11 +269,52 @@ impl Meter {
         }
     }
 
+    /// Follows the microphone's latest `peak` at animation second `t`:
+    /// the bars rise at once and fall over a third of a second.
+    fn hear(&self, peak: f32, t: f64) {
+        let mut heard = self.heard.lock().unwrap_or_else(|e| e.into_inner());
+        let (level, at) = *heard;
+        let dt = (t - at).clamp(0.0, 0.1) as f32;
+        let level = (peak * 3.0).clamp(0.0, 1.0).max(level - dt * 3.0);
+        *heard = (level, t);
+        self.show_level(level);
+    }
+
+    /// The bars at `level`, 0 to 1.
+    fn show_level(&self, level: f32) {
+        for (k, bar) in self.level_bars.iter().enumerate() {
+            bar.set(level_bar(k, level));
+        }
+        self.level_ink.set(level_ink(level));
+    }
+
     fn wake(&self) {
         if let Some(thread) = self.thread.get() {
             thread.unpark();
         }
     }
+}
+
+/// The level meter's bars: uneven at rest too, so they never read as an
+/// ellipsis.
+const LEVEL_WEIGHTS: [f32; 3] = [0.6, 1.0, 0.75];
+
+/// Bar `k`'s rect in the meter's box at `level`, in whole points so a
+/// level that rounds the same draws nothing new.
+fn level_bar(k: usize, level: f32) -> [f32; 4] {
+    let weight = LEVEL_WEIGHTS[k];
+    let height = (2.0 + weight * 3.0 + level * weight * 9.0).round();
+    [
+        k as f32 * 4.0,
+        ((CHIP_H - height) * 0.5).round(),
+        2.0,
+        height,
+    ]
+}
+
+/// How lit the bars are at `level`: dim while nothing is heard.
+fn level_ink(level: f32) -> f32 {
+    ((0.4 + 0.6 * (level * 3.0).min(1.0)) * 20.0).round() / 20.0
 }
 
 /// What the capsule draws beside its `Surface`: the live values and the
@@ -326,6 +388,67 @@ enum Part {
     List,
 }
 
+/// The overlay's visibility, anchor, and pointer-follow lifecycle on screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Presence {
+    /// Hidden: no overlay on screen.
+    Down,
+    /// Shown and active (`pres != Pres::Hidden`).
+    Up {
+        anchor: surface::Anchor,
+        follow: bool,
+    },
+    /// `pres == Pres::Hidden`, staying up for [`HIDE_AFTER_S`] while the exit
+    /// animation plays before hiding.
+    Leaving {
+        since: f64,
+        anchor: surface::Anchor,
+        follow: bool,
+    },
+}
+
+impl Presence {
+    fn is_shown(self) -> bool {
+        !matches!(self, Self::Down)
+    }
+
+    fn follow(self) -> bool {
+        match self {
+            Self::Up { follow, .. } | Self::Leaving { follow, .. } => follow,
+            Self::Down => false,
+        }
+    }
+
+    fn anchor(self) -> Option<surface::Anchor> {
+        match self {
+            Self::Up { anchor, .. } | Self::Leaving { anchor, .. } => Some(anchor),
+            Self::Down => None,
+        }
+    }
+}
+
+/// The on-screen picker paired with the mode it was last told to pick.
+struct AttachedPicker {
+    overlay: picker::PickerOverlay,
+    mode: Option<Mode>,
+}
+
+impl AttachedPicker {
+    fn new(overlay: picker::PickerOverlay) -> Self {
+        Self {
+            overlay,
+            mode: None,
+        }
+    }
+
+    fn sync(&mut self, mode: Option<Mode>) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.overlay.set(mode);
+        }
+    }
+}
+
 /// The host's side of a press or key: what to do with the capture.
 pub(crate) type Act = Arc<dyn Fn(Action) + Send + Sync>;
 
@@ -338,24 +461,19 @@ pub(crate) struct CapsuleState {
     inbox: Vec<Input>,
     /// Clock seconds the recording started at, for the timer.
     recording_since: Option<f64>,
-    /// Animation seconds the capsule went to `Hidden` at.
-    hidden_since: Option<f64>,
     /// The latest poll's clock.
     now: f64,
     /// Reduce Motion, as the view last saw it.
     reduced: Cell<bool>,
     act: Option<Act>,
     overlay: Option<OverlayHandle<CapsuleState>>,
-    shown: bool,
-    follow: bool,
-    /// A capture started: the capsule moves to the display under the
-    /// pointer, even while still up on another one.
-    replace: bool,
-    /// Where the overlay was last placed for ([`Surface::anchor`]).
-    placed: surface::Anchor,
+    /// Overlay visibility, placed anchor, and pointer-follow state.
+    presence: Presence,
     /// The notch the capsule hangs from on the pointer's display, when it
     /// could be measured.
     notch: Option<notch::Measured>,
+    /// Its place beside the meeting capsules (`desktop::overlay_dock`).
+    dock: dock::Docked,
     /// The keys Hex's tap hands the capsule ([`Flow::keys`]): the overlay
     /// never takes focus.
     keys: Option<(
@@ -364,9 +482,8 @@ pub(crate) struct CapsuleState {
     )>,
     /// Whether the pointer is on each [`Part`].
     hovering: [bool; 2],
-    /// The on-screen picker, and the mode it was last told to pick.
-    picker: Option<picker::PickerOverlay>,
-    picker_mode: Option<Mode>,
+    /// The attached on-screen picker, if any.
+    picker: Option<AttachedPicker>,
     /// A still for goldens: it rests, nothing plays.
     still: bool,
     /// Draws a plain backdrop behind the capsule (stills and clips), so its
@@ -389,26 +506,32 @@ impl CapsuleState {
             live,
             inbox: Vec::new(),
             recording_since: None,
-            hidden_since: Some(f64::NEG_INFINITY),
             now: 0.0,
             reduced: Cell::new(false),
             act: None,
             overlay: None,
-            shown: false,
-            follow: false,
-            replace: false,
-            placed: surface::Anchor::Top,
+            presence: Presence::Down,
             notch: None,
+            dock: dock::Docked::default(),
             keys: None,
             hovering: [false; 2],
             picker: None,
-            picker_mode: None,
             still: false,
             backdrop: false,
             sound: None,
             #[cfg(target_os = "macos")]
             playground: None,
         }
+    }
+
+    /// A recording still that shows its microphone at `level`, 0 to 1.
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    pub(crate) fn hearing(mut self, level: f32) -> Self {
+        let pres = self.surface.pres.clone();
+        self.surface.metered = true;
+        self.surface = std::mem::take(&mut self.surface).settled(pres);
+        self.live.meter.show_level(level);
+        self
     }
 
     /// `pres` at rest with the timer at `clock`, as a still.
@@ -467,7 +590,6 @@ impl CapsuleState {
             Input::Stage(scrawl_capture::capture::Stage::Recording)
         ) {
             self.recording_since = Some(now);
-            self.replace = true;
             self.live.thumb = None;
         }
         let actions = self.flow.input(input, now);
@@ -502,10 +624,20 @@ impl CapsuleState {
     }
 
     /// The pointer moved on the capsule: typing over its suggestions may
-    /// search now, so the tap's keys change at once.
+    /// search now, so the tap's keys change at once, and a countdown under
+    /// it holds.
     fn pointer_moved(&mut self, tx: &mut Tx) {
-        if self.flow.pointer_moved() {
+        let now = self.now;
+        let moved = self.flow.pointer_moved(now);
+        if moved.keys {
             take_keys(self);
+        }
+        if moved.held {
+            self.dispatch(moved.actions);
+            self.present(now);
+            self.live.sync(&self.surface);
+        }
+        if moved.keys || moved.held {
             tx.wake_after(Duration::ZERO);
         } else {
             tx.live_only();
@@ -575,9 +707,24 @@ fn poll(s: &mut CapsuleState, now: f64, tx: &mut Tx) -> bool {
         }
     }
     let mut changed = false;
+    let mut replaced = false;
     for input in std::mem::take(&mut s.inbox) {
+        if matches!(
+            input,
+            Input::Stage(scrawl_capture::capture::Stage::Recording)
+        ) {
+            replaced = true;
+        }
         s.apply(input, now);
         changed = true;
+    }
+    // Set before the recording shows, so it comes in with its level, and
+    // kept while it stops, so its width changes once.
+    if s.overlay.is_some() {
+        let metered = crate::capture_host::recording_level().is_some();
+        if metered || !matches!(s.surface.pres, Pres::Recording { .. }) {
+            changed |= s.surface.set_metered(metered, now);
+        }
     }
     changed |= s.flow.tick(now);
     s.sound();
@@ -588,16 +735,42 @@ fn poll(s: &mut CapsuleState, now: f64, tx: &mut Tx) -> bool {
     // coming back from hidden is placed on the pointer's display before
     // Rune shows it.
     let hidden = matches!(s.surface.pres, Pres::Hidden);
-    let since = match (hidden, s.hidden_since) {
-        (true, None) => *s.hidden_since.insert(now),
-        (true, Some(since)) => since,
-        (false, _) => {
-            s.hidden_since = None;
-            now
+    let following = matches!(s.surface.pres, Pres::Selecting { .. });
+    let prev = s.presence;
+    let (next, leaving_wake) = match (hidden, prev) {
+        (false, _) => (
+            Presence::Up {
+                anchor: s.surface.anchor,
+                follow: following,
+            },
+            None,
+        ),
+        (true, Presence::Down) => (Presence::Down, None),
+        (true, Presence::Up { .. }) => (
+            Presence::Leaving {
+                since: now,
+                anchor: s.surface.anchor,
+                follow: false,
+            },
+            Some(HIDE_AFTER_S),
+        ),
+        (true, Presence::Leaving { since, .. }) => {
+            let remaining = since + HIDE_AFTER_S - now;
+            if remaining > 0.0 {
+                (
+                    Presence::Leaving {
+                        since,
+                        anchor: s.surface.anchor,
+                        follow: false,
+                    },
+                    Some(remaining),
+                )
+            } else {
+                (Presence::Down, None)
+            }
         }
     };
-    let leaving = since + HIDE_AFTER_S - now;
-    let shown = !hidden || leaving > 0.0;
+    let shown = next.is_shown();
     // Shown, the capsule stays put. It moves to the pointer's display when
     // a new capture brings it, when its anchor changes, when it comes back
     // from hidden, and while the picker is open; a notch read that changed
@@ -611,13 +784,19 @@ fn poll(s: &mut CapsuleState, now: f64, tx: &mut Tx) -> bool {
     // inset from the other display for a frame. Without an overlay (the
     // playground and stills) there is nothing to measure or place, so the
     // pretend notch stays.
-    let replaced = std::mem::take(&mut s.replace);
-    let moved = s.placed != s.surface.anchor;
-    if moved {
-        s.placed = s.surface.anchor;
-    }
-    let following = matches!(s.surface.pres, Pres::Selecting { .. });
-    let step = move_of(replaced, moved, following, shown && !s.shown);
+    let moved = prev
+        .anchor()
+        .is_some_and(|anchor| anchor != s.surface.anchor);
+    let step = if shown {
+        move_of(
+            replaced && !hidden,
+            moved,
+            following,
+            shown && !prev.is_shown(),
+        )
+    } else {
+        Move::Stay
+    };
     let mut remeasured = false;
     if s.surface.anchor == surface::Anchor::Notch {
         // The panel is fitted to the notch on the pointer's screen:
@@ -637,7 +816,8 @@ fn poll(s: &mut CapsuleState, now: f64, tx: &mut Tx) -> bool {
     if step.places(remeasured)
         && let Some(overlay) = &s.overlay
     {
-        place(overlay, s.placed, s.notch);
+        s.dock.measure(s.notch);
+        place(overlay, s.surface.anchor, s.notch, s.dock.margin());
     }
 
     let earliest = |wake: Option<f64>, at: Option<f64>| match (wake, at) {
@@ -669,41 +849,45 @@ fn poll(s: &mut CapsuleState, now: f64, tx: &mut Tx) -> bool {
 
     // The overlay stays up while the capsule leaves, then hides; placed
     // above, before Rune is asked to show it.
-    if hidden && leaving > 0.0 {
-        wake = earliest(wake, Some(leaving));
+    if let Some(remaining) = leaving_wake {
+        wake = earliest(wake, Some(remaining));
     }
     // Shown in the same poll as the step that brings the capsule in, so
     // Rune reveals the hidden pose and animates the entry from it.
-    if s.shown != shown {
-        s.shown = shown;
-        if let Some(overlay) = &s.overlay {
-            if shown {
-                float_on_xwayland(overlay);
-                overlay.show();
-            } else {
-                overlay.hide();
-            }
+    if prev.is_shown() != shown
+        && let Some(overlay) = &s.overlay
+    {
+        if shown {
+            float_on_xwayland(overlay);
+            overlay.show();
+        } else {
+            overlay.hide();
         }
     }
     crate::capture_host::set_capsule_pill(shown.then_some(s.surface.shell));
-    // The picker follows the pointer between displays.
-    if s.follow != following {
-        s.follow = following;
-        if let Some(overlay) = &s.overlay {
-            overlay.set_follow_pointer(following);
-        }
+    // Under the menu bar it clears the meeting capsules, and moves again as
+    // they move, show, or go.
+    if s.dock
+        .sync(shown, s.surface.anchor, s.notch, s.surface.shell)
+        && let Some(overlay) = &s.overlay
+    {
+        place(overlay, s.surface.anchor, s.notch, s.dock.margin());
     }
+    // The picker follows the pointer between displays.
+    if prev.follow() != next.follow()
+        && let Some(overlay) = &s.overlay
+    {
+        overlay.set_follow_pointer(next.follow());
+    }
+    s.presence = next;
     take_keys(s);
     // The on-screen picker shows what the capsule picks.
     let picking = match s.surface.pres {
         Pres::Selecting { mode, .. } => Some(mode),
         _ => None,
     };
-    if s.picker_mode != picking {
-        s.picker_mode = picking;
-        if let Some(picker) = &s.picker {
-            picker.set(picking);
-        }
+    if let Some(picker) = &mut s.picker {
+        picker.sync(picking);
     }
     if let Some(wake) = wake {
         tx.wake_after(Duration::from_secs_f64(wake.max(0.0)));
@@ -717,9 +901,10 @@ fn poll(s: &mut CapsuleState, now: f64, tx: &mut Tx) -> bool {
     changed
 }
 
-/// Moves the overlay to where the capsule rests: under the menu bar, at
-/// the screen's top edge (the notch), or at the pointer (the cursor's
-/// card, whose rect is global, so on the primary display's origin).
+/// Moves the overlay to where the capsule rests: under the menu bar
+/// `margin` points from the top, at the screen's top edge (the notch), or
+/// at the pointer (the cursor's card, whose rect is global, so on the
+/// primary display's origin).
 /// `notch` is the notch measured on the pointer's screen; the panel is
 /// pinned to that screen and its left edge put `panel_x` points from the
 /// screen's, so it can't land on another display than the one measured.
@@ -728,6 +913,7 @@ fn place(
     overlay: &OverlayHandle<CapsuleState>,
     anchor: surface::Anchor,
     notch: Option<notch::Measured>,
+    margin: f32,
 ) {
     use rune::{Align, DisplayTarget, NativeDisplayId, OverlayPlacement, ScreenEdge};
     let edge = |margin| OverlayPlacement::Edge {
@@ -739,7 +925,7 @@ fn place(
     match anchor {
         surface::Anchor::Top => {
             overlay.set_display(DisplayTarget::UnderPointer);
-            overlay.set_placement(Some(edge(PANEL_MARGIN)));
+            overlay.set_placement(Some(edge(margin)));
         }
         surface::Anchor::Notch => {
             // The measured screen's, so the panel and its notch agree even
@@ -955,13 +1141,12 @@ impl CaptureCapsule {
     /// screen.
     pub(crate) fn attach(&self, picker: picker::PickerOverlay) {
         self.overlay.update(move |s, tx| {
-            s.picker_mode = None;
-            s.picker = Some(picker);
+            s.picker = Some(AttachedPicker::new(picker));
             tx.wake_after(Duration::ZERO);
         });
     }
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     /// Lets screen recordings see the capsule, or keeps it out.
     pub(crate) fn show_in_recordings(&self, shown: bool) {
         self.overlay.set_exclude_from_capture(!shown);

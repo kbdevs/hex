@@ -15,8 +15,9 @@ hex meetings show 1790000500000-1002 --json
 hex meetings show 1790000500000-1002 --from 113:03 --to 120:43 --md
 hex meetings chapters latest --json
 hex meetings show 1790003000000-1005 --chapter 2
-hex meetings show latest --srt > call.srt   # Labs › Subtitle export
+hex meetings show latest --srt > call.srt
 hex meetings search 'release schedule'
+hex meetings search --meeting latest 'release schedule'
 ```
 
 ## History filters apply before the limit
@@ -58,12 +59,18 @@ inserted text split on whitespace), words per minute (words over recorded
 audio minutes, counting only entries with audio; unknown without any), how
 many entries Output changed (inserted text differs from the transcript, ignoring
 surrounding whitespace), the daily streak (consecutive local days with an entry,
-ending today or, with none yet today, yesterday), active days, and the five
-most used applications. With the toggle off it fails, naming the command that
-turns it on, before History is read. `--since` and `--until` narrow it with the
-same time syntax; the retention window always applies. It counts only what
-History still holds: nothing is kept after retention removes an entry, and
-which replacements fired is not tracked.
+ending today or, with none yet today, yesterday), and active days. The printed
+text names the five most used applications, and the JSON's `top_apps` carries
+the same five. `--json` also carries the last 30 local days' dictation counts
+(oldest first, empty days at zero) and each mode's Output time: its runs,
+median, and slowest processing time, rewrite plus any transformations. The
+daily series always ends today and ignores `--until`, and it is empty when
+nothing matches the filters; Output time leaves out runs that fell back and
+runs that only applied transformations. With the toggle off it fails, naming
+the command that turns it on, before History is read. `--since` and `--until`
+narrow it with the same time syntax; the retention window always applies. It
+counts only what History still holds: nothing is kept after retention removes
+an entry, and which replacements fired is not tracked.
 
 ## Meetings use the same queries as MCP
 
@@ -106,24 +113,25 @@ and `chapter` in JSON; it cannot be combined with `--from`/`--to`, and a number
 outside the list is an error. Plain `show` Markdown adds a `## Chapters` list
 when there are any.
 
-`show --srt` and `show --vtt` (Labs › Subtitle export, `hex labs on
-subtitle-export`, off by default) write timed subtitles to stdout instead,
-for example `hex meetings show latest --vtt > call.vtt`. With the toggle off
-they fail, naming the command that turns it on, before any meeting is read.
-They take the same IDs, `--from`/`--to`, and `--chapter` as the other outputs
+`show --srt` and `show --vtt` write timed subtitles to stdout instead, for
+example `hex meetings show latest --vtt > call.vtt`. They take the same IDs, `--from`/`--to`, and `--chapter` as the other outputs
 and conflict with `--md`, `--json`, and each other. Each transcript entry (a
 speaker turn) becomes one cue timed by its offsets from the meeting's start,
 not by word timings: SRT numbers its cues, uses `HH:MM:SS,mmm` times, and
 prefixes the text `You:` or `Them:`; VTT starts with `WEBVTT`, uses
 `HH:MM:SS.mmm` times and `<v You>`/`<v Them>` voice tags, and escapes `&`, `<`,
-and `>`. An end before its start is clamped to the start, entries with no text
+and `>`. A remote entry whose speaker the meeting has named carries that name
+in place of `Them` (macOS, Labs › Speaker names, Slack huddles; see
+[Speaker names](features/meetings.md#speaker-names)). An end before its start is clamped to the start, entries with no text
 are skipped, and blank lines and `-->` are removed from the text so a cue
 can't break.
 
 `meetings search QUERY` uses the MCP query's stemmed, fuzzy BM25 ranking over
-transcripts and stored notes. Quoted phrases constrain the search. `--since`,
-`--until`, and `--limit` (default 10, maximum 50) are supported; output is text.
-Search for a timestamp, then read around it with `show --from/--to`.
+transcripts and stored notes. Quoted phrases constrain the search. `--meeting ID`
+(exact ID, unique prefix, or `latest`) limits the search to one meeting.
+`--since`, `--until`, and `--limit` (default 10, maximum 50) are supported;
+output is text. Search for a timestamp, then read around it with
+`show --from/--to`.
 
 Exact stems clearly outrank fuzzy matches. Passages matching every unquoted
 term exactly come first, whatever their scores. Within each tier a prefix
@@ -151,6 +159,11 @@ it (0.3) unless they are common. Neither ever counts as an exact match.
 Debug builds retain `meeting record`, `watch`, `probe`, `transcribe`, and other
 developer commands. Their `meeting list/show` commands use the read-only query
 path too. The plural `meetings` commands are available in release builds.
+`meetings delete <id>` is the one that writes: it moves nothing itself but
+asks the running Hex to move the meeting's exported Markdown and its recording
+folder to the Trash, as the pane's Delete does, and refuses while the meeting
+still records, transcribes, writes notes, or waits for its final transcript
+([cli.md](cli.md#commands)). Everything above only reads.
 
 ## JSON version 1
 
@@ -162,7 +175,11 @@ present as `null`, except `raw_text`, which is omitted without `--raw`,
 is omitted unless Labs › Keep recordings still holds the entry's audio file,
 `range`, which
 is omitted without `--from` or `--to`, `chapters`, which is omitted when a
-meeting has none, and `chapter`, which is omitted without `--chapter`.
+meeting has none, `chapter`, which is omitted without `--chapter`, and a
+meeting's `speakers` and an entry's `speaker`, which are omitted unless the
+meeting has named speakers (nothing names one yet). `yearly`
+is always present in `hex history stats` output, which refuses while Labs ›
+Dictation stats is off.
 JSON goes to stdout; errors go to stderr with a nonzero exit status. Empty
 results are successful responses. `truncated` reports the query's output limit,
 not data already expired or evicted from the store.
@@ -192,11 +209,24 @@ type HistoryStats = { // hex history stats --json
   dictations: number
   words: number
   audio_ms: number
+  typing_wpm: number // the typing speed time_saved_ms assumes; saved as typing_wpm, 40 by default
+  time_saved_ms: number // words / typing_wpm minutes minus audio_ms, floored at 0
   words_per_minute: number | null // null without recorded audio
   changed_by_output: number
   streak_days: number
   active_days: number
+  hours: number[] // 24 local hours, index 0 = midnight
+  busiest_hour: number | null // 0–23, the earliest hour on a tie
+  daily: { day: number; dictations: number }[] // the last 30 local days, oldest first, zero on empty days, always ending today; empty when nothing matches; day is days since 1970-01-01, local time
   top_apps: { application: string; dictations: number }[] // at most 5, most first
+  output_time: { profile: string; runs: number; median_ms: number; slowest_ms: number }[] // the 4 most run modes; an even count's median is the mean of its two middle runs, rounded down; fallback and transformation-only runs are left out
+  yearly: { // always present; the command refuses while Labs › Dictation stats is off
+    dictations: number // every kept day, not only what History still retains
+    words: number
+    audio_ms: number
+    hours: number[] // 24 local hours across every kept day
+    days: { day: number; dictations: number; words: number; audio_ms: number; hours: number[] }[] // at most 400 days, oldest first
+  }
 }
 
 type Meeting = {
@@ -209,6 +239,11 @@ type Meeting = {
   in_progress: boolean
   transcript_source: "final" | "rolling" | "missing" // older builds also reported "draft"
   warnings: string[]
+  speakers?: { // only when the meeting has named speakers; nothing names one yet
+    id: string // per meeting, short and opaque ("s1"); never a call app's user id
+    name: string // as the call showed it: untrusted text, cleaned to one plain line
+    from: "call_app" | "calendar" | "user"
+  }[]
 }
 type MeetingList = {
   version: 1
@@ -224,10 +259,11 @@ type MeetingShow = {
   chapters?: Chapter[] // only when the meeting has chapters
   chapter?: Chapter // only with --chapter
   entries: { // with a range or chapter, only the entries in it
-    source: "microphone" | "system" // You / Them; remote speakers aren't separated
+    source: "microphone" | "system" // You / Them
     start_ms: number // relative to the meeting start
     end_ms: number
     text: string
+    speaker?: string // a speakers[].id on a remote entry; omitted when Hex is not sure who spoke
   }[]
 }
 type Chapter = {

@@ -2,136 +2,64 @@
 
 **Status:** Internal TestFlight app (`HEXMobile`), custom keyboard extension
 (`HEXKeyboard`), and Live Activity + Control Center widget extension
-(`HEXWidgets`). The containing app records a generation-scoped temporary WAV,
-transcribes on-device with Apple Speech (`SpeechTranscriber` on iOS 26+) or
-FluidAudio Parakeet V2 (iOS 18+), and removes each capture's file after
-inference, cancellation, or failure. The keyboard extension sends commands and
-inserts completed text over the shared App Group (`group.com.kitlangton.hex.mobile`);
-it never accesses the microphone, speech model, or network.
+(`HEXWidgets`). Dictation runs on the iPhone: Apple Speech on iOS 26+
+(`SpeechTranscriber`, or `DictationTranscriber` for the languages it lacks),
+FluidAudio Parakeet V2 (iOS 18+, English), and `SFSpeechRecognizer` before
+iOS 26. The keyboard dictates by itself on iOS 26+ (in-keyboard dictation), or
+over the shared App Group (`group.anomaly.hex.mobile`) in a warm session.
+Audio never leaves the iPhone, and Hex removes each capture's file after
+inference, cancellation, or failure.
 
-## Capabilities
+This README is the map. Each area's detail lives in `docs/`, and the doc for
+the area you touch is the spec for it.
 
-- **One-tap keyboard dictation (`HEXKeyboard`):**
-  - **Setup:** The keyboard needs Full Access to reach Hex through the App
-    Group. Without it, the keyboard shows the Settings path and an **Open Hex
-    setup** button (`hex-dictation://keyboard/setup`). The app's setup card
-    shows live status for the keyboard, Full Access, the microphone, and the
-    speech model, and opens Hex's page in Settings. Full Access shows as on
-    once the keyboard has run with it (`keyboard.fullAccessSeenAt`).
-  - **Opening Hex:** SwiftUI `Link`, `openURL`, and `extensionContext.open`
-    do nothing in a keyboard extension, so the keyboard opens Hex through
-    the `UIApplication` at the end of its responder chain
-    (`ContainingAppOpener`).
-  - **Cold start:** Tapping **Dictate** opens the containing app
-    (`hex-dictation://keyboard/record?...`) with a 10-second
-    handoff window, starts recording, and opens the selected host app's URL
-    scheme (`messages://`, `slack://`, `claude://`, `chatgpt://`,
-    `mobilenotes://`, `discord://`, `mail://`, `x-web-search://`, etc.) using
-    public `UIApplication.shared.open(_:)`. Because iOS keyboard extensions
-    cannot inspect the host app's bundle ID without private APIs, you pick your
-    usual return app once on the `↩` chip (or jump bar), and apps without a
-    registered URL scheme fall back cleanly within ~1s to the bottom-edge swipe
-    bar and quick-jump chips. **Edit apps…** in the app's return menu picks and
-    orders the apps the keyboard tray and jump bar offer.
-  - **GPU Dot Scope (`HEXShared/DotScope.swift`, `DotScopeShader.metal`):**
-    Both `HEXMobile` and `HEXKeyboard` render Hex's desktop menu-bar braided
-    oscilloscope (`src/dot_scope.rs`, `src/rune_hud.wgsl`) at native display
-    refresh via `CAMetalLayer` + `CADisplayLink`, pausing at 0% CPU/GPU once
-    settled in idle. The keyboard extension mounts it only while a capture or
-    transcription is active and shows a static `Canvas` dot row at rest, so a
-    fresh keyboard process builds no Metal device, pipeline, layer, display
-    link, or idle pre-roll before its first frame; the app's docked keyboard
-    preview keeps the live scope. The home-indicator swipe cue's pipeline is
-    compiled on first use, which only the app shows. Lock Screen / Dynamic
-    Island Live Activities render a
-    matching `Canvas` dot-matrix badge (`HexDotMatrixBadge`) because WidgetKit
-    archives static view snapshots rather than hosting live `CAMetalLayer`s.
-    Meter polling stays alive through a temporary non-recording state of the
-    same capture; it resumes app levels and keyboard snapshots when the recorder
-    is ready again. Capture completion, interruption, and Stop end polling.
-  - **Warm session (`Off`, `5m`, `15m`, `1h`):** Picking a duration on **Keep
-    mic warm** starts an `AVAudioEngine` input session immediately (default
-    `15m`) so subsequent taps on **Dictate** record directly inside the
-    keyboard with zero app switches; picking `Off` or tapping the header timer
-    ends it.
-  - **Styles:** `Polished` (sentence case + punctuation + filler trim),
-    `Casual` (lowercase chat without trailing period), `Notes` (spoken
-    `"bullet"` / `"next line"` markers), and `Verbatim`, with cursor-aware
-    insertion spacing and repeating backspace.
-  - **Full keyboard Hex key (Experiments › Full keyboard):** A tap does
-    nothing, so a stray one while typing is harmless. A still hold of 0.35 s
-    starts dictation in a warm session (or opens Hex without one), with a
-    haptic. Moving more than 10 pt before then opens the style and **Return
-    to** menu; releasing over a row picks it, and releasing elsewhere leaves
-    the menu open for taps (`HexKeyGesture`). VoiceOver activation dictates,
-    and the **Dictation styles** action opens the menu.
-  - **Apple Intelligence cleanup (Experiments › Clean up with Apple
-    Intelligence, iOS 26+):** Off by default. For every style but `Verbatim`,
-    one on-device FoundationModels pass before formatting fixes clearly
-    misheard words and spoken self-corrections, within a 2 s budget. A
-    timeout, error, empty or implausible output keeps the raw transcript, and
-    the toggle is disabled with a reason when Apple Intelligence is unusable.
-  - **Custom vocabulary (Experiments › Custom vocabulary):** Off by default.
-    A local list of up to 100 names and phrases, applied to every engine. After
-    transcription, matching words are rewritten to the listed spelling across
-    case, spaces, tabs, a single hyphen, and possessive apostrophes, before
-    cleanup and again after formatting, so a style cannot undo a spelling. The
-    listed spelling is kept exactly, even at a sentence start (an all-lowercase
-    term stays lowercase), and a term that spells its own boundaries ("iPhone 7",
-    "X-ray") matches those boundaries exactly. A word that carries its own
-    apostrophe only matches a term that has one, several transcript words are
-    joined only when the term reads as a compound, and compound terms like
-    "WeChat" can also match the plain phrase ("we chat"). On iOS 26 Apple Speech
-    the list is also sent as a best-effort recognition hint; Parakeet's batch
-    path gets no hint.
-- **Resilient capture & expiry contract (`DictationController`):**
-  - Monotonic `jobGeneration`, retained `transcriptionTask`, and unique
-    per-capture WAV filenames ensure an expiring warm session never drops an
-    already-accepted transcription (deliverable for 30s), while a stale
-    winding-down inference can never overwrite a newer capture or delete its
-    audio file.
-  - Phone/FaceTime/Siri audio interruptions finalize captures `>= 300 ms` so
-    spoken words are not lost, cancel shorter taps cleanly out of `Listening`,
-    and resume warm keepalive when iOS signals `.shouldResume`. Bluetooth HFP
-    input is opt-in (**Use Bluetooth headphones**, default off) so AirPods stay
-    in full-fidelity output by default.
-- **Action Button, Control Center, Back Tap & Live Activity:**
-  - `DictateWithHexIntent` (`AudioRecordingIntent` + `LiveActivityIntent`) and
-    `HexDictationControl` (`ControlWidget`) start recording on first press with
-    a Dynamic Island / Lock Screen Live Activity (`Stop` and `Cancel` buttons)
-    and transcribe + copy to the clipboard on second press.
+## Area docs
 
-## Build & Test
+| Doc | What it covers |
+| --- | --- |
+| [`docs/onboarding-and-setup.md`](docs/onboarding-and-setup.md) | First run, the setup sheet, Full Access, opening Hex from the keyboard, cold start and the handoff |
+| [`docs/keyboard.md`](docs/keyboard.md) | The full keyboard and dictation bar: the Hex key, auto-start, push to talk, autocorrect and the typing models, Learn how I type, Adaptive touch, swipe typing, languages and layouts, size and touch targets, iPhone Duo and iPad, emoji, the Dot Scope |
+| [`docs/dictation.md`](docs/dictation.md) | Engines and speech models, warm sessions, styles and cleanup, dictation language, translation, live dictation (Live words), capture and audio, Action Button and Live Activity |
+| [`docs/settings-and-home.md`](docs/settings-and-home.md) | Home's screen, the four Settings pages, the Labs list, and every `--snap-state` scene |
+| [`docs/build-and-test.md`](docs/build-and-test.md) | Prerequisites, generating the project, the cleanup tagger's model, the emoji index, replaying real typing |
+| [`docs/verification.md`](docs/verification.md) | What the simulator proves, what needs a physical iPhone, and the measured numbers behind each check |
+| [`docs/releasing.md`](docs/releasing.md) | TestFlight releases: marketing version, App Store versions, tags and the Xcode Cloud workflow |
+| [`docs/acknowledgements.md`](docs/acknowledgements.md) | Third-party data, models and their licences, shown in Settings › Acknowledgements |
+| [`docs/typing-logs.md`](docs/typing-logs.md) | Record typing logs: files, NDJSON schema and events |
+
+## Layout
+
+| Path | What's there |
+| --- | --- |
+| `HEXMobile/` | The containing app: Home, onboarding, Settings, the dictation controller |
+| `HEXKeyboard/` | The keyboard extension, its dictation bar and in-keyboard dictation |
+| `HEXShared/` | Shared by both: the full keyboard engine, layouts, typing models, cleanup, Dot Scope |
+| `HEXActivity/`, `HEXWidgets/` | ActivityKit attributes and intents, the Live Activity and Control Center widgets |
+| `HEXMobileTests/` | Unit tests, run with `xcodebuild test` |
+| `benchmark/`, `scripts/` | Typing replays; build-time helpers for the cleanup model, emoji index and typing models |
+| `ci_scripts/` | Xcode Cloud's post-clone step |
+
+## Build and test
 
 Prerequisites: Xcode 26+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen) 2.46.0+.
 
 ```sh
 cd ios
+scripts/fetch-cleanup-model.sh   # the cleanup tagger's Core ML model, kept out of git
 xcodegen generate
 xcodebuild test -project HEXMobile.xcodeproj -scheme HEXMobile -destination "id=<SIM_UDID>"
 ```
 
-## Simulator vs. Physical iPhone Proof Limits
+No CI job compiles or tests the iOS targets, so these checks run only in a local
+`xcodebuild test`. The emoji index files are generated and committed: after
+changing `scripts/emoji-aliases-en.txt` or the sources, run
+`scripts/build-emoji-data.py`.
 
-- **Verified in Simulator (`HEXMobileTests` + `--snap-state` scenes):** Compilation
-  across `HEXMobile`, `HEXKeyboard`, and `HEXWidgets`; App Group command/snapshot
-  framing; the `DictationController` generation/expiry race and 30s post-close
-  transcript delivery; 10s handoff window + URL-scheme auto-return fallback;
-  interruption handling; meter recovery after injected startup and mid-capture
-  recorder unavailability (including keyboard levels and heartbeat); deterministic
-  style formatting; and UI layouts.
-- **Requires a physical iPhone:** Real `AVAudioSession` background keepalive
-  survival across lock/app switches, live orange indicator behavior, on-device
-  `SpeechTranscriber` / Neural Engine Parakeet latency, URL-scheme return into
-  installed third-party apps (Messages, Slack, Claude, ChatGPT), Dynamic Island
-  Live Activity interaction, and hardware Action Button invocation. Transient
-  `AVAudioRecorder.isRecording` changes during warm handoff or Bluetooth route
-  changes have not been reproduced on hardware; the meter recovery tests inject
-  that condition through `ActiveAudioCapture`.
-- **Apple Speech hint:** Custom vocabulary's contextual strings are best effort
-  and unverified on a physical iPhone. Apple documents contextual strings only
-  for `DictationTranscriber`, Hex sets them on `SpeechTranscriber`, and
-  Parakeet's batch path gets no hint.
-- **No iOS CI:** Custom vocabulary is covered by unit tests only. No CI job
-  compiles or tests the iOS targets, so these checks run only in a local
-  `xcodebuild test`.
+What each run covers, and what needs a physical iPhone, is in
+[`docs/build-and-test.md`](docs/build-and-test.md) and
+[`docs/verification.md`](docs/verification.md).
+
+## Docs
+
+Change an area doc in the same commit as the behaviour it describes. Facts that
+only apply to one area belong in that area's doc; this README stays a map.

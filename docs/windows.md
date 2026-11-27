@@ -11,17 +11,27 @@ contextual Modes can rewrite completed dictation through the same
 deadline-bounded OpenCode processing policy as macOS, then run ordered built-in
 or user-defined TypeScript transformations.
 
-The default shortcut is `Ctrl+Space`. In **Hold** mode, hold both keys while
-speaking and release Space to transcribe and paste. In **Toggle** mode, press
-`Ctrl+Space` to start and again to finish, or press the **Cancel** shortcut
-(Escape by default) to throw the recording away; Hex takes that key only while
-a recording runs. Hold mode has no cancel (every dictation finishes and
-pastes), and holding a modifier on its own does nothing. Hex consumes the chord while it matches, so
-applications and input methods no longer see `Ctrl+Space`; rebind it in Settings
-if you rely on that chord elsewhere. To let another app use the same key, such as
-a Discord push-to-talk key, turn on **Share dictation shortcut with other apps**
-under Advanced: Hex still reacts to it but passes its key-down and key-up on,
-which can also trigger that binding in other apps. In Hold mode, tap the shortcut twice within
+The default shortcut is the left **Alt** key alone, the key under your thumb
+where Option sits on a Mac ([#2278](https://github.com/anomalyco/hex/issues/2278)).
+In **Hold** mode, hold Alt while speaking and release it to transcribe and
+paste. In **Toggle** mode, press Alt to start and again to finish, or press
+the **Cancel** shortcut (Escape by default) to throw the recording away; Hex
+takes that key only while a recording runs. Hold mode has no cancel shortcut
+(releasing the hold transcribes and pastes). Alt is the shortcut only while it is held
+alone: another key, or a modifier the shortcut doesn't include, joining it
+makes an ordinary chord for the app in front (Alt-tab, Alt+F4, Alt+Shift for
+the input language, or Ctrl on the way to Ctrl+Alt+V), which cancels the
+press before anything is transcribed, and AltGr keeps typing on the layouts
+that use it. With Labs › Hold through other keys, a hold that is already a
+second old keeps recording through those keys instead. Windows opens its
+menus on an Alt tap, so Hex swallows Alt's release when nothing joined it,
+the way macOS keeps Option from opening its menus. A hold another key or
+modifier joined leaves the release to the app, unless Hex swallowed a key of
+that chord too (Paste Last's V, say), which brings the mask back. Rebind it in
+Settings if you rely on a bare Alt elsewhere. To let another app use the same
+key, such as a Discord push-to-talk key, turn on **Share dictation shortcut
+with other apps** under Advanced: Hex still reacts to it but passes its
+key-down and key-up on, which can also trigger that binding in other apps. In Hold mode, tap the shortcut twice within
 300 ms to lock recording, then press it again to finish. Paste Last defaults to
 `Ctrl+Alt+V`. Settings changes apply live or through an automatic listener
 restart.
@@ -119,6 +129,21 @@ whole clip. CPU devices (including ARM64) always use the whole-clip path. Set
 `.cargo/config.toml` links the C and C++ runtimes statically. Distributed builds
 also set `TRANSCRIBE_CMAKE_ARGS=-DGGML_NATIVE=OFF`; without it ggml tunes its
 CPU kernels to the build machine and the binary can crash on older CPUs.
+
+An x64 PC below the release floor (for example Ivy Bridge: AVX and F16C, but no
+AVX2) can still build from source. In PowerShell:
+
+```powershell
+$env:TRANSCRIBE_CMAKE_ARGS = "-DGGML_NATIVE=OFF -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON -DGGML_AVX2=OFF -DGGML_BMI2=OFF -DGGML_FMA=OFF"
+$env:HEX_X86_BASELINE = "ivybridge"
+cargo build --release
+```
+
+A missing flag fails the build with the full value. After switching between this
+build and a normal one, run `cargo clean -p transcribe-cpp-sys` first, so ggml
+is configured from scratch. Such a build is not an official release, is slower
+on newer CPUs, and never self-updates: every official artifact targets
+x86-64-v3 and would not start on that PC.
 
 Run the checked-in setup script from the repository root. It keeps an existing
 compatible Visual Studio installation and installs only missing prerequisites.
@@ -279,7 +304,6 @@ hex app
   `ThemeChanged` when the OS theme actually changed. The subclass removes
   itself when the window is destroyed.
 - Without a tray (creation failed) closing the window quits Hex.
-  See the [single-process plan](plans/single-process.md#windows-under-rune).
 
 **This app has never run on Windows.** Earlier releases shipped a GPUI app
 that a person did run; that app is gone, and the Rune app replaces it in the
@@ -334,18 +358,19 @@ current-user startup registry, UI Automation, and Windows capture APIs.
 | History retention, list, detail, search, copy, delete, and clear | Implemented |
 | Text replacements | Implemented in the Windows Modes pane using the shared phrase-boundary replacement engine |
 | Application picker in Modes | Implemented; lists Start menu shortcuts, App Paths, and apps with an open window, with each executable's icon; "Choose a file…" opens the native dialog through `rune::FileDialogs` |
-| Interface language | Implemented on every OS; English, Polish, Chinese, Japanese, German, Spanish, and Ukrainian |
+| Interface language | Implemented on every OS; English, Polish, Simplified and Traditional Chinese, Japanese, German, Spanish, Ukrainian, Portuguese (Brazil), French, Russian, and Hungarian |
 | Resident tray and Launch at login | Implemented; the tray menu (shared with Linux) has Paste last dictation, the speech-model picker, and the recording state |
 | Application modes with per-mode corrections, OpenCode rewriting, and transformations | Implemented on the shared ordered processing policy; global and contextual profiles persist their own corrections, model, reasoning variant, deadline, and ordered built-in/TypeScript transformations, while modes match by application name — physical end-to-end paste/UI validation remains |
 | Vocabulary as Whisper and Qwen3-ASR's context prompt | Implemented |
 | Release microphone while idle | Implemented; mutually exclusive with audio pre-roll, as documented in Settings |
 | While-dictating audio control (mute other apps or pause media) | Implemented via WASAPI session volumes and GSMTC |
 | Signed automatic self-update for managed installs | Implemented for x64 and ARM64; the same ed25519 key and `https://anoma.ly/hex/files` origin as Linux, one feed per architecture, activating into a user-local versions directory. Checks 10 s after launch and every 6 h (or Check for updates); a staged update shows Restart to update in the tray menu and the window's sidebar footer, and the tray tooltip says an update is available. Source builds keep the GitHub release link (Download update); CI test builds never check |
-| Web-domain mode rules and browser context via UI Automation | Implemented; the page URL comes from the browser's UIA document element, bounded so a hung provider degrades to application-only context |
-| Managed installer with Start Menu integration and clean uninstall | Implemented as `.github/release/install-windows.ps1`; it creates the self-updating versions layout, and updates retarget the managed shortcut and Launch-at-login entry |
+| Web-domain mode rules and browser context via UI Automation | Implemented; the page URL comes from the browser's UIA document element, bounded so a hung provider degrades to application-only context. Meeting detection reads the microphone-holding browser's own windows the same way (titles first, then document addresses, one read in flight within a 2 s deadline, never searching a page's content), so a Meet or Teams page is named by its site |
+| Meeting call detection and call site names | Implemented on the shared detector: Windows audio sessions and executables map to the macOS keys, and a browser's call page is read from its windows through UI Automation, with whole-window titles reduced to the page's (Edge's profile and other-tab count removed); not observed on a real Windows call |
+| Managed installer with Start Menu integration and clean uninstall | Implemented as `.github/release/install-windows.ps1`; it creates the self-updating versions layout, and updates retarget the managed shortcut, Desktop shortcuts and taskbar pins pointed at an old `versions\<version>\hex.exe` (and an icon from that version), and the Launch-at-login entry |
 | First-run onboarding | Implemented; a fresh install picks a dictation language, downloads its recommended model with live progress, and starts listening only once setup is recorded — the shared first-run story, with a Microphone page only while the privacy switch is off and the practice game on the real shortcut |
 | Activity pane with the live session and recent dictations | Implemented in developer builds; the shared read-only pane (phases and timing; the event log keeps no dictated text) |
-| Developer Meetings, live drafts, and meeting paste | Missing |
+| Developer Meetings and live drafts | Missing |
 | Local transcription API and public TypeScript SDK host lifecycle on Windows | Missing; see Local Transcription Service |
 | Streaming finish with whole-clip fallback | Implemented on GPU devices with Parakeet Unified English |
 
@@ -358,13 +383,17 @@ Linux under the native title bar. Mode processing, OpenCode rewriting, and trans
 through the same `dictation/processor` and `personal_commands` modules as
 macOS, and Windows reaches the running OpenCode service the same way: its
 registration file and loopback HTTP, never a CLI. Like macOS,
-an unset OpenCode model tries the ranked recommended models before the
-OpenCode default. An OpenCode service running inside WSL2 is found only with
-Labs › OpenCode in WSL on: WSL2 forwards its loopback URL, and the lab adds
+an unset OpenCode model in a mode tries the ranked recommended models before
+the OpenCode default, while meeting notes with no chosen model ask only
+OpenCode's own default model. An OpenCode service running inside WSL2 is
+found only with Labs › OpenCode in WSL on: WSL2 forwards its loopback URL, and
+the lab adds
 the default distribution's registration and a Linux workspace path for
-`x-opencode-directory`. Annotate's capture sends use the same service: the
-prompt's "Recorded at" line names the capture folder as a Linux `/mnt/…` path
-while the summary header keeps the Windows path. Off, Hex reads only the
+`x-opencode-directory`. With the lab on, a WSL service that answers is used
+ahead of a Windows one; the Windows service is used when WSL answers nothing.
+Annotate's capture sends use the same service: the prompt's "Recorded at"
+line names the capture folder as a Linux `/mnt/…` path while the summary
+header keeps the Windows path. Off, Hex reads only the
 Windows registration and an OpenCode in WSL isn't found.
 Remaining panes should be added only with their complete Windows behavior;
 empty look-alike screens do not count as parity.

@@ -85,6 +85,13 @@ pub struct Policy(u8);
 impl Policy {
     /// This process's policy, read once.
     pub fn current() -> Self {
+        // A UI test can force a policy on its own thread, so a locked row is
+        // exercised without a managed Mac. Only Linux renders the panes
+        // tests, so only there does the override exist.
+        #[cfg(all(test, target_os = "linux"))]
+        if let Some(forced) = FORCED_FOR_TEST.with(|slot| *slot.borrow()) {
+            return forced;
+        }
         static CURRENT: OnceLock<Policy> = OnceLock::new();
         *CURRENT.get_or_init(|| {
             let policy = Self::from_forced(platform::forced);
@@ -122,17 +129,22 @@ impl Policy {
         self.0 != 0
     }
 
-    /// The lock on a Labs feature: Labs, Meetings for Meetings, Annotate for
-    /// Annotate replay, or OpenCode processing for a voice prompt.
+    /// Forces `policy` on this thread until the guard drops, so a pane test
+    /// can see what an organization's lock does to a row.
+    #[cfg(all(test, target_os = "linux"))]
+    pub fn forced_for_test(policy: Policy) -> ForcedPolicy {
+        FORCED_FOR_TEST.with(|slot| *slot.borrow_mut() = Some(policy));
+        ForcedPolicy
+    }
+
+    /// The lock on a Labs feature: its feature-specific lock (Meetings,
+    /// Annotate for every Annotate-group lab, or OpenCode processing for a
+    /// voice prompt) when active, otherwise Labs.
     pub fn labs_lock(self, feature: crate::labs::Feature) -> Option<Lock> {
-        if feature == crate::labs::Feature::Meetings && self.locks(Lock::Meetings) {
-            return Some(Lock::Meetings);
-        }
-        if feature == crate::labs::Feature::AnnotateReplay && self.locks(Lock::Annotate) {
-            return Some(Lock::Annotate);
-        }
-        if feature == crate::labs::Feature::VoicePrompt && self.locks(Lock::OpenCodeProcessing) {
-            return Some(Lock::OpenCodeProcessing);
+        if let Some(lock) = feature.lock()
+            && self.locks(lock)
+        {
+            return Some(lock);
         }
         self.locks(Lock::Labs).then_some(Lock::Labs)
     }
@@ -144,37 +156,27 @@ impl Policy {
         }
         let lock = match name {
             "capture.enabled" => Lock::Annotate,
+            "labs.app_model_switching" => Lock::Labs,
             _ => return None,
         };
         self.locks(lock).then_some(lock)
     }
 
-    /// The switches `lock` holds off in `settings`.
-    fn switches(settings: &mut AppSettings, lock: Lock) -> Vec<&mut bool> {
-        match lock {
-            Lock::Meetings => vec![&mut settings.meetings.enabled],
-            #[cfg(hex_capture)]
-            Lock::Annotate => vec![
-                &mut settings.capture.enabled,
-                &mut settings.labs.annotate_replay,
-            ],
-            #[cfg(not(hex_capture))]
-            Lock::Annotate => Vec::new(),
-            // `meetings.summaries` is a choice, not a switch; see `enforce`.
-            // A voice prompt is one of the OpenCode requests the lock stops.
-            Lock::OpenCodeProcessing => vec![&mut settings.labs.voice_prompt],
-            Lock::Transforms | Lock::LoopbackTransforms => Vec::new(),
-            Lock::Labs => crate::labs::Feature::switches(settings),
-        }
-    }
-
     /// Turns every locked switch off in memory.
     pub fn enforce(self, settings: &mut AppSettings) {
-        for lock in Lock::ALL.into_iter().filter(|lock| self.locks(*lock)) {
-            for switch in Self::switches(settings, lock) {
-                *switch = false;
+        for feature in crate::labs::Feature::ALL {
+            if self.labs_lock(feature).is_some() {
+                feature.set_field(settings, false);
             }
         }
+        if self.locks(Lock::Labs) {
+            settings.labs.app_model_switching = false;
+        }
+        #[cfg(hex_capture)]
+        if self.locks(Lock::Annotate) {
+            settings.capture.enabled = false;
+        }
+        // `meetings.summaries` is a choice, not a switch.
         if self.locks(Lock::OpenCodeProcessing)
             && settings.meetings.summaries == MeetingSummaries::OpenCode
         {
@@ -185,14 +187,17 @@ impl Policy {
     /// Puts the saved values of the locked switches back into `settings`
     /// before it is written, so a lock never changes the file.
     pub fn keep_saved(self, settings: &mut AppSettings, saved: &AppSettings) {
-        let mut saved = saved.clone();
-        for lock in Lock::ALL.into_iter().filter(|lock| self.locks(*lock)) {
-            for (switch, value) in Self::switches(settings, lock)
-                .into_iter()
-                .zip(Self::switches(&mut saved, lock))
-            {
-                *switch = *value;
+        for feature in crate::labs::Feature::ALL {
+            if self.labs_lock(feature).is_some() {
+                feature.set_field(settings, feature.on(saved));
             }
+        }
+        if self.locks(Lock::Labs) {
+            settings.labs.app_model_switching = saved.labs.app_model_switching;
+        }
+        #[cfg(hex_capture)]
+        if self.locks(Lock::Annotate) {
+            settings.capture.enabled = saved.capture.enabled;
         }
         if self.locks(Lock::OpenCodeProcessing)
             && settings.meetings.summaries == MeetingSummaries::Off
@@ -200,6 +205,25 @@ impl Policy {
         {
             settings.meetings.summaries = MeetingSummaries::OpenCode;
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    /// The policy a test forced on this thread ([`Policy::forced_for_test`]),
+    /// read ahead of the process's own so a locked row needs no managed Mac.
+    static FORCED_FOR_TEST: std::cell::RefCell<Option<Policy>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Clears a test's forced policy when it drops ([`Policy::forced_for_test`]).
+#[cfg(all(test, target_os = "linux"))]
+pub struct ForcedPolicy;
+
+#[cfg(all(test, target_os = "linux"))]
+impl Drop for ForcedPolicy {
+    fn drop(&mut self) {
+        FORCED_FOR_TEST.with(|slot| *slot.borrow_mut() = None);
     }
 }
 
@@ -278,6 +302,120 @@ mod tests {
         );
         let labs = Policy::default().with(Lock::Labs);
         assert_eq!(labs.labs_lock(feature), Some(Lock::Labs));
+    }
+
+    /// No Annotate-group lab may escape DisableAnnotate: every one reports
+    /// `Lock::Annotate` from `labs_lock` and `setting_lock` (including companion
+    /// keys), is forced off by `enforce`, and is preserved by `keep_saved`.
+    #[test]
+    fn every_annotate_group_lab_is_locked_by_disable_annotate() {
+        use crate::labs::{Feature, Group};
+        let annotate = Policy::default().with(Lock::Annotate);
+        let annotate_features: Vec<_> = Feature::ALL
+            .into_iter()
+            .filter(|feature| feature.group() == Group::Annotate)
+            .collect();
+        assert!(annotate_features.contains(&Feature::CopyCaptureZip));
+        assert!(annotate_features.contains(&Feature::AnnotateAgentTools));
+        assert!(annotate_features.contains(&Feature::AnnotateAgentInstall));
+        assert!(annotate_features.contains(&Feature::AnnotateReplay));
+        assert!(annotate_features.contains(&Feature::AnnotatePointerScreen));
+        assert!(annotate_features.contains(&Feature::GnomeAnnotate));
+        assert!(annotate_features.contains(&Feature::Screenshots));
+
+        let mut saved = AppSettings::default();
+        for &feature in &annotate_features {
+            assert_eq!(
+                annotate.labs_lock(feature),
+                Some(Lock::Annotate),
+                "{} escaped DisableAnnotate in labs_lock",
+                feature.name()
+            );
+            assert_eq!(
+                annotate.setting_lock(feature.settings_key()),
+                Some(Lock::Annotate),
+                "{} escaped DisableAnnotate in setting_lock",
+                feature.settings_key()
+            );
+            for extra in feature.extra_settings_keys() {
+                assert_eq!(
+                    annotate.setting_lock(extra),
+                    Some(Lock::Annotate),
+                    "companion key {extra} escaped DisableAnnotate"
+                );
+            }
+            feature.set_field(&mut saved, true);
+        }
+
+        let mut loaded = saved.clone();
+        annotate.enforce(&mut loaded);
+        for &feature in &annotate_features {
+            assert!(
+                !feature.on(&loaded),
+                "{} remained on after DisableAnnotate enforce",
+                feature.name()
+            );
+        }
+        #[cfg(hex_capture)]
+        assert!(!loaded.capture.enabled);
+
+        let mut written = loaded.clone();
+        annotate.keep_saved(&mut written, &saved);
+        for &feature in &annotate_features {
+            assert!(
+                feature.on(&written),
+                "{} was not restored by DisableAnnotate keep_saved",
+                feature.name()
+            );
+        }
+        #[cfg(hex_capture)]
+        assert_eq!(written.capture.enabled, saved.capture.enabled);
+    }
+
+    /// An organization's DisableAnnotate lock reaches the agent tools lab: the
+    /// card reads managed, `hex labs on` and `hex settings set` refuse, the
+    /// gate reads off, and the saved switch is never rewritten.
+    #[test]
+    fn the_annotate_lock_holds_agent_tools_off_and_keeps_its_switch_saved() {
+        use crate::labs::Feature;
+        let feature = Feature::AnnotateAgentTools;
+        assert_eq!(Policy::default().labs_lock(feature), None);
+        let annotate = Policy::default().with(Lock::Annotate);
+        assert_eq!(
+            annotate.labs_lock(feature),
+            Some(Lock::Annotate),
+            "the card shows it managed"
+        );
+        assert_eq!(
+            annotate.setting_lock("labs.annotate_agent_tools"),
+            Some(Lock::Annotate)
+        );
+        assert!(
+            !crate::labs::annotate_agent_tools_under(annotate),
+            "the gate reads off under the lock"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let _forced = Policy::forced_for_test(annotate);
+            assert_eq!(feature.managed(), Some(Lock::Annotate));
+            assert!(
+                !crate::labs::annotate_agent_tools(),
+                "the process gate reads off under the forced lock"
+            );
+        }
+
+        let mut saved = AppSettings::default();
+        saved.labs.annotate_agent_tools = true;
+        let mut loaded = saved.clone();
+        annotate.enforce(&mut loaded);
+        assert!(
+            !loaded.labs.annotate_agent_tools,
+            "the locked lab reads off"
+        );
+        // The lock never rewrites the saved switch.
+        let mut written = loaded.clone();
+        annotate.keep_saved(&mut written, &saved);
+        assert!(written.labs.annotate_agent_tools);
     }
 
     #[test]

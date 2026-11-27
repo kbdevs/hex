@@ -20,12 +20,22 @@ use super::warning::{SilenceAction, SilencePolicy, SilenceRecovery, TrackWarning
 use super::{AudioPacket, MeetingSource, SAMPLE_RATE};
 use crate::dictation::StreamingResampler;
 
-const RETRY_INITIAL: Duration = Duration::from_millis(500);
-const RETRY_MAX: Duration = Duration::from_secs(5);
+pub(super) const RETRY_INITIAL: Duration = Duration::from_millis(500);
+pub(super) const RETRY_MAX: Duration = Duration::from_secs(5);
+/// A source that ran this long before failing started; one that dies sooner
+/// keeps backing off instead of reopening at the initial delay.
+const STARTED_AFTER: Duration = Duration::from_secs(1);
 pub(super) const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Core Audio delivers silence continuously; this long without a buffer
-/// means the device or tap stopped.
+/// means the device or tap stopped. A source that keeps delivering buffers
+/// of exact zeros is a different failure, [`SYSTEM_SILENCE_TIMEOUT`].
 pub(super) const STALL_TIMEOUT: Duration = Duration::from_secs(3);
+/// A system source that carried sound and then delivers only exact zeros
+/// this long is treated as stalled: a tap whose default output device
+/// changed keeps its IO callbacks coming, so the callbacks alone never show
+/// the loss. Longer than the microphone's silence because an idle output is
+/// legitimately silent.
+pub(super) const SYSTEM_SILENCE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Delivers one source's 16 kHz audio to the track writer, stamped on the
 /// meeting's shared capture clock.
@@ -35,12 +45,61 @@ pub(super) struct PacketSink {
     pub(super) sender: SyncSender<AudioPacket>,
     pub(super) drops: Arc<AtomicU64>,
     pub(super) clock: Instant,
+    /// The system track's digital silence, shared with its supervisor and
+    /// every stream it reopens; `None` for the microphone. `send` is also
+    /// called from another thread (ScreenCaptureKit's handler), so the state
+    /// sits behind a mutex.
+    pub(super) system_silence: Option<Arc<Mutex<SystemSilence>>>,
 }
 
 impl PacketSink {
     pub(super) fn send(&self, sample_rate: u32, samples: Vec<f32>, pts_us: Option<i64>) {
+        self.send_samples(sample_rate, samples, pts_us, microphone_muted());
+    }
+
+    /// [`Self::send`] for silence a source synthesizes while its chosen
+    /// source isn't there: it holds the track's place on the timeline but is
+    /// no evidence about the stream, so it never feeds the digital-silence
+    /// watch. A source that recorded a call and then went quiet is waiting
+    /// for its app or device, not stalled. Only Linux pads a gap with
+    /// packets; the other sources send nothing, and their tests use this to
+    /// hold the watch still.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(super) fn send_synthesized_silence(&self, sample_rate: u32, samples: Vec<f32>) {
+        self.deliver(sample_rate, samples, None, microphone_muted(), false);
+    }
+
+    /// [`Self::send`] with the microphone's mute given, so a test holds it
+    /// without the macOS-only Labs switch.
+    fn send_samples(&self, sample_rate: u32, samples: Vec<f32>, pts_us: Option<i64>, muted: bool) {
+        self.deliver(sample_rate, samples, pts_us, muted, true);
+    }
+
+    /// Delivers one packet. `observe` says whether it is evidence about the
+    /// stream for the system track's digital-silence watch.
+    fn deliver(
+        &self,
+        sample_rate: u32,
+        mut samples: Vec<f32>,
+        pts_us: Option<i64>,
+        muted: bool,
+        observe: bool,
+    ) {
         if samples.is_empty() {
             return;
+        }
+        if observe && let Some(silence) = &self.system_silence {
+            silence
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .observe(sample_rate, &samples);
+        }
+        // A muted microphone keeps its packets' length, and with it the WAV
+        // timeline the two tracks share, but carries exact zeros. The
+        // switches are read here, past the source's own silence watch, which
+        // must keep hearing what the microphone really carries.
+        if muted && self.source == MeetingSource::Microphone {
+            samples.fill(0.0);
         }
         record_level(self.source, &samples);
         let packet = AudioPacket {
@@ -57,9 +116,58 @@ impl PacketSink {
     }
 }
 
+/// Whether the recording leaves the microphone out of its track right now
+/// (Labs › Mute the microphone while recording): set by the controller while
+/// a meeting records and cleared when one starts, ends, or the lab goes off,
+/// so every recording begins with the microphone in. Read as each microphone
+/// packet arrives.
+static MICROPHONE_MUTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the microphone's audio is left out of the recording now: the
+/// controller's switch, and Labs › Mute the microphone while recording still
+/// on. Turning the lab off therefore restores audio without stopping.
+pub fn microphone_muted() -> bool {
+    MICROPHONE_MUTED.load(Ordering::Relaxed) && crate::labs::meeting_microphone_mute()
+}
+
+/// Sets the microphone's switch for the recording under way; the controller
+/// owns it and clears it when a recording starts, ends, or the lab goes off.
+pub fn set_microphone_muted(muted: bool) {
+    MICROPHONE_MUTED.store(muted, Ordering::Relaxed);
+}
+
+/// Applies a mute request from the Meetings pane or the menu bar, and
+/// reports whether it landed. It acts only while a recording runs with
+/// Labs › Mute the microphone while recording on; anything else leaves the
+/// switch as it is, so an idle request cannot mute the next recording.
+pub(super) fn request_microphone_mute(recording: bool, lab: bool, muted: bool) -> bool {
+    if !recording || !lab {
+        return false;
+    }
+    set_microphone_muted(muted);
+    true
+}
+
+/// Keeps the switch in step with the lab, once per controller pass: while the
+/// lab is off the switch clears, so a lab turned back on later in the same
+/// recording cannot silently mute it again. The sink already restores audio
+/// by reading the same gate with each packet.
+pub(super) fn reconcile_microphone_mute(lab: bool) {
+    if !lab {
+        set_microphone_muted(false);
+    }
+}
+
+/// The controller's switch alone, whatever the lab says; a check of what a
+/// request did on an OS whose lab never turns on.
+#[cfg(test)]
+pub(super) fn microphone_mute_set() -> bool {
+    MICROPHONE_MUTED.load(Ordering::Relaxed)
+}
+
 /// The newest buffer's loudness per source (f32 bits, 0 to 1) and when it
 /// arrived (milliseconds since [`level_epoch`]), for the recording pill's
-/// voice bars. One meeting records at a time.
+/// level histories. One meeting records at a time.
 static LEVELS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 static LEVEL_AT_MS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 /// A reading older than this is silence: the source stopped delivering.
@@ -77,39 +185,52 @@ fn level_slot(source: MeetingSource) -> usize {
     }
 }
 
-/// Maps a buffer's RMS from -50 to -10 dBFS onto 0 to 1.
-fn loudness(samples: &[f32]) -> f32 {
-    let power = samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32;
-    let db = 10.0 * power.max(1e-10).log10();
-    ((db + 50.0) / 40.0).clamp(0.0, 1.0)
-}
-
 fn record_level(source: MeetingSource, samples: &[f32]) {
     let slot = level_slot(source);
-    LEVELS[slot].store(loudness(samples).to_bits(), Ordering::Relaxed);
+    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    LEVELS[slot].store(rms.to_bits(), Ordering::Relaxed);
     let now = level_epoch().elapsed().as_millis() as u64;
     LEVEL_AT_MS[slot].store(now.max(1), Ordering::Relaxed);
 }
 
-/// How loud the recording meeting is right now, 0 to 1: the louder of the
-/// microphone and the system audio, each read from its newest buffer and
-/// silent once that is over 300 ms old.
-pub fn voice_level() -> f32 {
+/// Latest microphone and system RMS, in that order, in the same units Dot scope takes.
+pub fn track_levels() -> [f32; 2] {
     let now = level_epoch().elapsed().as_millis() as u64;
-    let stale = LEVEL_STALE.as_millis() as u64;
-    (0..2)
-        .filter(|&slot| {
-            let at = LEVEL_AT_MS[slot].load(Ordering::Relaxed);
-            at != 0 && now.saturating_sub(at) <= stale
-        })
-        .map(|slot| f32::from_bits(LEVELS[slot].load(Ordering::Relaxed)))
-        .fold(0.0, f32::max)
+    std::array::from_fn(|slot| {
+        fresh_level(
+            now,
+            LEVEL_AT_MS[slot].load(Ordering::Relaxed),
+            f32::from_bits(LEVELS[slot].load(Ordering::Relaxed)),
+        )
+    })
+}
+
+fn fresh_level(now: u64, at: u64, level: f32) -> f32 {
+    if at != 0 && now.saturating_sub(at) <= LEVEL_STALE.as_millis() as u64 {
+        level
+    } else {
+        0.0
+    }
+}
+
+#[test]
+fn a_missing_or_stale_track_reads_as_silence() {
+    assert_eq!(fresh_level(500, 0, 0.8), 0.0);
+    assert_eq!(fresh_level(500, 199, 0.8), 0.0);
+    assert_eq!(fresh_level(500, 200, 0.8), 0.8);
 }
 
 /// An open source that the supervisor polls until it fails.
 pub(super) trait LiveSource {
     /// Waits briefly for audio and forwards it; an error ends this instance.
     fn poll(&mut self, sink: &PacketSink) -> std::result::Result<(), String>;
+    /// Refreshes a stream whose system audio went digitally silent by opening
+    /// its replacement before dropping the old capture, so a false positive on
+    /// a quiet stretch loses no audio. `None` means the backend does not
+    /// refresh in place and the supervisor drops and reopens it immediately.
+    fn refresh_in_place(&mut self, _sink: &PacketSink) -> Option<std::result::Result<(), String>> {
+        None
+    }
     fn describe(&self) -> &'static str;
 }
 
@@ -146,7 +267,10 @@ impl SourceSupervisor {
 
     /// Records the system audio of the call app `application` (a canonical
     /// bundle identifier), or of every output for a manual recording.
-    pub(super) fn system(sink: PacketSink, application: Option<String>) -> Self {
+    pub(super) fn system(mut sink: PacketSink, application: Option<String>) -> Self {
+        // Shared with every stream this supervisor reopens, so a reconnect
+        // starts unarmed after a digital-silence restart.
+        sink.system_silence = Some(Arc::new(Mutex::new(SystemSilence::default())));
         let source_sink = sink.clone();
         Self::spawn(sink, move || {
             super::os::open_system_audio(&source_sink, application.as_deref())
@@ -181,6 +305,12 @@ impl Drop for SourceSupervisor {
     }
 }
 
+enum StopReason {
+    Shutdown,
+    Failed(String),
+    SilenceStalled(String),
+}
+
 fn supervise(
     sink: &PacketSink,
     stop: &AtomicBool,
@@ -190,6 +320,7 @@ fn supervise(
     let mut delay = RETRY_INITIAL;
     let mut interrupted = false;
     let mut last_open_error = None::<String>;
+    let mut last_silence_reopen = None::<Instant>;
     while !stop.load(Ordering::Relaxed) {
         match open() {
             Ok(mut live) => {
@@ -199,26 +330,72 @@ fn supervise(
                     resumed = interrupted,
                     "meeting capture source started"
                 );
-                delay = RETRY_INITIAL;
                 last_open_error = None;
-                let failure = loop {
+                // Every stream starts with a fresh watch: it must carry
+                // sound before its exact zeros can mean a stall, whatever
+                // ended the last one.
+                reset_system_silence(sink);
+                let started = Instant::now();
+                let reason = loop {
                     if stop.load(Ordering::Relaxed) {
-                        break None;
+                        break StopReason::Shutdown;
                     }
                     if let Err(error) = live.poll(sink) {
-                        break Some(error);
+                        break StopReason::Failed(error);
+                    }
+                    if let Some(error) = system_silence_stalled(sink) {
+                        match live.refresh_in_place(sink) {
+                            Some(Ok(())) => {
+                                reset_system_silence(sink);
+                                tracing::info!(
+                                    ?source,
+                                    backend = live.describe(),
+                                    %error,
+                                    "meeting capture source refreshed in place after digital silence"
+                                );
+                                continue;
+                            }
+                            Some(Err(refresh_error)) => {
+                                break StopReason::Failed(refresh_error);
+                            }
+                            None => break StopReason::SilenceStalled(error),
+                        }
                     }
                 };
                 drop(live);
-                let Some(error) = failure else {
-                    return;
-                };
-                interrupted = true;
-                tracing::warn!(
-                    ?source,
-                    %error,
-                    "meeting capture source stopped; keeping the other source and retrying"
-                );
+                match reason {
+                    StopReason::Shutdown => return,
+                    StopReason::SilenceStalled(error) => {
+                        interrupted = true;
+                        let immediate =
+                            last_silence_reopen.is_none_or(|at| at.elapsed() >= STARTED_AFTER);
+                        if immediate {
+                            last_silence_reopen = Some(Instant::now());
+                            delay = RETRY_INITIAL;
+                            tracing::warn!(
+                                ?source,
+                                %error,
+                                "meeting capture source stopped after digital silence; reopening immediately"
+                            );
+                            continue;
+                        }
+                        delay = retry_delay(delay, started.elapsed());
+                        tracing::warn!(
+                            ?source,
+                            %error,
+                            "meeting capture source stopped; keeping the other source and retrying"
+                        );
+                    }
+                    StopReason::Failed(error) => {
+                        interrupted = true;
+                        delay = retry_delay(delay, started.elapsed());
+                        tracing::warn!(
+                            ?source,
+                            %error,
+                            "meeting capture source stopped; keeping the other source and retrying"
+                        );
+                    }
+                }
             }
             Err(error) => {
                 let error = format!("{error:#}");
@@ -237,6 +414,175 @@ fn supervise(
         }
         delay = delay.saturating_mul(2).min(RETRY_MAX);
     }
+}
+
+/// When a capture that failed or ended starts again: due after a wait that
+/// starts at [`RETRY_INITIAL`] and doubles to [`RETRY_MAX`] while captures
+/// keep ending right away. The Linux monitors and the Windows app loopback
+/// retry their own captures with it.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(super) struct Restart {
+    /// When the next capture is due, `None` while one runs.
+    due: Option<Instant>,
+    /// The wait before that try.
+    wait: Duration,
+    /// When the capture that ended began, so one that ran a while starts over.
+    started: Option<Instant>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+impl Restart {
+    /// The state of a capture that started at `now`.
+    pub(super) fn running(now: Instant) -> Self {
+        Self {
+            due: None,
+            wait: RETRY_INITIAL,
+            started: Some(now),
+        }
+    }
+
+    /// A capture started at `now`, replacing the one that ended.
+    pub(super) fn started(&mut self, now: Instant) {
+        self.due = None;
+        self.started = Some(now);
+    }
+
+    /// The capture ended at `now`: due again after the wait it reached, which
+    /// starts over for one that ran at least a second and doubles for one that
+    /// keeps ending right away.
+    pub(super) fn exited(&mut self, now: Instant) {
+        let ran = self.started.take().map_or(Duration::ZERO, |started| {
+            now.saturating_duration_since(started)
+        });
+        self.wait = retry_delay(self.wait, ran);
+        self.due = Some(now + self.wait);
+        self.wait = self.wait.saturating_mul(2).min(RETRY_MAX);
+    }
+
+    /// Whether the next capture is due at `now`.
+    pub(super) fn is_due(&self, now: Instant) -> bool {
+        self.due.is_some_and(|due| now >= due)
+    }
+
+    /// When the next capture is due, `None` while one runs.
+    pub(super) fn due_at(&self) -> Option<Instant> {
+        self.due
+    }
+}
+
+/// The wait before reopening a source that ran for `ran` before it failed:
+/// the initial delay once it genuinely started, else the delay it already
+/// reached, so a source that dies right after every open keeps backing off
+/// instead of spawning and logging twice a second forever.
+pub(super) fn retry_delay(delay: Duration, ran: Duration) -> Duration {
+    if ran >= STARTED_AFTER {
+        RETRY_INITIAL
+    } else {
+        delay
+    }
+}
+
+/// Whether a system source opened on the default output `created` must
+/// reopen for `current`: only a change to a different, readable output
+/// counts, so an unreadable one never restarts the source.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(super) fn output_changed(created: Option<&str>, current: Option<&str>) -> bool {
+    matches!((created, current), (Some(created), Some(current)) if created != current)
+}
+
+/// Consecutive exact zeros from the system track, counted only once it
+/// carried sound so an idle output, or a manual recording of nothing, is not
+/// mistaken for a stalled stream.
+#[derive(Debug, Default)]
+pub(super) struct SystemSilence {
+    /// The sample rate of the last packet, for the threshold.
+    rate: u32,
+    /// The track carried sound at some point since the stream opened.
+    armed: bool,
+    /// Consecutive exact-zero samples since the last audible one.
+    zeros: u64,
+}
+
+impl SystemSilence {
+    /// Counts one packet's samples, delivered at `rate`.
+    pub(super) fn observe(&mut self, rate: u32, samples: &[f32]) {
+        self.rate = rate;
+        for &sample in samples {
+            if sample == 0.0 {
+                self.zeros += 1;
+            } else {
+                self.zeros = 0;
+                self.armed = true;
+            }
+        }
+    }
+
+    /// Whether the track carried sound and has since been exactly zero for
+    /// [`SYSTEM_SILENCE_TIMEOUT`].
+    pub(super) fn stalled(&self) -> bool {
+        self.armed
+            && self.rate > 0
+            && self.zeros >= u64::from(self.rate).saturating_mul(SYSTEM_SILENCE_TIMEOUT.as_secs())
+    }
+
+    /// Starts a freshly opened stream unarmed, so its silence can only mean
+    /// a stall again once it carries sound.
+    pub(super) fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Ends a system source that carried sound and then went digitally silent:
+/// `Some` with the reason. The stream the supervisor reopens starts unarmed
+/// ([reset_system_silence]), so the same silence cannot reopen it again.
+fn system_silence_stalled(sink: &PacketSink) -> Option<String> {
+    let silence = sink.system_silence.as_ref()?;
+    let silence = silence.lock().unwrap_or_else(|error| error.into_inner());
+    silence
+        .stalled()
+        .then(|| "system audio went digitally silent after carrying sound".into())
+}
+
+/// Starts a freshly opened system stream unarmed.
+fn reset_system_silence(sink: &PacketSink) {
+    if let Some(silence) = &sink.system_silence {
+        silence
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .reset();
+    }
+}
+
+/// 16 kHz samples each output's audio is held back before mixing, so two
+/// outputs playing at once line up instead of following each other. Linux and
+/// Windows mix their outputs; macOS hears one tap and compiles this only for
+/// the mixer's test.
+#[cfg(any(not(target_os = "macos"), test))]
+pub(super) const MIX_HOLD: usize = SAMPLE_RATE as usize / 20;
+
+/// Mixes each output's pending audio up to the latest output's position less
+/// `hold`, leaving the rest for the next call. An output that delivered
+/// nothing (nothing plays on it) adds nothing. Linux and Windows mix their
+/// outputs; macOS hears one tap and compiles this only for the mixer's test.
+#[cfg(any(not(target_os = "macos"), test))]
+pub(super) fn mix(pending: &mut [&mut Vec<f32>], hold: usize) -> Vec<f32> {
+    let length = pending
+        .iter()
+        .map(|samples| samples.len())
+        .max()
+        .unwrap_or(0)
+        .saturating_sub(hold);
+    let mut mixed = vec![0.0f32; length];
+    for samples in pending.iter_mut() {
+        let take = samples.len().min(length);
+        for (out, sample) in mixed.iter_mut().zip(samples.drain(..take)) {
+            *out += sample;
+        }
+    }
+    for sample in &mut mixed {
+        *sample = sample.clamp(-1.0, 1.0);
+    }
+    mixed
 }
 
 /// Converts any device rate to the 16 kHz meeting tracks so a reopened
@@ -297,10 +643,25 @@ impl UnopenableRetry {
 /// How often a meeting looks at which input its call app records from.
 const CALL_INPUT_INTERVAL: Duration = Duration::from_secs(1);
 
+/// The UIDs of the reported devices that can record, in the app's order: an
+/// output-only device a call app lists as its input, such as the MacBook Pro
+/// Speakers, offers no input channels and is dropped.
+fn recordable_inputs(reported: &[crate::microphone_activity::ReportedInput]) -> Vec<String> {
+    reported
+        .iter()
+        .filter(|input| input.input_channels > 0)
+        .map(|input| input.uid.clone())
+        .collect()
+}
+
 /// The input a meeting follows for its call app, by UID: the one it follows
 /// while the app still reports it or reports none (as some do while muted),
-/// else the first the app reports.
-fn follow_call_input(current: Option<String>, reported: Vec<String>) -> Option<String> {
+/// else the first input the app reports that can record.
+fn follow_call_input(
+    current: Option<String>,
+    reported: Vec<crate::microphone_activity::ReportedInput>,
+) -> Option<String> {
+    let reported = recordable_inputs(&reported);
     match current {
         Some(current) if reported.is_empty() || reported.contains(&current) => Some(current),
         _ => reported.into_iter().next(),
@@ -313,9 +674,9 @@ fn call_app_reports_input(opened: Option<&str>, reported: &[String]) -> bool {
     opened.is_some_and(|opened| reported.iter().any(|reported| reported == opened))
 }
 
-/// The UIDs of the inputs the call app records from; none where the OS
-/// does not report them.
-fn call_app_inputs(application: &str) -> Vec<String> {
+/// The devices the call app reports recording from, with their input
+/// channel counts; none where the OS does not report them.
+fn call_app_inputs(application: &str) -> Vec<crate::microphone_activity::ReportedInput> {
     #[cfg(target_os = "macos")]
     {
         crate::microphone_activity::application_input_devices(application).unwrap_or_else(|error| {
@@ -336,17 +697,18 @@ fn call_app_inputs(application: &str) -> Vec<String> {
 #[derive(Default)]
 struct InputRecorders {
     seen: Mutex<SeenInput>,
-    /// When our own renegotiating open last changed the device's rate; a
-    /// recorder that disappears just after it is the driver restarting
-    /// streams, not another app letting go.
-    renegotiated: Mutex<Option<Instant>>,
 }
 
-/// The last input whose recorders were seen, and those processes.
+/// The last input whose recorders were seen, those processes, and when our
+/// own renegotiating open last changed that device's rate.
 #[derive(Default)]
 struct SeenInput {
     uid: Option<String>,
     pids: Vec<i32>,
+    /// When our own renegotiating open last changed the device's rate; a
+    /// recorder that disappears just after it is the driver restarting
+    /// streams, not another app letting go.
+    renegotiated: Option<Instant>,
 }
 
 impl InputRecorders {
@@ -366,17 +728,15 @@ impl InputRecorders {
     /// within [`RENEGOTIATION_SETTLE`] of it, ignores a disappearing pid:
     /// the driver is restarting its streams, not another app letting go.
     fn update(&self, uid: Option<&str>, current: Vec<i32>, now: Instant) -> bool {
-        let mut renegotiated = self
-            .renegotiated
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         let mut seen = self.seen.lock().unwrap_or_else(|error| error.into_inner());
         let same_input = seen.uid.as_deref() == uid;
         if !same_input {
             // The old input's rate change means nothing to this one.
-            *renegotiated = None;
+            seen.renegotiated = None;
         }
-        let settled = renegotiated.is_none_or(|at| now.duration_since(at) >= RENEGOTIATION_SETTLE);
+        let settled = seen
+            .renegotiated
+            .is_none_or(|at| now.duration_since(at) >= RENEGOTIATION_SETTLE);
         let released = same_input && settled && released_processes(&seen.pids, &current);
         seen.uid = uid.map(str::to_owned);
         seen.pids = current;
@@ -388,16 +748,17 @@ impl InputRecorders {
         *self.seen.lock().unwrap_or_else(|error| error.into_inner()) = SeenInput {
             uid: uid.map(str::to_owned),
             pids: current,
+            renegotiated: None,
         };
     }
 
     /// Notes that this open renegotiated the device's sample rate, which
     /// restarts its other streams.
     fn note_renegotiation(&self, now: Instant) {
-        *self
-            .renegotiated
+        self.seen
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(now);
+            .unwrap_or_else(|error| error.into_inner())
+            .renegotiated = Some(now);
     }
 }
 
@@ -455,8 +816,6 @@ struct MicrophoneSource {
     call_input: Option<String>,
     /// The input UIDs the call app last reported recording from.
     call_inputs: Vec<String>,
-    /// The UID of this stream's input.
-    opened_uid: Option<String>,
     call_input_checked: Instant,
     /// The processes recording from the input, shared across reopens.
     recorders: Arc<InputRecorders>,
@@ -472,11 +831,20 @@ impl MicrophoneSource {
         warnings: TrackWarnings,
     ) -> Result<Self> {
         let route_generation = crate::audio::input_route_generation();
-        let call_inputs = application
+        let reported = application
             .as_deref()
             .map(call_app_inputs)
             .unwrap_or_default();
-        let call_input = follow_call_input(None, call_inputs.clone());
+        let call_input = follow_call_input(None, reported.clone());
+        let call_inputs = recordable_inputs(&reported);
+        if application.is_some() {
+            tracing::debug!(
+                application = application.as_deref(),
+                reported = ?reported,
+                followed = ?call_input,
+                "meeting call app reports the inputs it records from"
+            );
+        }
         let renegotiate =
             silence_recovery.take_renegotiation(crate::transcription::engine::dictation_busy());
         if !renegotiate && silence_recovery.renegotiation_pending() {
@@ -504,10 +872,9 @@ impl MicrophoneSource {
             silence_recovery.forget_release();
         }
         let input = *input;
-        let opened_uid = input.uid.clone();
         let now = Instant::now();
         // A release from the old input says nothing about the new one.
-        if !recorders.same_input(opened_uid.as_deref()) {
+        if !recorders.same_input(input.uid.as_deref()) {
             silence_recovery.forget_release();
         }
         if application.is_some() {
@@ -517,8 +884,8 @@ impl MicrophoneSource {
             // Compare this open against the set the last stream saw, so an
             // app that let go while the source was down still counts as a
             // release. The shared state keeps it if this stream fails too.
-            if let Some(current) = recording_processes(opened_uid.as_deref())
-                && recorders.update(opened_uid.as_deref(), current, now)
+            if let Some(current) = recording_processes(input.uid.as_deref())
+                && recorders.update(input.uid.as_deref(), current, now)
             {
                 silence_recovery.note_release();
             }
@@ -547,7 +914,6 @@ impl MicrophoneSource {
             application,
             call_input,
             call_inputs,
-            opened_uid,
             call_input_checked: Instant::now(),
             recorders,
             recorders_checked: Instant::now(),
@@ -558,7 +924,7 @@ impl MicrophoneSource {
     /// is when another app's voice processing can leave it digitally silent.
     /// A manual recording has no call app and never holds the device.
     fn call_app_holds_device(&self) -> bool {
-        call_app_reports_input(self.opened_uid.as_deref(), &self.call_inputs)
+        call_app_reports_input(self.input.uid.as_deref(), &self.call_inputs)
     }
 
     /// Notes an application other than Hex stopping recording from this
@@ -573,12 +939,12 @@ impl MicrophoneSource {
             return;
         }
         self.recorders_checked = now;
-        let Some(current) = recording_processes(self.opened_uid.as_deref()) else {
+        let Some(current) = recording_processes(self.input.uid.as_deref()) else {
             return;
         };
         if self
             .recorders
-            .update(self.opened_uid.as_deref(), current, now)
+            .update(self.input.uid.as_deref(), current, now)
         {
             self.silence.note_release();
         }
@@ -597,13 +963,22 @@ impl MicrophoneSource {
             && now.duration_since(self.call_input_checked) >= CALL_INPUT_INTERVAL
         {
             self.call_input_checked = now;
-            self.call_inputs = self
+            let reported = self
                 .application
                 .as_deref()
                 .map(call_app_inputs)
                 .unwrap_or_default();
-            let call_input = follow_call_input(self.call_input.clone(), self.call_inputs.clone());
+            self.call_inputs = recordable_inputs(&reported);
+            let call_input = follow_call_input(self.call_input.clone(), reported.clone());
             call_input_changed = call_input != self.call_input;
+            if call_input_changed {
+                tracing::debug!(
+                    reported = ?reported,
+                    from = ?self.call_input,
+                    to = ?call_input,
+                    "meeting microphone follows the input its call app records from"
+                );
+            }
             self.call_input = call_input;
         }
         let generation = crate::audio::input_route_generation();
@@ -659,9 +1034,8 @@ impl MicrophoneSource {
         // A new device starts a fresh zero count, but a warning raised by the
         // old one stays until real audio clears it.
         self.silence.reset(input.sample_rate);
-        self.opened_uid = input.uid.clone();
-        if let Some(current) = recording_processes(self.opened_uid.as_deref()) {
-            self.recorders.reset(self.opened_uid.as_deref(), current);
+        if let Some(current) = recording_processes(input.uid.as_deref()) {
+            self.recorders.reset(input.uid.as_deref(), current);
         }
         self.recorders_checked = now;
         // A release or renegotiation from the old input says nothing about
@@ -704,7 +1078,7 @@ impl LiveSource for MicrophoneSource {
                     SilenceAction::Gated => {
                         tracing::info!(
                             device = %self.input.device_name,
-                            device_uid = ?self.opened_uid,
+                            device_uid = ?self.input.uid,
                             call_app_inputs = ?self.call_inputs,
                             "meeting microphone is digitally silent but the call app does not report recording from it; not reopening or warning"
                         );
@@ -736,6 +1110,9 @@ impl LiveSource for MicrophoneSource {
             }
             crate::audio::AudioInputEvent::Timeout => Ok(()),
             crate::audio::AudioInputEvent::StreamFailed(error) => Err(error),
+            crate::audio::AudioInputEvent::StreamReconfigured => {
+                Err("microphone reconfigured".into())
+            }
         }
     }
 
@@ -749,18 +1126,28 @@ mod tests {
     use super::*;
     use crate::audio::Selection;
 
+    fn reported(uid: &str, input_channels: u32) -> crate::microphone_activity::ReportedInput {
+        crate::microphone_activity::ReportedInput {
+            uid: uid.to_owned(),
+            input_channels,
+        }
+    }
+
     #[test]
     fn a_meeting_follows_the_input_its_call_app_records_from() {
-        let uids = |uids: &[&str]| uids.iter().map(|uid| (*uid).to_owned()).collect::<Vec<_>>();
+        let inputs = |uids: &[&str]| uids.iter().map(|uid| reported(uid, 2)).collect::<Vec<_>>();
         let current = |uid: &str| Some(uid.to_owned());
         // The first input the app reports, until it reports a different one.
-        assert_eq!(follow_call_input(None, uids(&["Jabra"])), current("Jabra"));
         assert_eq!(
-            follow_call_input(current("Jabra"), uids(&["BuiltIn", "Jabra"])),
+            follow_call_input(None, inputs(&["Jabra"])),
             current("Jabra")
         );
         assert_eq!(
-            follow_call_input(current("Jabra"), uids(&["BuiltIn"])),
+            follow_call_input(current("Jabra"), inputs(&["BuiltIn", "Jabra"])),
+            current("Jabra")
+        );
+        assert_eq!(
+            follow_call_input(current("Jabra"), inputs(&["BuiltIn"])),
             current("BuiltIn")
         );
         // An app that reports none, as some do while muted, keeps its input.
@@ -770,6 +1157,33 @@ mod tests {
         );
         // With nothing reported yet, the configured microphone stays.
         assert_eq!(follow_call_input(None, Vec::new()), None);
+    }
+
+    #[test]
+    fn a_meeting_never_follows_a_device_without_input_channels() {
+        // WhatsApp reported the MacBook Pro Speakers as its input device, and
+        // Hex recorded speaker bleed and silence from it.
+        let speakers = reported("MacBookProSpeakers", 0);
+        assert_eq!(follow_call_input(None, vec![speakers.clone()]), None);
+        // An input the app really records from is followed instead.
+        assert_eq!(
+            follow_call_input(None, vec![speakers.clone(), reported("MacBookProMic", 1)]),
+            Some("MacBookProMic".to_owned())
+        );
+        // An output-only device never displaces the input already followed.
+        assert_eq!(
+            follow_call_input(Some("Jabra".to_owned()), vec![speakers.clone()]),
+            Some("Jabra".to_owned())
+        );
+        assert_eq!(
+            follow_call_input(
+                Some("Jabra".to_owned()),
+                vec![speakers.clone(), reported("BuiltIn", 2)]
+            ),
+            Some("BuiltIn".to_owned())
+        );
+        // A device that loses its input channels is no longer recordable.
+        assert!(recordable_inputs(&[speakers, reported("BuiltIn", 0)]).is_empty());
     }
 
     #[test]
@@ -798,6 +1212,25 @@ mod tests {
         assert!(retry.due.is_none());
         retry.resolved(Selection::Unlisted, start);
         assert!(retry.due.is_none());
+    }
+
+    #[test]
+    fn a_source_that_dies_right_after_each_open_keeps_backing_off() {
+        let instantly = Duration::from_millis(20);
+        // A source that really started reopens at the initial delay.
+        assert_eq!(retry_delay(RETRY_MAX, STARTED_AFTER), RETRY_INITIAL);
+        // One that failed instantly keeps the delay it already reached.
+        assert_eq!(retry_delay(RETRY_MAX, instantly), RETRY_MAX);
+        // So each instant failure waits longer, instead of spawning forever
+        // twice a second.
+        let mut delay = RETRY_INITIAL;
+        let mut waits = Vec::new();
+        for _ in 0..4 {
+            delay = retry_delay(delay, instantly);
+            waits.push(delay);
+            delay = delay.saturating_mul(2).min(RETRY_MAX);
+        }
+        assert_eq!(waits, [500, 1000, 2000, 4000].map(Duration::from_millis));
     }
 
     #[test]
@@ -851,5 +1284,415 @@ mod tests {
         // A manual recording, or an app macOS reports no inputs for.
         assert!(!call_app_reports_input(None, &reported));
         assert!(!call_app_reports_input(Some("BuiltIn"), &[]));
+    }
+
+    #[test]
+    fn audio_on_any_output_reaches_the_system_track() {
+        // Only the headset plays (#1221): its audio is kept, less the hold.
+        let mut speakers = Vec::new();
+        let mut headset = vec![0.25; 10];
+        let mixed = mix(&mut [&mut speakers, &mut headset], 4);
+        assert_eq!(mixed, vec![0.25; 6]);
+        assert_eq!(headset.len(), 4);
+
+        // Both play: their audio adds up sample by sample, clamped.
+        let mut speakers = vec![0.5; 8];
+        let mut headset = vec![0.75; 6];
+        let mixed = mix(&mut [&mut speakers, &mut headset], 2);
+        assert_eq!(mixed, vec![1.0; 6]);
+        assert_eq!((speakers.len(), headset.len()), (2, 0));
+
+        // Nothing plays: nothing is sent.
+        let mut idle = Vec::new();
+        assert!(mix(&mut [&mut idle], 2).is_empty());
+
+        // The shared hold is 50 ms at 16 kHz, so a 1,000-sample buffer is
+        // mixed only up to 200.
+        assert_eq!(MIX_HOLD, 800);
+        let mut left = vec![0.5; 1_000];
+        let mut right = Vec::new();
+        assert_eq!(mix(&mut [&mut left, &mut right], MIX_HOLD), vec![0.5; 200]);
+    }
+
+    #[test]
+    fn a_system_source_reopens_only_for_a_different_readable_output() {
+        let speakers = Some("BuiltInSpeakerDevice");
+        assert!(!output_changed(speakers, speakers));
+        // Bluetooth headphones went away and the speakers took over.
+        assert!(output_changed(Some("AirPods Pro"), speakers));
+        // An output Hex could not read says nothing about a change.
+        assert!(!output_changed(Some("AirPods Pro"), None));
+        assert!(!output_changed(None, speakers));
+        assert!(!output_changed(None, None));
+    }
+
+    #[test]
+    fn system_silence_never_fires_before_the_track_carried_sound() {
+        // A manual recording with nothing playing, or a call before its
+        // first sound, is exactly zero and is not a stall.
+        let mut silence = SystemSilence::default();
+        silence.observe(1_000, &[0.0; 20_000]);
+        assert!(!silence.stalled());
+    }
+
+    #[test]
+    fn system_silence_fires_after_fifteen_seconds_of_exact_zeros() {
+        // Counted in samples at the packet's rate, so nothing sleeps.
+        let mut silence = SystemSilence::default();
+        silence.observe(1_000, &[0.25; 1_000]);
+        silence.observe(1_000, &[0.0; 14_999]);
+        assert!(!silence.stalled(), "14.999 s of zeros is not a stall");
+        silence.observe(1_000, &[0.0]);
+        assert!(silence.stalled());
+    }
+
+    #[test]
+    fn an_audible_sample_restarts_the_system_zero_count() {
+        let mut silence = SystemSilence::default();
+        silence.observe(1_000, &[0.25]);
+        silence.observe(1_000, &[0.0; 14_000]);
+        silence.observe(1_000, &[0.25]);
+        silence.observe(1_000, &[0.0; 14_000]);
+        assert!(!silence.stalled());
+        silence.observe(1_000, &[0.0; 1_000]);
+        assert!(silence.stalled());
+    }
+
+    #[test]
+    fn a_reopened_system_source_starts_unarmed() {
+        let mut silence = SystemSilence::default();
+        silence.observe(1_000, &[0.25]);
+        silence.observe(1_000, &[0.0; 15_000]);
+        assert!(silence.stalled());
+        // The supervisor resets the shared watch before it reopens.
+        silence.reset();
+        silence.observe(1_000, &[0.0; 20_000]);
+        assert!(!silence.stalled(), "the new stream must carry sound again");
+    }
+
+    /// Labs › Mute the microphone while recording: a muted microphone's
+    /// packets carry exact zeros at the length they arrived at, so the WAV
+    /// timeline and every position they share with the call's audio stay put;
+    /// the system track and an unmuted microphone are untouched.
+    #[test]
+    fn a_muted_microphone_goes_silent_in_place_and_the_call_does_not() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(8);
+        let sink = |source| PacketSink {
+            source,
+            sender: sender.clone(),
+            drops: Arc::new(AtomicU64::new(0)),
+            clock: Instant::now(),
+            system_silence: None,
+        };
+        let microphone = sink(MeetingSource::Microphone);
+        microphone.send_samples(1_000, vec![0.5, -0.25, 0.125], None, true);
+        microphone.send_samples(1_000, vec![0.5, -0.25, 0.125], None, false);
+        let system = sink(MeetingSource::System);
+        system.send_samples(1_000, vec![0.25, 0.5], None, true);
+
+        let muted = receiver.try_recv().expect("the muted microphone sent");
+        assert_eq!(
+            muted.samples,
+            vec![0.0; 3],
+            "muted means silence, not a gap"
+        );
+        assert_eq!(muted.samples.len(), 3, "the packet keeps its length");
+        let unmuted = receiver.try_recv().expect("the unmuted microphone sent");
+        assert_eq!(unmuted.samples, vec![0.5, -0.25, 0.125]);
+        let call = receiver.try_recv().expect("the system track sent");
+        assert_eq!(call.samples, vec![0.25, 0.5], "the call keeps recording");
+    }
+
+    /// Serializes the tests that move the process-wide microphone switch, so
+    /// one can't observe another's.
+    static MICROPHONE_MUTE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn mute_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        MICROPHONE_MUTE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Labs › Mute the microphone while recording: a request lands only on a
+    /// recording under way with the lab on; anything else leaves the switch
+    /// alone, so an idle request cannot mute the next recording.
+    #[test]
+    fn a_microphone_mute_needs_a_recording_and_its_lab() {
+        let _lock = mute_test_lock();
+        set_microphone_muted(false);
+        assert!(
+            request_microphone_mute(true, true, true),
+            "a recording with the lab on takes the request"
+        );
+        assert!(microphone_mute_set(), "the switch is on");
+        assert!(
+            request_microphone_mute(true, true, false),
+            "unmuting in the same recording takes too"
+        );
+        assert!(!microphone_mute_set(), "the switch is off again");
+        // No lab: nothing lands, and a request to unmute leaves it as it was.
+        set_microphone_muted(true);
+        assert!(!request_microphone_mute(true, false, false));
+        assert!(
+            microphone_mute_set(),
+            "a lab that is off ignores the request"
+        );
+        // No recording: the switch a finished recording left is untouched.
+        assert!(!request_microphone_mute(false, true, false));
+        assert!(microphone_mute_set(), "an idle request is ignored");
+        set_microphone_muted(false);
+    }
+
+    /// Labs › Mute the microphone while recording's gate also holds the
+    /// switch: turning the lab off clears it on the next pass, so turning it
+    /// back on later in the same recording does not silently mute again.
+    #[test]
+    fn a_lab_turned_off_clears_the_microphone_mute() {
+        let _lock = mute_test_lock();
+        set_microphone_muted(true);
+        reconcile_microphone_mute(true);
+        assert!(microphone_mute_set(), "a lab that is on leaves the switch");
+        reconcile_microphone_mute(false);
+        assert!(!microphone_mute_set(), "the lab off clears the switch");
+        reconcile_microphone_mute(true);
+        assert!(
+            !microphone_mute_set(),
+            "a lab turned back on does not re-mute"
+        );
+    }
+
+    #[test]
+    fn only_the_system_sink_watches_digital_silence() {
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(8);
+        let sink = |source, system_silence| PacketSink {
+            source,
+            sender: sender.clone(),
+            drops: Arc::new(AtomicU64::new(0)),
+            clock: Instant::now(),
+            system_silence,
+        };
+        let system = sink(
+            MeetingSource::System,
+            Some(Arc::new(Mutex::new(SystemSilence::default()))),
+        );
+        system.send(1_000, vec![0.25], None);
+        system.send(1_000, vec![0.0; 15_000], None);
+        assert_eq!(
+            system_silence_stalled(&system).as_deref(),
+            Some("system audio went digitally silent after carrying sound")
+        );
+        // The supervisor resets the watch before it polls the reopened stream.
+        reset_system_silence(&system);
+        assert_eq!(system_silence_stalled(&system), None);
+
+        // The microphone keeps its own SilencePolicy and has no system watch.
+        let microphone = sink(MeetingSource::Microphone, None);
+        microphone.send(1_000, vec![0.0; 20_000], None);
+        assert_eq!(system_silence_stalled(&microphone), None);
+        reset_system_silence(&microphone);
+    }
+
+    /// A chosen app or output that played and then went away leaves the
+    /// source recording synthesized silence until it returns. That silence is
+    /// not the stream stalling, so it never trips the watch the way a
+    /// stream's own zeros do.
+    #[test]
+    fn a_chosen_sources_synthesized_silence_is_not_a_stall() {
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(8);
+        let watch = Arc::new(Mutex::new(SystemSilence::default()));
+        let sink = PacketSink {
+            source: MeetingSource::System,
+            sender,
+            drops: Arc::new(AtomicU64::new(0)),
+            clock: Instant::now(),
+            system_silence: Some(watch),
+        };
+        sink.send(1_000, vec![0.25], None);
+        // Fifteen seconds of the chosen source being absent, paced as the
+        // source sends it.
+        for _ in 0..150 {
+            sink.send_synthesized_silence(1_000, vec![0.0; 100]);
+        }
+        assert_eq!(
+            system_silence_stalled(&sink),
+            None,
+            "waiting for the chosen source is not a stalled stream"
+        );
+        // The stream's own zeros, past the timeout, still are.
+        sink.send(1_000, vec![0.0; 15_000], None);
+        assert_eq!(
+            system_silence_stalled(&sink).as_deref(),
+            Some("system audio went digitally silent after carrying sound")
+        );
+    }
+
+    #[test]
+    fn a_silence_stalled_source_refreshes_in_place_without_reopening() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+        let sink = PacketSink {
+            source: MeetingSource::System,
+            sender,
+            drops: Arc::new(AtomicU64::new(0)),
+            clock: Instant::now(),
+            system_silence: Some(Arc::new(Mutex::new(SystemSilence::default()))),
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let refreshes = Arc::new(AtomicU64::new(0));
+        let refreshes_seen = refreshes.clone();
+        let opens = Arc::new(AtomicU64::new(0));
+        let opens_seen = opens.clone();
+
+        struct RefreshSource {
+            step: u32,
+            refreshes: Arc<AtomicU64>,
+            stop: Arc<AtomicBool>,
+        }
+        impl LiveSource for RefreshSource {
+            fn poll(&mut self, sink: &PacketSink) -> std::result::Result<(), String> {
+                self.step += 1;
+                match self.step {
+                    1 => {
+                        sink.send_samples(1_000, vec![0.25], None, false);
+                        sink.send_samples(1_000, vec![0.0; 15_000], None, false);
+                    }
+                    // After refresh, 20 s of zeros must not trigger another
+                    // refresh until audible audio arrives again.
+                    2 => sink.send_samples(1_000, vec![0.0; 20_000], None, false),
+                    _ => self.stop.store(true, Ordering::Relaxed),
+                }
+                Ok(())
+            }
+            fn refresh_in_place(
+                &mut self,
+                _sink: &PacketSink,
+            ) -> Option<std::result::Result<(), String>> {
+                self.refreshes.fetch_add(1, Ordering::Relaxed);
+                Some(Ok(()))
+            }
+            fn describe(&self) -> &'static str {
+                "mock-refresh"
+            }
+        }
+
+        let started = Instant::now();
+        supervise(&sink, &stop, &mut || {
+            opens_seen.fetch_add(1, Ordering::Relaxed);
+            Ok(Box::new(RefreshSource {
+                step: 0,
+                refreshes: refreshes_seen.clone(),
+                stop: stop_flag.clone(),
+            }))
+        });
+        assert_eq!(opens.load(Ordering::Relaxed), 1, "refreshed in place");
+        assert_eq!(
+            refreshes.load(Ordering::Relaxed),
+            1,
+            "unarmed after refresh"
+        );
+        assert!(
+            started.elapsed() < RETRY_INITIAL,
+            "in-place refresh never sleeps for retry backoff"
+        );
+        assert!(receiver.try_iter().count() >= 3);
+    }
+
+    #[test]
+    fn a_silence_stalled_source_without_in_place_refresh_reopens_immediately() {
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(16);
+        let sink = PacketSink {
+            source: MeetingSource::System,
+            sender,
+            drops: Arc::new(AtomicU64::new(0)),
+            clock: Instant::now(),
+            system_silence: Some(Arc::new(Mutex::new(SystemSilence::default()))),
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let opens = Arc::new(AtomicU64::new(0));
+        let opens_seen = opens.clone();
+
+        struct ReopenSource {
+            generation: u64,
+            stop: Arc<AtomicBool>,
+        }
+        impl LiveSource for ReopenSource {
+            fn poll(&mut self, sink: &PacketSink) -> std::result::Result<(), String> {
+                if self.generation == 1 {
+                    sink.send_samples(1_000, vec![0.25], None, false);
+                    sink.send_samples(1_000, vec![0.0; 15_000], None, false);
+                } else {
+                    self.stop.store(true, Ordering::Relaxed);
+                }
+                Ok(())
+            }
+            fn describe(&self) -> &'static str {
+                "mock-reopen"
+            }
+        }
+
+        let started = Instant::now();
+        supervise(&sink, &stop, &mut || {
+            let generation = opens_seen.fetch_add(1, Ordering::Relaxed) + 1;
+            Ok(Box::new(ReopenSource {
+                generation,
+                stop: stop_flag.clone(),
+            }))
+        });
+        assert_eq!(opens.load(Ordering::Relaxed), 2);
+        assert!(
+            started.elapsed() < RETRY_INITIAL,
+            "silence watchdog reopen skips the 500 ms retry sleep"
+        );
+    }
+
+    #[test]
+    fn a_failed_in_place_refresh_drops_and_reopens_the_source() {
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(16);
+        let sink = PacketSink {
+            source: MeetingSource::System,
+            sender,
+            drops: Arc::new(AtomicU64::new(0)),
+            clock: Instant::now(),
+            system_silence: Some(Arc::new(Mutex::new(SystemSilence::default()))),
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let opens = Arc::new(AtomicU64::new(0));
+        let opens_seen = opens.clone();
+
+        struct FailingRefreshSource {
+            generation: u64,
+            stop: Arc<AtomicBool>,
+        }
+        impl LiveSource for FailingRefreshSource {
+            fn poll(&mut self, sink: &PacketSink) -> std::result::Result<(), String> {
+                if self.generation == 1 {
+                    sink.send_samples(1_000, vec![0.25], None, false);
+                    sink.send_samples(1_000, vec![0.0; 15_000], None, false);
+                } else {
+                    self.stop.store(true, Ordering::Relaxed);
+                }
+                Ok(())
+            }
+            fn refresh_in_place(
+                &mut self,
+                _sink: &PacketSink,
+            ) -> Option<std::result::Result<(), String>> {
+                Some(Err("tap create failed".into()))
+            }
+            fn describe(&self) -> &'static str {
+                "mock-refresh-fail"
+            }
+        }
+
+        supervise(&sink, &stop, &mut || {
+            let generation = opens_seen.fetch_add(1, Ordering::Relaxed) + 1;
+            Ok(Box::new(FailingRefreshSource {
+                generation,
+                stop: stop_flag.clone(),
+            }))
+        });
+        assert_eq!(opens.load(Ordering::Relaxed), 2);
     }
 }

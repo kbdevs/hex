@@ -21,43 +21,86 @@ use crate::app_settings::KeyboardModelChoice;
 use crate::transcription::models::TranscriptionSelection;
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
+const RETRY_BASE: Duration = Duration::from_secs(2);
+const RETRY_MAX: Duration = Duration::from_secs(60);
+
+fn retry_backoff(failures: u32) -> Duration {
+    RETRY_BASE
+        .saturating_mul(1_u32 << failures.min(5))
+        .min(RETRY_MAX)
+}
 
 /// What a foreground read found. Hex's own window and a moment with no
 /// frontmost application name no mode, so the switcher keeps what it last
 /// matched and neither schedules nor cancels a switch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Observation<'a> {
-    /// An application other than Hex is in front.
-    App(&'a str),
+    /// An application other than Hex is in front: its own name, and on
+    /// macOS the name Finder shows for its bundle when that differs.
+    App(&'a str, Option<&'a str>),
     /// Hex's own window is in front, or the system named no application.
     Ignored,
 }
 
 impl<'a> Observation<'a> {
     /// A frontmost read: `None` is Hex's own window or no application at all.
-    pub(crate) fn frontmost(application: Option<&'a str>) -> Self {
-        application.map_or(Self::Ignored, Self::App)
+    pub(crate) fn frontmost(application: Option<&'a str>, bundle_name: Option<&'a str>) -> Self {
+        application.map_or(Self::Ignored, |application| {
+            Self::App(application, bundle_name)
+        })
     }
+}
+
+#[derive(Debug)]
+enum State {
+    /// Labs › Switch model with app is off.
+    Off,
+    /// Enabled, currently on an app with no mode choice (or waiting for the
+    /// first observation after being enabled).
+    Idle,
+    /// A mode choice is waiting out its debounce (or retry backoff after a
+    /// failed automatic preparation).
+    Pending {
+        choice: KeyboardModelChoice,
+        due: Instant,
+        failures: u32,
+    },
+    /// `take_due` handed `choice` to the host; waiting for `commit` or `fail`.
+    Applying {
+        choice: KeyboardModelChoice,
+        failures: u32,
+    },
+    /// `choice` is active (at launch, already selected, committed, or manually
+    /// overridden). Nothing runs until the observed choice changes.
+    Settled(KeyboardModelChoice),
 }
 
 /// The debounced policy. The host feeds the choice of the mode matching the
 /// foreground app; no choice means "don't switch".
 pub(crate) struct Switcher {
-    enabled: bool,
-    /// The observed choice; unknown while switching is off, so turning it on
-    /// waits for the host's first observation instead of a stale mode.
-    current: Option<KeyboardModelChoice>,
-    due: Option<Instant>,
+    state: State,
 }
 
 impl Switcher {
     /// `current` is the choice of the mode in front at launch, recorded so a
     /// launch never switches the model.
     pub(crate) fn new(enabled: bool, current: Option<KeyboardModelChoice>) -> Self {
-        Self {
-            current: current.filter(|_| enabled),
-            enabled,
-            due: None,
+        let state = if !enabled {
+            State::Off
+        } else if let Some(choice) = current {
+            State::Settled(choice)
+        } else {
+            State::Idle
+        };
+        Self { state }
+    }
+
+    fn observed_choice(&self) -> Option<&KeyboardModelChoice> {
+        match &self.state {
+            State::Off | State::Idle => None,
+            State::Pending { choice, .. }
+            | State::Applying { choice, .. }
+            | State::Settled(choice) => Some(choice),
         }
     }
 
@@ -68,64 +111,120 @@ impl Switcher {
     pub(crate) fn observe(
         &mut self,
         observation: Observation<'_>,
-        mode: impl FnOnce(&str) -> Option<KeyboardModelChoice>,
+        mode: impl FnOnce(&str, Option<&str>) -> Option<KeyboardModelChoice>,
         now: Instant,
     ) -> bool {
         match observation {
-            Observation::App(application) => self.choice_changed(mode(application), now),
+            Observation::App(application, bundle_name) => {
+                self.choice_changed(mode(application, bundle_name), now)
+            }
             Observation::Ignored => false,
         }
     }
 
     fn choice_changed(&mut self, choice: Option<KeyboardModelChoice>, now: Instant) -> bool {
-        if !self.enabled || self.current == choice {
+        if matches!(self.state, State::Off) || self.observed_choice() == choice.as_ref() {
             return false;
         }
-        self.current = choice;
-        self.due = self.current.as_ref().map(|_| now + DEBOUNCE);
+        self.state = match choice {
+            Some(choice) => State::Pending {
+                choice,
+                due: now + DEBOUNCE,
+                failures: 0,
+            },
+            None => State::Idle,
+        };
         true
     }
 
-    /// The choice to switch to once its debounce passes, unless it already
-    /// names `selection`. A mode that matches the current model and language
-    /// is a no-op. The host never calls this while a dictation records, so a
-    /// due switch waits for idle.
+    /// The choice to switch to once its debounce (or retry backoff) passes,
+    /// unless it already names `selection`. A mode that matches the current
+    /// model and language settles immediately as a no-op. The host never calls
+    /// this while a dictation records, so a due switch waits for idle.
     pub(crate) fn take_due(
         &mut self,
         now: Instant,
         selection: &TranscriptionSelection,
     ) -> Option<KeyboardModelChoice> {
-        if now < self.due? {
+        let State::Pending {
+            choice,
+            due,
+            failures,
+        } = &self.state
+        else {
+            return None;
+        };
+        if now < *due {
             return None;
         }
-        self.due = None;
-        let choice = self.current.clone()?;
-        (choice.model != selection.model || choice.language != selection.language).then_some(choice)
+        let choice = choice.clone();
+        let failures = *failures;
+        if choice.model == selection.model && choice.language == selection.language {
+            self.state = State::Settled(choice);
+            return None;
+        }
+        self.state = State::Applying {
+            choice: choice.clone(),
+            failures,
+        };
+        Some(choice)
     }
 
-    /// A manual model choice cancels a pending switch; only another mode
-    /// change can schedule one again.
+    /// Records that the automatic preparation returned by `take_due` committed.
+    pub(crate) fn commit(&mut self) {
+        if let State::Applying { choice, .. } = &self.state {
+            self.state = State::Settled(choice.clone());
+        }
+    }
+
+    /// Records that the automatic preparation returned by `take_due` failed,
+    /// scheduling a retry with bounded exponential backoff so transient
+    /// failures or newly installed models recover without leaving the app.
+    pub(crate) fn fail(&mut self, now: Instant) {
+        if let State::Applying { choice, failures } = &self.state {
+            let delay = retry_backoff(*failures);
+            self.state = State::Pending {
+                choice: choice.clone(),
+                due: now + delay,
+                failures: failures.saturating_add(1),
+            };
+        }
+    }
+
+    /// Drops an in-flight automatic preparation that was superseded before
+    /// finishing, without disturbing a newer pending switch.
+    pub(crate) fn cancel_applying(&mut self) {
+        if let State::Applying { choice, .. } = &self.state {
+            self.state = State::Settled(choice.clone());
+        }
+    }
+
+    /// A manual model choice cancels a pending or retrying switch; only
+    /// another mode change can schedule one again.
     pub(crate) fn manual_choice(&mut self) {
-        self.due = None;
+        match &self.state {
+            State::Pending { choice, .. } | State::Applying { choice, .. } => {
+                self.state = State::Settled(choice.clone());
+            }
+            State::Off | State::Idle | State::Settled(_) => {}
+        }
     }
 
     /// Turning the lab off forgets the mode and cancels its switch. Turning
     /// it on waits for the host's next observation. Returns true when the
     /// owner must supersede an automatic preparation.
     pub(crate) fn configure(&mut self, enabled: bool) -> bool {
-        if self.enabled == enabled {
+        let was_enabled = !matches!(self.state, State::Off);
+        if was_enabled == enabled {
             return false;
         }
-        self.enabled = enabled;
-        self.due = None;
-        if !enabled {
-            self.current = None;
-        }
+        self.state = if enabled { State::Idle } else { State::Off };
         true
     }
 }
 
-/// The speech choice of the mode matching `application`.
+/// The speech choice of the mode matching `application`, or on macOS its
+/// bundle's Finder name, which is what the app picker saves.
 ///
 /// Matching is by application on both macOS and Windows: the mode's website
 /// rules are ignored, so a mode chosen only by website never matches. macOS
@@ -135,6 +234,7 @@ impl Switcher {
 pub(crate) fn mode_choice(
     settings: &AppSettings,
     application: &str,
+    bundle_name: Option<&str>,
 ) -> Option<KeyboardModelChoice> {
     #[cfg(target_os = "macos")]
     {
@@ -142,12 +242,14 @@ pub(crate) fn mode_choice(
             &settings.dictation_processing,
             &crate::dictation::context::ContextSnapshot {
                 application: Some(application.to_owned()),
+                bundle_name: bundle_name.map(str::to_owned),
                 ..Default::default()
             },
         )
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = bundle_name;
         crate::dictation::modes::speech_for(&settings.dictation_processing, Some(application), None)
     }
 }
@@ -157,10 +259,13 @@ pub(crate) fn mode_choice(
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn startup_choice(settings: &AppSettings) -> Option<KeyboardModelChoice> {
     #[cfg(target_os = "macos")]
-    let application = crate::dictation::context::frontmost_other_application();
+    let (application, bundle_name) = crate::dictation::context::frontmost_other_application()?;
     #[cfg(target_os = "windows")]
-    let application = crate::windows::app::foreground_other_process_stem();
-    mode_choice(settings, application.as_deref()?)
+    let (application, bundle_name) = (
+        crate::windows::app::foreground_other_process_stem()?,
+        None::<String>,
+    );
+    mode_choice(settings, &application, bundle_name.as_deref())
 }
 
 #[cfg(test)]
@@ -339,9 +444,36 @@ mod tests {
     fn observe(switcher: &mut Switcher, observation: Observation<'_>, now: Instant) -> bool {
         switcher.observe(
             observation,
-            |application| (application == "Notes").then(spanish),
+            |application, _| (application == "Notes").then(spanish),
             now,
         )
+    }
+
+    /// The picker saves Finder's name (`Rex Beta.app`), while the running
+    /// app calls itself `Rex`: the mode still switches the model.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mode_picked_under_its_finder_name_switches() {
+        let mut settings = AppSettings::default();
+        settings.dictation_processing.modes = vec![crate::app_settings::DictationMode {
+            name: "Spanish".into(),
+            applications: vec!["Rex Beta".into()],
+            speech: Some(spanish()),
+            ..Default::default()
+        }];
+        let mode = |application: &str, bundle_name: Option<&str>| {
+            mode_choice(&settings, application, bundle_name)
+        };
+        let now = Instant::now();
+        let mut switcher = Switcher::new(true, None);
+        let current = selection(TranscriptionModelId::ParakeetUnifiedEnglish, "en");
+        assert!(!switcher.observe(Observation::frontmost(Some("Rex"), None), mode, now));
+        assert!(switcher.observe(
+            Observation::frontmost(Some("Rex"), Some("Rex Beta")),
+            mode,
+            now,
+        ));
+        assert_eq!(switcher.take_due(now + DEBOUNCE, &current), Some(spanish()));
     }
 
     #[test]
@@ -349,13 +481,13 @@ mod tests {
         let now = Instant::now();
         let mut switcher = Switcher::new(true, None);
         let current = selection(TranscriptionModelId::ParakeetUnifiedEnglish, "en");
-        assert!(observe(&mut switcher, Observation::App("Notes"), now));
+        assert!(observe(&mut switcher, Observation::App("Notes", None), now));
         assert_eq!(switcher.take_due(now + DEBOUNCE, &current), Some(spanish()));
         // Hex's own window names no mode: the Notes choice stays, nothing
         // new is due, and the mode is never even looked up.
         assert!(!switcher.observe(
             Observation::Ignored,
-            |_| panic!("Hex's own window must not name a mode"),
+            |_, _| panic!("Hex's own window must not name a mode"),
             now + Duration::from_secs(1),
         ));
         assert_eq!(
@@ -365,7 +497,7 @@ mod tests {
         // Coming back to Notes is not a change either.
         assert!(!observe(
             &mut switcher,
-            Observation::App("Notes"),
+            Observation::App("Notes", None),
             now + Duration::from_secs(3),
         ));
         assert_eq!(
@@ -379,7 +511,7 @@ mod tests {
         let now = Instant::now();
         let mut switcher = Switcher::new(true, None);
         let current = selection(TranscriptionModelId::ParakeetUnifiedEnglish, "en");
-        assert!(observe(&mut switcher, Observation::App("Notes"), now));
+        assert!(observe(&mut switcher, Observation::App("Notes", None), now));
         assert!(!observe(
             &mut switcher,
             Observation::Ignored,
@@ -393,8 +525,12 @@ mod tests {
         let now = Instant::now();
         let mut switcher = Switcher::new(true, Some(spanish()));
         let current = selection(TranscriptionModelId::ParakeetUnifiedEnglish, "en");
-        assert_eq!(Observation::frontmost(None), Observation::Ignored);
-        assert!(!observe(&mut switcher, Observation::frontmost(None), now));
+        assert_eq!(Observation::frontmost(None, None), Observation::Ignored);
+        assert!(!observe(
+            &mut switcher,
+            Observation::frontmost(None, None),
+            now
+        ));
         assert_eq!(
             switcher.take_due(now + Duration::from_secs(1), &current),
             None
@@ -402,16 +538,107 @@ mod tests {
         // Only a real app read names a mode; the same one seen again after
         // the blank moment is not a change.
         assert_eq!(
-            Observation::frontmost(Some("Notes")),
-            Observation::App("Notes")
+            Observation::frontmost(Some("Notes"), None),
+            Observation::App("Notes", None)
         );
         assert!(!observe(
             &mut switcher,
-            Observation::frontmost(Some("Notes")),
+            Observation::frontmost(Some("Notes"), None),
             now + Duration::from_secs(2),
         ));
         assert_eq!(
             switcher.take_due(now + Duration::from_secs(3), &current),
+            None
+        );
+    }
+
+    #[test]
+    fn a_failed_switch_retries_with_bounded_backoff_until_committed_or_overridden() {
+        let now = Instant::now();
+        let mut switcher = Switcher::new(true, None);
+        let current = selection(TranscriptionModelId::ParakeetUnifiedEnglish, "en");
+        assert!(observe(&mut switcher, Observation::App("Notes", None), now));
+        assert_eq!(switcher.take_due(now + DEBOUNCE, &current), Some(spanish()));
+        // While applying, another tick does not start a duplicate switch.
+        assert_eq!(
+            switcher.take_due(now + Duration::from_secs(5), &current),
+            None
+        );
+
+        // First failure backs off by RETRY_BASE (2s), not immediately.
+        let fail_1 = now + Duration::from_millis(500);
+        switcher.fail(fail_1);
+        assert_eq!(
+            switcher.take_due(fail_1 + Duration::from_millis(1_999), &current),
+            None
+        );
+        // Same app observed again does not reset or cancel the retry.
+        assert!(!observe(
+            &mut switcher,
+            Observation::App("Notes", None),
+            fail_1 + Duration::from_secs(1)
+        ));
+        assert_eq!(
+            switcher.take_due(fail_1 + RETRY_BASE, &current),
+            Some(spanish())
+        );
+
+        // Second failure doubles backoff (4s); committing settles it.
+        let fail_2 = fail_1 + RETRY_BASE;
+        switcher.fail(fail_2);
+        assert_eq!(
+            switcher.take_due(fail_2 + Duration::from_millis(3_999), &current),
+            None
+        );
+        assert_eq!(
+            switcher.take_due(fail_2 + Duration::from_secs(4), &current),
+            Some(spanish())
+        );
+        switcher.commit();
+        assert_eq!(
+            switcher.take_due(fail_2 + Duration::from_secs(120), &current),
+            None
+        );
+
+        // Backoff is capped at RETRY_MAX.
+        assert_eq!(retry_backoff(0), Duration::from_secs(2));
+        assert_eq!(retry_backoff(1), Duration::from_secs(4));
+        assert_eq!(retry_backoff(5), RETRY_MAX);
+        assert_eq!(retry_backoff(20), RETRY_MAX);
+    }
+
+    #[test]
+    fn manual_choice_or_matching_selection_cancels_a_pending_retry() {
+        let now = Instant::now();
+        let mut switcher = Switcher::new(true, None);
+        let current = selection(TranscriptionModelId::ParakeetUnifiedEnglish, "en");
+        assert!(observe(&mut switcher, Observation::App("Notes", None), now));
+        assert_eq!(switcher.take_due(now + DEBOUNCE, &current), Some(spanish()));
+        switcher.fail(now + DEBOUNCE);
+        switcher.manual_choice();
+        assert_eq!(
+            switcher.take_due(now + Duration::from_secs(10), &current),
+            None
+        );
+
+        // Switching away and back schedules fresh; if the live selection already
+        // matches when the retry fires, it settles with no switch.
+        assert!(observe(
+            &mut switcher,
+            Observation::App("Safari", None),
+            now + Duration::from_secs(11)
+        ));
+        let t = now + Duration::from_secs(12);
+        assert!(observe(&mut switcher, Observation::App("Notes", None), t));
+        assert_eq!(switcher.take_due(t + DEBOUNCE, &current), Some(spanish()));
+        switcher.fail(t + DEBOUNCE);
+        let already_spanish = selection(TranscriptionModelId::ParakeetV3, "es");
+        assert_eq!(
+            switcher.take_due(t + DEBOUNCE + RETRY_BASE, &already_spanish),
+            None
+        );
+        assert_eq!(
+            switcher.take_due(t + Duration::from_secs(120), &current),
             None
         );
     }

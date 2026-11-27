@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 
 use super::generator::{self, GeneratedChapter, GenerationError};
 use super::{
-    MeetingManifest, TranscriptEntry, TranscriptReader, coalesce_transcript, display_title,
-    format_duration, read_manifest, write_manifest,
+    Labels, MeetingManifest, TranscriptEntry, TranscriptReader, coalesce_transcript, display_title,
+    format_duration, read_manifest, section_markdown, write_manifest,
 };
 
 /// How often the worker looks at the transcript; passes are far rarer.
@@ -62,13 +62,16 @@ transcript line starts with [mm:ss] and a speaker: You is the person who recorde
 and Them is one or more other participants. Name what most of the new lines are about in two to \
 five words, judging them on their own, and say what they cover in one short sentence. Then say \
 whether they are still about the current chapter named after them. Small talk, tangents, and follow-up questions on the same subject stay in the \
-current chapter. Use only what the transcript says; never invent names, dates, or numbers.";
+current chapter. Use only what the transcript says; never invent names, dates, or numbers. You \
+MUST name chapters and write their summaries in the language spoken in the transcript, even \
+though these instructions are in English; never translate them.";
 
 const REFINE_INSTRUCTIONS: &str = "You find where a finished meeting changed topic. Each \
 line starts with an L number, [mm:ss], and a speaker: You is the person who recorded the \
 meeting, and Them is one or more other participants. The lines run from the end of the chapter \
 before into the chapter after. List the L number of every line about the chapter after, \
-including the line that introduces it. Use only L numbers shown.";
+including the line that introduces it. Use only L numbers shown. The transcript may be in a \
+language other than English; that never changes which L numbers you list.";
 
 /// One topic of a meeting, from `start_ms` to the next chapter's start.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -100,17 +103,6 @@ pub fn chapter_entries(
         .collect()
 }
 
-/// One chapter as Markdown for copying: its name, its line, and its turns.
-pub fn section_markdown(chapter: &Chapter, entries: &[TranscriptEntry]) -> String {
-    let mut markdown = format!("## {}\n\n", chapter.title.trim());
-    if !chapter.summary.trim().is_empty() {
-        markdown.push_str(chapter.summary.trim());
-        markdown.push_str("\n\n");
-    }
-    markdown.push_str(&super::transcript_markdown(entries));
-    markdown.trim_end().to_string()
-}
-
 /// Chapter `index` of meeting `id` as Markdown, from its current transcript
 /// (rolling while it records). For the menu bar's Copy Section.
 pub fn section_for_id(id: &str, index: usize) -> Result<String> {
@@ -123,6 +115,7 @@ pub fn section_for_id(id: &str, index: usize) -> Result<String> {
     Ok(section_markdown(
         chapter,
         &chapter_entries(&entries, &manifest.chapters, index),
+        manifest.labels(),
     ))
 }
 
@@ -407,7 +400,7 @@ pub(super) fn pass_window(
             format!(
                 "[{}] {}: {}",
                 format_duration(turn.start_ms),
-                turn.source.label(),
+                Labels::default().of(turn),
                 truncate_words(turn.text.trim(), max_chars)
             )
         })
@@ -702,7 +695,7 @@ fn sections(entries: &[TranscriptEntry], chapters: &[Chapter], max_chars: usize)
                         "L{} [{}] {}: {}",
                         index + 1,
                         format_duration(entry.start_ms),
-                        entry.source.label(),
+                        Labels::default().of(entry),
                         truncate_words(entry.text.trim(), REFINE_LINE_CHARS)
                     ),
                 })
@@ -834,9 +827,9 @@ pub(super) fn refine(
 }
 
 /// Corrects a finished meeting's live boundaries once and records them.
-/// The Markdown heading, and with its lab the exported file's name, follows
-/// a title the new chapters change. Failures leave the live chapters in
-/// place.
+/// The Markdown heading, and with Descriptive meeting file names the
+/// exported file's name, follows a title the new chapters change. Failures
+/// leave the live chapters in place.
 /// Each call first yields to dictation; a stop or quit ends the pass
 /// without recording anything, so the next notes run redoes it.
 pub(super) fn refine_meeting(directory: &Path, entries: &[TranscriptEntry], stop: &AtomicBool) {
@@ -918,7 +911,7 @@ pub(super) fn retitle_export(manifest: &mut MeetingManifest, previous: &str) {
         super::export_name::rename_to_title(
             manifest,
             &title,
-            crate::labs::meeting_descriptive_filenames(),
+            crate::app_settings::meeting_descriptive_filenames(),
         );
         super::notes_file::refresh(manifest);
     }
@@ -995,7 +988,7 @@ pub fn chapters_file(path: &Path) -> Result<String> {
     generator::available().map_err(|reason| eyre!("{reason}"))?;
     let text = std::fs::read_to_string(path)
         .wrap_err_with(|| format!("could not read {}", path.display()))?;
-    let entries = super::notes::entries_from_markdown(&text);
+    let entries = super::markdown::entries_from_markdown(&text);
     let end_ms = entries.iter().map(|entry| entry.end_ms).max().unwrap_or(0);
     // This process never loads settings, so read the saved list directly.
     let terms = crate::app_paths::support_dir()

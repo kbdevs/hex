@@ -97,6 +97,7 @@ impl Fixture {
                 Ok(())
             },
         ));
+        let (hud, _hud_events) = crate::dictation::indicator::channel();
         Self {
             runtime: Runtime {
                 keyboard_switcher: crate::transcription::keyboard_model_switching::Switcher::new(
@@ -109,7 +110,9 @@ impl Fixture {
                 ),
                 settings,
                 preparation,
-                automatic_preparation: false,
+                automatic_preparation: None,
+                pending_swap: None,
+                hud,
                 recognition_start: None,
                 listener_failure: Default::default(),
                 event_reader: crate::desktop::events::EventReader::open(""),
@@ -142,7 +145,7 @@ impl Fixture {
                 Duration::ZERO
             };
         self.runtime.follow_app(
-            crate::transcription::app_model_switching::Observation::frontmost(application),
+            crate::transcription::app_model_switching::Observation::frontmost(application, None),
             now,
         );
     }
@@ -325,10 +328,12 @@ fn hexs_own_window_applies_nothing_and_an_edit_waits_for_another_app() {
 }
 
 #[test]
-fn hex_model_use_with_the_current_model_and_language_loads_nothing() {
+fn hex_model_use_with_the_current_model_and_language_loads_nothing_when_its_file_is_missing() {
     let mut fixture = Fixture::new(AppSettings::default());
     let same = fixture.runtime.settings.transcription.clone();
     fixture.runtime.handle(Request::UseInstalledSelection(same));
+    // Only an installed file has a check to run; an absent one has nothing
+    // to load, as before.
     assert_eq!(fixture.runtime.preparation.status().model, None);
 }
 

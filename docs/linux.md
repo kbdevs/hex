@@ -14,6 +14,16 @@ or a software Vulkan driver. See the Wayland requirements below.
 
 x86_64 machines need a 2013 or newer processor with AVX2 (Intel Haswell / AMD Excavator or later); on an older processor Hex shows a message and quits instead of starting.
 
+An x86_64 PC below that floor (for example Ivy Bridge: AVX and F16C, but no
+AVX2) can still build from source. Set `HEX_X86_BASELINE=ivybridge` and
+`TRANSCRIBE_CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON -DGGML_AVX2=OFF -DGGML_BMI2=OFF -DGGML_FMA=OFF"`
+for `./scripts/install-linux.sh`; a missing flag fails the build with the full
+value. After switching between this build and a normal one, run
+`cargo clean -p transcribe-cpp-sys` first, so ggml is configured from scratch.
+Such a build is slower on newer CPUs, is not an official release, and never
+self-updates, because every official artifact targets x86-64-v3 and would not
+start on that processor.
+
 Linux opens the same window as macOS and Windows: Settings, Modes,
 and History. Meetings are macOS-only.
 Paste on Wayland uses `wtype` where the compositor offers the virtual keyboard
@@ -661,7 +671,9 @@ ever overwritten.
 On GNOME, Hex pastes through the RemoteDesktop portal, and GNOME shows its
 remote-control indicator while that session is open. Hex closes it 15 seconds
 after the last paste and reopens it at the next one with the grant you
-approved, so you're asked only once.
+approved, so you're asked only once. On KDE Plasma, Hex keeps the session open
+for as long as it runs: Plasma posts a "Remote Control Started" notification
+whenever a session starts, so reopening it per paste would pop up constantly.
 
 ## Native Wayland Requirements
 
@@ -687,13 +699,13 @@ approved, so you're asked only once.
 
   There is no silent XWayland, direct-typing, uinput, or privileged
   input-injection fallback; the only XWayland uses besides the HUD are the
-  opt-in clipboard restore above, the opt-in floating meeting capsules
+  opt-in clipboard restore above, the opt-in call recording controls
   below, and the opt-in Annotate overlays below. Transcript text travels on stdin, not command-line
   arguments.
 - The overlay uses layer-shell. Without it (GNOME), only the HUD opens on
   XWayland as an override-redirect, click-through window that never takes
   focus. The meeting capsules take clicks, so there a call offer opens the
-  Meetings pane instead, unless you opt in to Labs › Floating meeting capsules
+  Meetings pane instead, unless you opt in to Labs › Call recording controls
   on GNOME (`hex labs on gnome-meeting-capsules`, off by default): the offer
   and recording capsule then float over the call on XWayland, taking clicks
   on their buttons but never keyboard focus. It works only while XWayland is
@@ -736,8 +748,7 @@ through `~/.local/bin/hex` also uses the activated version. The signed update
 path is implemented but still awaiting a complete cross-version validation on
 the supported Arch/i3 host.
 
-See [`plans/linux.md`](plans/linux.md) for the engineering contract and remaining
-validation work. The native Wayland implementation builds on the feature
+The native Wayland implementation builds on the feature
 proposed in [PR #28](https://github.com/anomalyco/hex/pull/28), with separate
 input-state, lifecycle, and paste regression coverage. Physical device,
 compositor, and target-application smoke tests remain necessary before a release.

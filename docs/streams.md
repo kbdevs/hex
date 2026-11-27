@@ -131,9 +131,7 @@ Transcribes what's left and answers with the final, as the `final` event:
 `?process=global` (Labs › Process API transcripts) adds the text after Hex's
 Global-mode output processing, exactly as a paste with no matching app or
 website mode gets it: global replacements, Global mode corrections, the
-optional OpenCode rewrite or local Phonon refiner, and Global's selected
-transformations. An enabled Voice prompt can replace the rewrite with its
-spoken instruction. `true` and
+optional OpenCode rewrite, and Global's selected transformations. `true` and
 `1` are aliases for `global`; any other value, or a repeated parameter,
 answers `400 invalid-request`. Without the parameter the response is exactly
 as above.
@@ -246,14 +244,12 @@ has no body.
 `model-changed` means the user switched dictation's model during the stream;
 start a new one. `hex-quitting` means Hex quit.
 
-## Meeting finished events (`GET /meetings/events`, Labs)
+## Meeting finished events (`GET /meetings/events`)
 
 Not part of `/streams`, but on the same local API with the same discovery
-and bearer token. Only while Labs › Meeting finished event
-(`labs.meeting_finished_event`, `hex labs on meeting-finished-event`) is on;
-off, it answers `404 labs-off`. Code: `src/local_api/meeting_events.rs`
-(route) and `src/meeting/finished_events.rs` (the hub the recorder publishes
-to).
+and bearer token. Code: `src/local_api/meeting_events.rs`
+(route) and `src/meeting/finished_events.rs` (the hub). The watcher, import,
+and recovery paths publish once a Complete meeting is kept.
 
 Server-sent events with `: keep-alive` comments every 15 s. Once per meeting,
 after its final transcript and Markdown are written and its manifest reads
@@ -267,8 +263,9 @@ Only the id is sent: no title, path, transcript, or audio. Read the rest with
 `hex meetings show <id>` (or `hex mcp`). One subscriber at a time; a
 second answers `409 subscriber-busy`. Nothing is queued while nobody listens,
 so a client that reconnects should list meetings to catch up. A meeting whose
-final transcript fails sends nothing. The stream ends when Hex quits or the
-toggle turns off. `hex service` serves the route but records no meetings, so
+final transcript fails sends nothing, and neither does a meeting that finishes
+with no speech: it is moved to the Trash instead of being published. The
+stream ends when Hex quits or the toggle turns off. `hex service` serves the route but records no meetings, so
 it never sends one.
 
 ### Catching up after being offline

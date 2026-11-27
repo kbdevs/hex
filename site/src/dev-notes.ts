@@ -2,7 +2,9 @@
 // dev-notes.json on the Release workflow's dev-notes branch (see
 // scripts/release-dev-notes.sh and .github/release/publish-dev-notes.sh). The
 // worker fetches and renders it per request, so a new dev build shows without
-// a site deploy.
+// a site deploy. Stable releases have their own page, /hex/changelog
+// (src/changelog.ts).
+import { CHANGELOG_PATH } from "./base"
 
 export type DevNotes = {
   schema: 1
@@ -46,13 +48,22 @@ function date(iso: string): string {
 const REPOSITORY = "https://github.com/anomalyco/hex"
 const COMMIT = /^[0-9a-f]{40}$/
 
-// ?since=<version> (the app's What's new) shows only the builds after the
-// one an install runs, with every commit in between on GitHub.
+// ?since=<version> (the app's version and What's new links) shows only the
+// builds after the one an install runs, with every commit in between on
+// GitHub. A version older than the notes go shows every build; the newest
+// build has nothing newer, so it shows none.
 function since(notes: DevNotes, version: string | null): { builds: DevNotes["builds"]; summary: string } {
   const all = { builds: notes.builds, summary: "" }
   if (!version) return all
   const index = notes.builds.findIndex((build) => build.version === version)
-  if (index <= 0) return all
+  if (index < 0) return all
+  const every = ` <a href="/hex/dev">Every dev build</a>`
+  if (index === 0) {
+    return {
+      builds: [],
+      summary: `<p class="since">No changes since ${escape(version)}, the newest dev build.${every}</p>`,
+    }
+  }
   const builds = notes.builds.slice(0, index)
   const from = notes.builds[index].commit
   const to = builds[0].commit
@@ -61,7 +72,7 @@ function since(notes: DevNotes, version: string | null): { builds: DevNotes["bui
     : ""
   return {
     builds,
-    summary: `<p class="since">Changes since ${escape(version)}, the build you run.${compare} <a href="/hex/dev">Every dev build</a></p>`,
+    summary: `<p class="since">Changes since ${escape(version)}, the build you run.${compare}${every}</p>`,
   }
 }
 
@@ -104,9 +115,9 @@ h2 a { text-decoration: none; }
 <body>
 <main>
 <h1>Hex dev builds</h1>
-<p class="intro">What changed in each dev build. Dev builds update often and can break; <a href="/hex/">stable</a> is the safe choice. <a href="${escape(downloadPath)}">Download the latest Mac dev build</a>, or switch Settings › Update channel to Dev.</p>
+<p class="intro">What changed in each dev build. Dev builds update often and can break; <a href="/hex/">stable</a> is the safe choice. <a href="${escape(downloadPath)}">Download the latest Mac dev build</a>, or switch Settings › Update channel to Dev. Stable releases have <a href="${CHANGELOG_PATH}">their own changelog</a>.</p>
 ${shown.summary}
-${builds || `<p class="quiet">No dev build notes yet.</p>`}
+${builds || (notes.builds.length === 0 ? `<p class="quiet">No dev build notes yet.</p>` : "")}
 </main>
 </body>
 </html>

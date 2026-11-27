@@ -200,7 +200,8 @@ enum Request {
 static DICTATION_PLAYER: OnceLock<SyncSender<Request>> = OnceLock::new();
 static LOADER_STARTED: AtomicBool = AtomicBool::new(false);
 static ENABLED: AtomicBool = AtomicBool::new(true);
-static VOLUME: AtomicU32 = AtomicU32::new(0.5_f32.to_bits());
+pub(crate) const DEFAULT_VOLUME: f32 = 0.5;
+static VOLUME: AtomicU32 = AtomicU32::new(DEFAULT_VOLUME.to_bits());
 
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
@@ -215,7 +216,12 @@ fn volume() -> f32 {
 }
 
 fn sounds_enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed) && volume() > 0.0
+    feedback_volume().is_some()
+}
+
+fn feedback_volume() -> Option<f32> {
+    let level = volume();
+    (ENABLED.load(Ordering::Relaxed) && level > 0.0).then_some(level)
 }
 
 /// How long the output device stays open after the last tone finishes. Holding
@@ -401,14 +407,25 @@ pub fn preload() -> Result<()> {
                 };
                 let received_at = Instant::now();
                 let timed_out = request.is_none();
-                let enabled = sounds_enabled();
-                output.release_when_idle(enabled, received_at);
-                if !enabled {
+                let level = feedback_volume();
+                let keep_output = audition.keep_output(level.is_some(), received_at);
+                output.release_when_idle(keep_output, received_at);
+                if level.is_none() {
                     start_tone.retract();
-                    audition.stop();
-                    continue;
                 }
                 let tone = match request {
+                    Some(Request::Audition(set, what)) => {
+                        audition.play(&sounds, set, what, level, |cue, sound| {
+                            output.prepare(Instant::now());
+                            output.add(sound, (set, cue));
+                        });
+                        None
+                    }
+                    Some(Request::StopAudition) => {
+                        audition.stop();
+                        None
+                    }
+                    _ if level.is_none() => continue,
                     Some(Request::Play(tone, percent)) => {
                         if tone == Tone::DictationStart {
                             start_tone.cancel_pending();
@@ -428,24 +445,6 @@ pub fn preload() -> Result<()> {
                     }
                     Some(Request::Prepare) => {
                         output.prepare(received_at);
-                        None
-                    }
-                    Some(Request::Audition(set, what)) => {
-                        audition.stop();
-                        let stopped = audition.begin();
-                        for (sound, at, cue) in sounds.audition(set, what) {
-                            let (sound, _) =
-                                Retractable::with_flag(sound.delay(at), stopped.clone());
-                            output.play(sound, (set, cue));
-                        }
-                        #[cfg(target_os = "macos")]
-                        if what == Audition::Cue(Cue::Error) && !set.has_own_error() {
-                            audition.system = spawn_system_sound("Basso");
-                        }
-                        None
-                    }
-                    Some(Request::StopAudition) => {
-                        audition.stop();
                         None
                     }
                     None => None,
@@ -602,10 +601,10 @@ pub enum SoundSet {
 }
 
 impl SoundSet {
-    /// In the order Settings lists them.
+    /// In picker order, not the numeric order used by the playback worker.
     pub const ALL: [Self; 7] = [
-        Self::Signature,
         Self::Classic,
+        Self::Signature,
         Self::Click,
         Self::Soft,
         Self::Wood,
@@ -616,8 +615,8 @@ impl SoundSet {
     /// The English name Settings shows, translated where it is shown.
     pub fn name(self) -> &'static str {
         match self {
-            Self::Signature => "Hex signature",
-            Self::Classic => "Classic",
+            Self::Signature => "Kalimba",
+            Self::Classic => "Classic keys",
             Self::Click => "Click",
             Self::Soft => "Soft tone",
             Self::Wood => "Wood",
@@ -630,7 +629,7 @@ impl SoundSet {
     pub fn character(self) -> &'static str {
         match self {
             Self::Signature => "A kalimba motif that rises and comes home",
-            Self::Classic => "The tones Hex first shipped with",
+            Self::Classic => "Two clicks to start, a swish to stop",
             Self::Click => "Mechanical key clicks",
             Self::Soft => "Warm, rounded blips",
             Self::Wood => "Soft marimba and hollow wood blocks",
@@ -640,7 +639,8 @@ impl SoundSet {
     }
 
     /// Whether the set plays a sound for `cue`. Classic and Thock have no done
-    /// sound; Classic's error is macOS Basso, or Signature's elsewhere.
+    /// sound.
+    #[cfg(test)]
     pub fn has(self, cue: Cue) -> bool {
         cue != Cue::Done || BUNDLED_SETS[self as usize].done.is_some()
     }
@@ -652,34 +652,18 @@ impl SoundSet {
 
     fn decode(value: u8) -> Self {
         Self::ALL
-            .get(usize::from(value))
-            .copied()
+            .into_iter()
+            .find(|&set| set as u8 == value)
             .unwrap_or_default()
     }
 }
 
-/// A moment of dictation that has its own sound, as the sound picker plays
-/// them one at a time.
+/// A moment of dictation that has its own sound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cue {
     Start,
     Stop,
     Done,
-    Error,
-}
-
-impl Cue {
-    pub const ALL: [Self; 4] = [Self::Start, Self::Stop, Self::Done, Self::Error];
-
-    /// The English label the sound picker shows, translated where shown.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Start => "Start",
-            Self::Stop => "Stop",
-            Self::Done => "Done",
-            Self::Error => "Error",
-        }
-    }
 }
 
 /// What the sound picker plays of a set.
@@ -688,7 +672,6 @@ pub enum Audition {
     /// A short dictation: start, a moment of speaking, stop, a moment of
     /// transcribing, then done.
     Dictation,
-    Cue(Cue),
 }
 
 /// When a dictation audition plays each sound, from its start.
@@ -704,10 +687,6 @@ impl Audition {
     pub fn cues(self) -> &'static [(Cue, Duration)] {
         match self {
             Self::Dictation => &DICTATION_CUES,
-            Self::Cue(Cue::Start) => &[(Cue::Start, Duration::ZERO)],
-            Self::Cue(Cue::Stop) => &[(Cue::Stop, Duration::ZERO)],
-            Self::Cue(Cue::Done) => &[(Cue::Done, Duration::ZERO)],
-            Self::Cue(Cue::Error) => &[(Cue::Error, Duration::ZERO)],
         }
     }
 
@@ -715,7 +694,6 @@ impl Audition {
     pub fn length(self) -> Duration {
         match self {
             Self::Dictation => Duration::from_millis(2_900),
-            Self::Cue(_) => Duration::from_millis(900),
         }
     }
 }
@@ -733,21 +711,33 @@ fn sound_set() -> SoundSet {
 /// How long the current set's stop sound lasts, or zero while sounds are
 /// off. A dictation's release tail must not take it for speech.
 pub fn stop_tone_length() -> Duration {
+    tone_length(BUNDLED_SETS[sound_set() as usize].stop)
+}
+
+/// How long the current set's start sound lasts, or zero while sounds are
+/// off. The clip's head holds it, and it is not speech a stream lost.
+pub fn start_tone_length() -> Duration {
+    tone_length(BUNDLED_SETS[sound_set() as usize].start)
+}
+
+fn tone_length(sound: &[u8]) -> Duration {
     if !sounds_enabled() {
         return Duration::ZERO;
     }
-    let stop = BUNDLED_SETS[sound_set() as usize].stop;
-    hound::WavReader::new(std::io::Cursor::new(stop)).map_or(Duration::from_millis(450), |reader| {
-        Duration::from_secs_f64(f64::from(reader.duration()) / f64::from(reader.spec().sample_rate))
-    })
+    hound::WavReader::new(std::io::Cursor::new(sound)).map_or(
+        Duration::from_millis(450),
+        |reader| {
+            Duration::from_secs_f64(
+                f64::from(reader.duration()) / f64::from(reader.spec().sample_rate),
+            )
+        },
+    )
 }
 
-/// Plays `what` of `set` at the current volume, so the sound picker can be
-/// heard. It ends the audition still sounding, if any.
+/// Plays `what` of `set` in the picker, at the usual level or the default
+/// while feedback is off. It ends the audition still sounding, if any.
 pub fn audition(set: SoundSet, what: Audition) {
-    if sounds_enabled() {
-        enqueue(DICTATION_PLAYER.get(), Request::Audition(set, what));
-    }
+    enqueue(DICTATION_PLAYER.get(), Request::Audition(set, what));
 }
 
 /// Ends the audition still sounding, fading it out over [`RETRACT_FADE`].
@@ -759,12 +749,43 @@ pub fn stop_audition() {
 #[derive(Default)]
 struct Auditioning {
     stopped: Option<Arc<AtomicBool>>,
-    /// Basso, for Classic's error.
-    #[cfg(target_os = "macos")]
-    system: Option<std::process::Child>,
+    /// Only a preview started while Off may keep the muted output open.
+    while_off_until: Option<Instant>,
 }
 
+type AuditionSource = rodio::source::Amplify<Retractable<rodio::source::Delay<SamplesBuffer>>>;
+
 impl Auditioning {
+    fn play(
+        &mut self,
+        sounds: &Sounds,
+        set: SoundSet,
+        what: Audition,
+        level: Option<f32>,
+        mut add: impl FnMut(Cue, AuditionSource),
+    ) {
+        self.stop();
+        let stopped = self.begin();
+        let gain = level.unwrap_or(DEFAULT_VOLUME);
+        for (sound, at, cue) in sounds.audition(set, what) {
+            let (sound, _) = Retractable::with_flag(sound.delay(at), stopped.clone());
+            add(cue, sound.amplify(gain));
+        }
+        if level.is_none() {
+            self.while_off_until = Some(Instant::now() + what.length());
+        }
+    }
+
+    fn keep_output(&mut self, enabled: bool, now: Instant) -> bool {
+        if enabled {
+            self.while_off_until = None;
+        } else if self.while_off_until.is_none_or(|until| now >= until) {
+            self.stop();
+            return false;
+        }
+        true
+    }
+
     /// The flag that stops the audition beginning now.
     fn begin(&mut self) -> Arc<AtomicBool> {
         self.stopped
@@ -773,13 +794,9 @@ impl Auditioning {
     }
 
     fn stop(&mut self) {
+        self.while_off_until = None;
         if let Some(stopped) = self.stopped.take() {
             stopped.store(true, Ordering::Release);
-        }
-        #[cfg(target_os = "macos")]
-        if let Some(mut child) = self.system.take() {
-            let _ = child.kill();
-            let _ = child.wait();
         }
     }
 }
@@ -824,7 +841,7 @@ macro_rules! synthesized_set {
     };
 }
 
-/// In [`SoundSet::ALL`]'s order.
+/// Indexed by the stable `SoundSet` discriminant, not its picker position.
 const BUNDLED_SETS: [BundledSet; 7] = [
     synthesized_set!("signature"),
     BundledSet {
@@ -886,7 +903,7 @@ use onboarding::OnboardingSounds;
 /// The decoded sounds the playback worker plays, every set at once so a new
 /// choice plays at once.
 struct Sounds {
-    /// In [`SoundSet::ALL`]'s order.
+    /// In [`BUNDLED_SETS`]' order.
     sets: Vec<SetSounds>,
     onboarding: OnboardingSounds,
     #[cfg(hex_capture)]
@@ -910,8 +927,7 @@ impl Sounds {
         &self.sets[set as usize]
     }
 
-    /// The sounds `what` plays of `set`, each with when it starts. Classic's
-    /// error is macOS Basso, which the worker plays itself.
+    /// The sounds `what` plays of `set`, each with when it starts.
     fn audition(&self, set: SoundSet, what: Audition) -> Vec<(SamplesBuffer, Duration, Cue)> {
         let sounds = self.set(set);
         what.cues()
@@ -921,7 +937,6 @@ impl Sounds {
                     Cue::Start => Some(&sounds.start),
                     Cue::Stop => Some(&sounds.stop),
                     Cue::Done => sounds.done.as_ref(),
-                    Cue::Error => sounds.error.as_ref(),
                 };
                 sound.map(|sound| (sound.clone(), at, cue))
             })
@@ -1126,11 +1141,11 @@ impl<S: Source> Source for Retractable<S> {
 /// Whether a stream error leaves the output unusable. An underrun or overrun
 /// is a glitch on a stream that keeps running. A default-output change is only
 /// safe on macOS, where cpal reports `DeviceChanged` after the default-output
-/// unit has already rerouted the stream; on Windows cpal's WASAPI backend never
-/// rebinds, so a default-device change ends the stream with
-/// `StreamInvalidated`, which is fatal. Other kinds are treated as an output
-/// that may no longer work; dropping it costs only a cold reopen at the next
-/// tone.
+/// unit has already rerouted the stream. On Windows Hex opens one of the
+/// listed devices, never the default-output handle, so a default change never
+/// invalidates this stream; a removed device arrives as `DeviceNotAvailable`
+/// and drops the sink for a cold reopen at the next tone. Other kinds are
+/// treated as an output that may no longer work, at the same cost.
 fn stream_error_is_fatal(kind: rodio::cpal::ErrorKind) -> bool {
     !matches!(
         kind,
@@ -1138,27 +1153,77 @@ fn stream_error_is_fatal(kind: rodio::cpal::ErrorKind) -> bool {
     )
 }
 
+/// The stream error callback. It may run on a CoreAudio thread, so it only
+/// flips `failed` on a fatal error: no logging, allocation, or locks. The
+/// playback worker reads the flag, drops the sink, and logs once from its own
+/// thread.
+fn fatal_error_callback(
+    failed: Arc<AtomicBool>,
+) -> impl FnMut(rodio::cpal::Error) + Send + 'static {
+    move |error: rodio::cpal::Error| {
+        if stream_error_is_fatal(error.kind()) {
+            failed.store(true, Ordering::Release);
+        }
+    }
+}
+
+/// Tones open the resolved default output or another listed output, never
+/// cpal's default handle: the handle's default-device monitor leaves Windows
+/// thread-pool threads STA, which later fails every default-handle activation
+/// in the process (`audio::default_endpoint`), including during the Bluetooth
+/// churn that opens this path.
+#[cfg(target_os = "windows")]
 fn open_output() -> Result<Opened<MixerDeviceSink>> {
-    // The stream error callback may run on a CoreAudio thread, so it only
-    // flips this flag on a fatal error: no logging, allocation, or locks. The
-    // playback worker reads it, drops the sink, and logs once from its own
-    // thread.
-    let failed = Arc::new(AtomicBool::new(false));
-    let callback = {
-        let failed = failed.clone();
-        move |error: rodio::cpal::Error| {
-            if stream_error_is_fatal(error.kind()) {
-                failed.store(true, Ordering::Release);
+    let mut last_error = eyre!("no audio output device is available");
+    for device in crate::audio::default_output_candidates() {
+        // A fresh flag per attempt keeps a late error from a failed open from
+        // closing a later sink.
+        let failed = Arc::new(AtomicBool::new(false));
+        match open_listed_output(device, failed) {
+            Ok(mut opened) => {
+                opened.sink.log_on_drop(false);
+                return Ok(opened);
+            }
+            Err(error) => {
+                tracing::debug!(%error, "a listed audio output would not open; trying the next");
+                last_error = error;
             }
         }
-    };
+    }
+    Err(last_error)
+}
+
+/// Opens one of cpal's output devices with the tone buffer and the sink's
+/// failure flag.
+#[cfg(target_os = "windows")]
+fn open_listed_output(
+    device: rodio::cpal::Device,
+    failed: Arc<AtomicBool>,
+) -> Result<Opened<MixerDeviceSink>> {
+    DeviceSinkBuilder::from_device(device)
+        .and_then(|builder| {
+            builder
+                .with_buffer_size(BufferSize::Fixed(OUTPUT_BUFFER_FRAMES))
+                .with_error_callback(fatal_error_callback(failed.clone()))
+                .open_stream()
+        })
+        .map(|sink| Opened { sink, failed })
+        .wrap_err("could not open the audio output")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_output() -> Result<Opened<MixerDeviceSink>> {
+    let failed = Arc::new(AtomicBool::new(false));
     let mut opened = DeviceSinkBuilder::from_default_device()
         .and_then(|builder| {
             builder
                 .with_buffer_size(BufferSize::Fixed(OUTPUT_BUFFER_FRAMES))
-                .with_error_callback(callback)
+                .with_error_callback(fatal_error_callback(failed.clone()))
                 .open_stream()
-                .map(|sink| Opened { sink, failed })
+                .map(|sink| Opened {
+                    sink,
+                    failed: failed.clone(),
+                })
         })
         // rodio's all-device fallback (`open_default_sink`) takes no error
         // callback, so a sink opened there keeps rodio's default callback and
@@ -1221,15 +1286,19 @@ impl FeedbackOutput<MixerDeviceSink> {
         self.prepare(Instant::now());
         // Opening may have been slow; recheck the latest preference before
         // retaining the output or playing the queued sound.
-        if !sounds_enabled() {
+        let Some(level) = feedback_volume() else {
             self.release_when_idle(false, Instant::now());
             return false;
-        }
+        };
+        self.add(sound.amplify(level), tone)
+    }
+
+    fn add(&mut self, sound: impl Source + Send + 'static, tone: impl std::fmt::Debug) -> bool {
         let Some(opened) = self.sink.as_ref() else {
             return false;
         };
         let duration = sound.total_duration().unwrap_or(Duration::ZERO);
-        opened.sink.mixer().add(sound.amplify(volume()));
+        opened.sink.mixer().add(sound);
         tracing::debug!(?tone, "playing feedback tone");
         self.mark_playing(Instant::now(), duration);
         true
@@ -1242,18 +1311,18 @@ fn play_system_sound(tone: Tone) {
         Tone::Error => "Basso",
         _ => return,
     };
-    if let Some(mut child) = spawn_system_sound(sound) {
+    if let Some(mut child) = spawn_system_sound(sound, volume()) {
         thread::spawn(move || {
             let _ = child.wait();
         });
     }
 }
 
-/// Starts `/System/Library/Sounds/<sound>.aiff` at the current volume. The
+/// Starts `/System/Library/Sounds/<sound>.aiff` at the requested level. The
 /// caller waits for it.
 #[cfg(target_os = "macos")]
-fn spawn_system_sound(sound: &str) -> Option<std::process::Child> {
-    let volume = volume().to_string();
+fn spawn_system_sound(sound: &str, level: f32) -> Option<std::process::Child> {
+    let volume = level.to_string();
     Command::new("/usr/bin/afplay")
         .args([
             "-v",
@@ -1627,16 +1696,23 @@ mod tests {
 
     #[test]
     fn sound_set_round_trips_by_name_and_index() {
-        for set in SoundSet::ALL {
-            assert_eq!(SoundSet::decode(set as u8), set);
-            let json = serde_json::to_string(&set).unwrap();
-            assert_eq!(serde_json::from_str::<SoundSet>(&json).unwrap(), set);
+        // The picker lists Classic first, but its stored tag is still 1.
+        let expected = [
+            (1, "classic"),
+            (0, "signature"),
+            (2, "click"),
+            (3, "soft"),
+            (4, "wood"),
+            (5, "analog"),
+            (6, "thock"),
+        ];
+        for (set, (tag, id)) in SoundSet::ALL.into_iter().zip(expected) {
+            assert_eq!(set as u8, tag);
+            assert_eq!(SoundSet::decode(tag), set);
+            assert_eq!(serde_json::to_value(set).unwrap(), id);
+            assert_eq!(serde_json::from_value::<SoundSet>(id.into()).unwrap(), set);
         }
         assert_eq!(SoundSet::decode(u8::MAX), SoundSet::Classic);
-        assert_eq!(
-            serde_json::to_string(&SoundSet::Analog).unwrap(),
-            "\"analog\""
-        );
     }
 
     #[test]
@@ -2128,7 +2204,7 @@ mod tests {
     }
 
     /// A dictation audition plays start, stop and done at their moments,
-    /// each finished before the next, and every cue plays alone at once.
+    /// each finished before the next.
     #[test]
     fn auditions_play_each_sound_at_its_moment() {
         let sounds = Sounds::load().unwrap();
@@ -2145,20 +2221,38 @@ mod tests {
                 assert!(ends < pair[1].1, "{set:?} {:?} overlaps", pair[0].2);
             }
             assert!(Audition::Dictation.length() > DICTATION_CUES[2].1);
-
-            for cue in Cue::ALL {
-                let alone = sounds.audition(set, Audition::Cue(cue));
-                let own = set.has(cue) && (cue != Cue::Error || set.has_own_error());
-                assert_eq!(alone.len(), usize::from(own), "{set:?} {cue:?}");
-                assert!(
-                    alone
-                        .iter()
-                        .all(|&(_, at, played)| at.is_zero() && played == cue)
-                );
-            }
         }
         assert!(!SoundSet::Classic.has(Cue::Done));
-        assert!(SoundSet::Classic.has(Cue::Error));
+    }
+
+    #[test]
+    fn picker_previews_render_at_the_default_only_while_off() {
+        let sounds = Sounds::load().unwrap();
+        let mut audition = Auditioning::default();
+        let set = SoundSet::Signature;
+        let what = Audition::Dictation;
+        let render = |audition: &mut Auditioning, level| {
+            let mut peaks = Vec::new();
+            audition.play(&sounds, set, what, level, |cue, source| {
+                peaks.push((cue, source.map(f32::abs).fold(0.0, f32::max)));
+            });
+            peaks
+        };
+        let off = render(&mut audition, None);
+        let now = Instant::now();
+        assert!(audition.keep_output(false, now + OBSERVATION_INTERVAL));
+        assert!(!audition.keep_output(false, now + what.length()));
+        assert_eq!(off.len(), what.cues().len());
+        assert!(off.iter().all(|(_, peak)| *peak > 0.0));
+        assert_eq!(render(&mut audition, Some(DEFAULT_VOLUME)), off);
+        for ((cue, quiet), (expected, peak)) in render(&mut audition, Some(DEFAULT_VOLUME / 4.0))
+            .into_iter()
+            .zip(off)
+        {
+            assert_eq!((cue, quiet), (expected, peak / 4.0));
+        }
+        // Turning ordinary feedback off releases even a sounding output.
+        assert!(!audition.keep_output(false, now));
     }
 
     /// Stopping fades every sound of the audition, even one still waiting

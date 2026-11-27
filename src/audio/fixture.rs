@@ -66,7 +66,7 @@ fn read(path: &Path) -> Result<(Vec<f32>, u32)> {
         }
     };
     let channels = usize::from(spec.channels.max(1));
-    let mono = super::mono(&samples, channels, |sample| *sample);
+    let mono = super::stream::mono(&samples, channels, |sample| *sample);
     if mono.len() < (spec.sample_rate / CHUNKS_PER_SECOND) as usize {
         return Err(eyre!("the audio fixture {} holds no audio", path.display()));
     }
@@ -116,6 +116,7 @@ pub(super) fn open(path: &Path) -> Result<AudioInput> {
         device_name: NAME.into(),
         uid: None,
         selection: Selection::InUse,
+        voice_path: super::stream::VoicePath::Raw,
         stream_errors,
         watch_service_restarts: false,
         restart_generation: super::audio_service_restart_generation(),

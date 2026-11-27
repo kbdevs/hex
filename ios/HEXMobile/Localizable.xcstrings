@@ -1,0 +1,6492 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "" : {
+      "shouldTranslate" : false
+    },
+    "Checking the speech model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查语音模型"
+          }
+        }
+      }
+    },
+    "Checking on-device speech recognition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查设备端语音识别"
+          }
+        }
+      }
+    },
+    "Allow Speech Recognition. It stays on this iPhone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请允许语音识别。识别全程在这台 iPhone 上进行。"
+          }
+        }
+      }
+    },
+    "Allow Speech Recognition for Hex in Settings. It runs on this iPhone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在“设置”中允许 Hex 使用语音识别。识别在这台 iPhone 上进行。"
+          }
+        }
+      }
+    },
+    "Color" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Color"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "颜色"
+          }
+        }
+      }
+    },
+    "Couldn't translate the last dictation. If it keeps happening, reinstall Apple's Translate app." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上一次听写未能翻译。如果反复出现，请重新安装 Apple 的“翻译” App。"
+          }
+        }
+      }
+    },
+    "Key colors" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Key colors"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按键颜色"
+          }
+        }
+      }
+    },
+    "On iOS 18, dictations translate only with Hex open." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 iOS 18 上，只有 Hex 打开时听写才会翻译。"
+          }
+        }
+      }
+    },
+    "Couldn't translate, pasted as spoken" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法翻译，已按原话输入"
+          }
+        }
+      }
+    },
+    "Dictate in the keyboard's language" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用键盘当前的语言听写"
+          }
+        }
+      }
+    },
+    "Download %@ again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新下载%@语言包"
+          }
+        }
+      }
+    },
+    "Download %@ again in Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在设置中重新下载%@"
+          }
+        }
+      }
+    },
+    "iOS 18 translates only with Hex open" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iOS 18 仅在 Hex 打开时翻译"
+          }
+        }
+      }
+    },
+    "Download %@ in Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在设置中下载%@"
+          }
+        }
+      }
+    },
+    "Downloading the speech model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载语音模型"
+          }
+        }
+      }
+    },
+    "Languages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语言"
+          }
+        }
+      }
+    },
+    "Light" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻"
+          }
+        }
+      }
+    },
+    "Loading the speech model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载语音模型"
+          }
+        }
+      }
+    },
+    "Medium" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中"
+          }
+        }
+      }
+    },
+    "More languages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更多语言"
+          }
+        }
+      }
+    },
+    "On this iPhone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此 iPhone 上"
+          }
+        }
+      }
+    },
+    "Opens Hex's Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开 Hex 的设置"
+          }
+        }
+      }
+    },
+    "Optimizing for this iPhone, about a minute" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在为这台 iPhone 优化，约需一分钟"
+          }
+        }
+      }
+    },
+    "Pick another language in Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在设置中选择其他语言"
+          }
+        }
+      }
+    },
+    "Still optimizing. The first time can take a few minutes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍在优化，首次可能需要几分钟。"
+          }
+        }
+      }
+    },
+    "Strength" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "强度"
+          }
+        }
+      }
+    },
+    "Strong" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "强"
+          }
+        }
+      }
+    },
+    "Slide the space bar to switch. Hold it first to move the cursor." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "滑动空格键即可切换。先按住再滑动则移动光标。"
+          }
+        }
+      }
+    },
+    "Switch dictation too" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同时切换听写语言"
+          }
+        }
+      }
+    },
+    "· %lld steps" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "· %lld step"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "· %lld steps"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· %lld 步"
+          }
+        }
+      }
+    },
+    "%@ · %@ events" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · %2$@ events"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@ 个事件"
+          }
+        }
+      }
+    },
+    "%@ · 1 event" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · 1 个事件"
+          }
+        }
+      }
+    },
+    "%@ → %@" : {
+      "shouldTranslate" : false
+    },
+    "%@ isn't available for dictation on this iPhone yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 暂不支持用%@听写。"
+          }
+        }
+      }
+    },
+    "%@ isn't available on this iPhone yet. Try %@." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ isn't available on this iPhone yet. Try %2$@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 暂不支持%1$@。试试%2$@。"
+          }
+        }
+      }
+    },
+    "%@ isn't available on this iPhone yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 暂不支持%@。"
+          }
+        }
+      }
+    },
+    "%@ isn't available on this iPhone yet. Using %@." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ isn't available on this iPhone yet. Using %2$@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 暂不支持%1$@，现在使用%2$@。"
+          }
+        }
+      }
+    },
+    "%@ speech didn't download. Check your connection." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@语音未能下载。请检查网络连接。"
+          }
+        }
+      }
+    },
+    "%@, same as dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@，与听写相同"
+          }
+        }
+      }
+    },
+    "%lld of %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of %2$lld"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld/%2$lld"
+          }
+        }
+      }
+    },
+    "%lld taps, %lld typing fixes and %lld dictations learned" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld taps, %2$lld typing fixes and %3$lld dictations learned"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已学习 %1$lld 次轻点、%2$lld 处打字修正和 %3$lld 次听写"
+          }
+        }
+      }
+    },
+    "%lld taps, %lld typing fixes and 1 dictation learned" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld taps, %2$lld typing fixes and 1 dictation learned"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已学习 %1$lld 次轻点、%2$lld 处打字修正和 1 次听写"
+          }
+        }
+      }
+    },
+    "%lld×" : {
+      "shouldTranslate" : false
+    },
+    "1 hour" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 小时"
+          }
+        }
+      }
+    },
+    "1h" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1小时"
+          }
+        }
+      }
+    },
+    "5 minutes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "5 分钟"
+          }
+        }
+      }
+    },
+    "5m" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "5分钟"
+          }
+        }
+      }
+    },
+    "15 minutes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "15 分钟"
+          }
+        }
+      }
+    },
+    "15m" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "15分钟"
+          }
+        }
+      }
+    },
+    "100% on device" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "100% 设备端处理"
+          }
+        }
+      }
+    },
+    "A" : {
+      "shouldTranslate" : false
+    },
+    "Acknowledgements" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "致谢"
+          }
+        }
+      }
+    },
+    "Add a word or phrase" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加词语或短语"
+          }
+        }
+      }
+    },
+    "Add Hex and Allow Full Access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加 Hex 并允许完全访问"
+          }
+        }
+      }
+    },
+    "Added" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已添加"
+          }
+        }
+      }
+    },
+    "Advanced" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高级"
+          }
+        }
+      }
+    },
+    "AirPods and car mics, in call quality" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "也用 AirPods 和车载麦克风（通话音质）"
+          }
+        }
+      }
+    },
+    "Alex" : {
+      "shouldTranslate" : false
+    },
+    "Allow microphone access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许访问麦克风"
+          }
+        }
+      }
+    },
+    "Allow microphone access…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许访问麦克风…"
+          }
+        }
+      }
+    },
+    "Allowed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已允许"
+          }
+        }
+      }
+    },
+    "Already in the list" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已在列表中"
+          }
+        }
+      }
+    },
+    "An emoji key on the dictation bar" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在听写栏上显示表情符号键"
+          }
+        }
+      }
+    },
+    "Emoji key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表情符号键"
+          }
+        }
+      }
+    },
+    "Emoji suggestions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表情符号建议"
+          }
+        }
+      }
+    },
+    "Opens all emoji from the keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从键盘打开全部表情符号"
+          }
+        }
+      }
+    },
+    "Suggests 😭 as you type cry" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入 cry 时推荐 😭"
+          }
+        }
+      }
+    },
+    "Another app is using audio. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另一个 App 正在使用音频。请重试。"
+          }
+        }
+      }
+    },
+    "Another app is using the microphone. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另一个 App 正在使用麦克风。请重试。"
+          }
+        }
+      }
+    },
+    "Apple can't translate %@ to %@ on this iPhone. Pick another language." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 上，Apple 无法把%1$@翻译成%2$@。请选择其他语言。"
+          }
+        }
+      }
+    },
+    "Apple Intelligence is getting ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 智能正在准备中"
+          }
+        }
+      }
+    },
+    "Apple Intelligence is unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 智能不可用"
+          }
+        }
+      }
+    },
+    "Apple's speech recognition can't dictate this language on this iPhone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 的语音识别无法在这台 iPhone 上听写这种语言。"
+          }
+        }
+      }
+    },
+    "No speech heard." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有听到语音。"
+          }
+        }
+      }
+    },
+    "Audio restarted on this iPhone. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 的音频已重新启动。请重试。"
+          }
+        }
+      }
+    },
+    "Auto" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动"
+          }
+        }
+      }
+    },
+    "Auto-capitalization" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动大写"
+          }
+        }
+      }
+    },
+    "Autocorrect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动改正"
+          }
+        }
+      }
+    },
+    "Automatic" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动"
+          }
+        }
+      }
+    },
+    "Back" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回"
+          }
+        }
+      }
+    },
+    "Bluetooth" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "蓝牙"
+          }
+        }
+      }
+    },
+    "Burgundy" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Burgundy"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "勃艮第红"
+          }
+        }
+      }
+    },
+    "Cancel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消"
+          }
+        }
+      }
+    },
+    "Cancel dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消听写"
+          }
+        }
+      }
+    },
+    "Paste dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "粘贴听写"
+          }
+        }
+      }
+    },
+    "Car mic in CarPlay, otherwise iPhone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CarPlay 中用车载麦克风，其他情况用 iPhone"
+          }
+        }
+      }
+    },
+    "Casual" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "随意"
+          }
+        }
+      }
+    },
+    "Clean up what I say" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "整理我说的话"
+          }
+        }
+      }
+    },
+    "Clean up with Apple Intelligence" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用 Apple 智能整理"
+          }
+        }
+      }
+    },
+    "Clear" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除"
+          }
+        }
+      }
+    },
+    "Clear emoji history" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除表情符号历史记录"
+          }
+        }
+      }
+    },
+    "Close" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭"
+          }
+        }
+      }
+    },
+    "Continue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "继续"
+          }
+        }
+      }
+    },
+    "Copied" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已拷贝"
+          }
+        }
+      }
+    },
+    "Copy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拷贝"
+          }
+        }
+      }
+    },
+    "Custom vocabulary" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自定词汇"
+          }
+        }
+      }
+    },
+    "Vocabulary" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "词汇表"
+          }
+        }
+      }
+    },
+    "Words autocorrect keeps and suggests" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动更正会保留并推荐的词"
+          }
+        }
+      }
+    },
+    "%lld words autocorrect keeps and suggests" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld word autocorrect keeps and suggests"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld words autocorrect keeps and suggests"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动更正会保留并推荐的 %lld 个词"
+          }
+        }
+      }
+    },
+    "Delete" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除"
+          }
+        }
+      }
+    },
+    "Delete all" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全部删除"
+          }
+        }
+      }
+    },
+    "Delete all typing logs?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除所有打字日志？"
+          }
+        }
+      }
+    },
+    "Delete what Hex learned" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除 Hex 学到的内容"
+          }
+        }
+      }
+    },
+    "Delete what Hex learned?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除 Hex 学到的内容？"
+          }
+        }
+      }
+    },
+    "Delete swiped words letter by letter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "逐字删除滑行键入的词语"
+          }
+        }
+      }
+    },
+    "Dictate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写"
+          }
+        }
+      }
+    },
+    "Dictate right in the keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "直接在键盘里听写"
+          }
+        }
+      }
+    },
+    "Dictate with Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用 Hex 听写"
+          }
+        }
+      }
+    },
+    "Dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写"
+          }
+        }
+      }
+    },
+    "Dictation bar" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写栏"
+          }
+        }
+      }
+    },
+    "Dictation fixes Hex learned" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 学到的听写修正"
+          }
+        }
+      }
+    },
+    "Dictation language" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写语言"
+          }
+        }
+      }
+    },
+    "To add a language, turn on its keyboard and dictation in Settings › General › Keyboard." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要添加语言，请在“设置”›“通用”›“键盘”中打开该语言的键盘和听写。"
+          }
+        }
+      }
+    },
+    "Dictation language: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写语言：%@"
+          }
+        }
+      }
+    },
+    "Discards the recording." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "丢弃录音。"
+          }
+        }
+      }
+    },
+    "Don't see Keyboards?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有看到“键盘”？"
+          }
+        }
+      }
+    },
+    "Done" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成"
+          }
+        }
+      }
+    },
+    "Download %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载%@语言包"
+          }
+        }
+      }
+    },
+    "Drops ums, repeats and corrected words" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "去掉“嗯”、重复和改口的词"
+          }
+        }
+      }
+    },
+    "Dvorak punctuation keys" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dvorak 标点键"
+          }
+        }
+      }
+    },
+    "Comma and period keys" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "逗号和句号键"
+          }
+        }
+      }
+    },
+    "Quick accents" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快捷变音符号"
+          }
+        }
+      }
+    },
+    "Holding a letter selects its main accent, so letting go types it. Slide to pick another." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按住字母会选中它的主要变音符号，松开即输入。滑动可选择其他变音符号。"
+          }
+        }
+      }
+    },
+    "Emoji shortcodes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表情符号快捷码"
+          }
+        }
+      }
+    },
+    "Type a colon and a name, like :pizza, to pick an emoji" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入冒号和名称，例如 :pizza，即可选择表情符号"
+          }
+        }
+      }
+    },
+    "Edited" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已编辑"
+          }
+        }
+      }
+    },
+    "Emoji" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表情符号"
+          }
+        }
+      }
+    },
+    "Turn off warm mic" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭麦克风待命"
+          }
+        }
+      }
+    },
+    "All logs are deleted from this iPhone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有日志都会从这台 iPhone 上删除。"
+          }
+        }
+      }
+    },
+    "Everything stays on this iPhone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所有内容都保留在这台 iPhone 上"
+          }
+        }
+      }
+    },
+    "Exact words from the model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型识别出的原话"
+          }
+        }
+      }
+    },
+    "Failed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "失败"
+          }
+        }
+      }
+    },
+    "Nothing learned yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有学到内容"
+          }
+        }
+      }
+    },
+    "Finish dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成听写"
+          }
+        }
+      }
+    },
+    "Finish setup" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成设置"
+          }
+        }
+      }
+    },
+    "Finish setup, %lld left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成设置，还剩 %lld 步"
+          }
+        }
+      }
+    },
+    "Fixes misheard words on device" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在设备端修正听错的词"
+          }
+        }
+      }
+    },
+    "Fixes spelling, not words Hex mishears" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "修正拼写，而不是 Hex 听错的词"
+          }
+        }
+      }
+    },
+    "Hold a word you typed in the keyboard's suggestions to add it. Dictation spells these too while Custom vocabulary is on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在键盘的建议栏中按住你输入的词即可添加。打开“自定词汇”时，听写也会按这些拼写。"
+          }
+        }
+      }
+    },
+    "Fixes typos when you press space" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按空格时修正拼写错误"
+          }
+        }
+      }
+    },
+    "Follows keyboard: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跟随键盘：%@"
+          }
+        }
+      }
+    },
+    "For dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于听写"
+          }
+        }
+      }
+    },
+    "Free, and nothing leaves your iPhone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "免费，所有内容都不会离开你的 iPhone"
+          }
+        }
+      }
+    },
+    "Full" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全键盘"
+          }
+        }
+      }
+    },
+    "Full Access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完全访问"
+          }
+        }
+      }
+    },
+    "Full Access is off. %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完全访问已关闭。%@"
+          }
+        }
+      }
+    },
+    "Full sentences, fillers trimmed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完整句子，去掉口头禅"
+          }
+        }
+      }
+    },
+    "General  ›  Keyboard  ›  Keyboards  ›  Add New Keyboard  ›  Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通用  ›  键盘  ›  键盘  ›  添加新键盘  ›  Hex"
+          }
+        }
+      }
+    },
+    "Get started" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始使用"
+          }
+        }
+      }
+    },
+    "Haptics" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "触感反馈"
+          }
+        }
+      }
+    },
+    "Hex" : {
+      "shouldTranslate" : false
+    },
+    "Hex closed while loading the speech model. Close other apps, then tap Set up." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 在加载语音模型时关闭了。请关闭其他 App，然后轻点“开始设置”。"
+          }
+        }
+      }
+    },
+    "Hex couldn't download the speech model. Check your connection and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 无法下载语音模型。请检查网络连接后重试。"
+          }
+        }
+      }
+    },
+    "Hex couldn't get speech recognition ready. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 无法准备好语音识别。请重试。"
+          }
+        }
+      }
+    },
+    "Hex couldn't start the microphone. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 无法启动麦克风。请重试。"
+          }
+        }
+      }
+    },
+    "Hex couldn't transcribe that. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 无法转录这段内容。请重试。"
+          }
+        }
+      }
+    },
+    "Hex is ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 已就绪"
+          }
+        }
+      }
+    },
+    "Hex key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 键"
+          }
+        }
+      }
+    },
+    "Hex Keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex Keyboard"
+          }
+        }
+      }
+    },
+    "The Hex keyboard will record each tap and the text you type or dictate, including text around the cursor, for 14 days. Logs stay on this iPhone. Password, code and card fields are never recorded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 键盘会记录每一次轻点，以及你输入或听写的文字（包括光标周围的文字），保留 14 天。日志保存在这台 iPhone 上。密码、验证码和银行卡字段永远不会被记录。"
+          }
+        }
+      }
+    },
+    "high" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏上"
+          }
+        }
+      }
+    },
+    "high and left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏左上"
+          }
+        }
+      }
+    },
+    "high and right" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏右上"
+          }
+        }
+      }
+    },
+    "Hold to talk, release to finish" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按住说话，松开结束"
+          }
+        }
+      }
+    },
+    "Translate to" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译为"
+          }
+        }
+      }
+    },
+    "Interrupted" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已中断"
+          }
+        }
+      }
+    },
+    "iPhone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPhone"
+          }
+        }
+      }
+    },
+    "Keep mic warm" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风待命"
+          }
+        }
+      }
+    },
+    "Keeps the mic open after a dictation so the next starts at once" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写后保持麦克风开启，下次听写可立即开始"
+          }
+        }
+      }
+    },
+    "Keeps music playing and starts faster" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音乐不会暂停，启动也更快"
+          }
+        }
+      }
+    },
+    "Kept as is" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保持原样"
+          }
+        }
+      }
+    },
+    "Key flicks" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按键轻扫"
+          }
+        }
+      }
+    },
+    "Pull a key down to type the character above its letter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "向下拉按键即可输入其字母上方的字符"
+          }
+        }
+      }
+    },
+    "Key pop-ups" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "字符预览"
+          }
+        }
+      }
+    },
+    "Keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘"
+          }
+        }
+      }
+    },
+    "Keyboard settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘设置"
+          }
+        }
+      }
+    },
+    "Keyboards  ›  Hex Keyboard  ›  Allow Full Access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘  ›  Hex Keyboard  ›  允许完全访问"
+          }
+        }
+      }
+    },
+    "Labs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实验室"
+          }
+        }
+      }
+    },
+    "Learn how I type" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "学习我的打字习惯"
+          }
+        }
+      }
+    },
+    "Learns on this iPhone from your taps and the words you fix in Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 iPhone 上从你的轻点和你在 Hex 中修正的词中学习"
+          }
+        }
+      }
+    },
+    "Left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "左侧"
+          }
+        }
+      }
+    },
+    "left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏左"
+          }
+        }
+      }
+    },
+    "low" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏下"
+          }
+        }
+      }
+    },
+    "low and left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏左下"
+          }
+        }
+      }
+    },
+    "low and right" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏右下"
+          }
+        }
+      }
+    },
+    "Lowercase" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "小写"
+          }
+        }
+      }
+    },
+    "Casual starts sentences lowercase anyway. Pick Polished for capitals." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“随意”本来就让句首小写。要大写请选“精修”。"
+          }
+        }
+      }
+    },
+    "No capital letters" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不使用大写字母"
+          }
+        }
+      }
+    },
+    "End with a period" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "句末加句号"
+          }
+        }
+      }
+    },
+    "Format lists" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "整理列表"
+          }
+        }
+      }
+    },
+    "More languages…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更多语言…"
+          }
+        }
+      }
+    },
+    "Off still keeps ? and !" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭时仍保留问号和感叹号"
+          }
+        }
+      }
+    },
+    "Remove" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除"
+          }
+        }
+      }
+    },
+    "Remove a quick-switch language" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除快速切换语言"
+          }
+        }
+      }
+    },
+    "Say “first, second” or “bullet” for a list" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "说“first, second”或“bullet”即可分行列出"
+          }
+        }
+      }
+    },
+    "Spoken punctuation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "口述标点"
+          }
+        }
+      }
+    },
+    "Say “comma” or “question mark”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "说“comma”或“question mark”"
+          }
+        }
+      }
+    },
+    "Numbers as digits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "数字用阿拉伯数字"
+          }
+        }
+      }
+    },
+    "“Five point five” becomes 5.5" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“five point five”会写成 5.5"
+          }
+        }
+      }
+    },
+    "Messages" : {
+      "shouldTranslate" : false
+    },
+    "Microphone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风"
+          }
+        }
+      }
+    },
+    "Allow microphone access in Settings to dictate." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在“设置”中允许访问麦克风以便听写。"
+          }
+        }
+      }
+    },
+    "Allow microphone access in Settings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在“设置”中允许访问麦克风。"
+          }
+        }
+      }
+    },
+    "Needs at least two letters or digits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "至少需要两个字母或数字"
+          }
+        }
+      }
+    },
+    "Needs Full Access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需开启完全访问"
+          }
+        }
+      }
+    },
+    "Needs the full keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要使用全键盘"
+          }
+        }
+      }
+    },
+    "Nice — send the time once it's ready." : {
+      "shouldTranslate" : false
+    },
+    "No microphone is available right now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现在没有可用的麦克风。"
+          }
+        }
+      }
+    },
+    "Not added" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未添加"
+          }
+        }
+      }
+    },
+    "Not allowed yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未允许"
+          }
+        }
+      }
+    },
+    "Not available on this iPhone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 不支持"
+          }
+        }
+      }
+    },
+    "Not confirmed yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未确认"
+          }
+        }
+      }
+    },
+    "Not verified" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未验证"
+          }
+        }
+      }
+    },
+    "Number row" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "数字行"
+          }
+        }
+      }
+    },
+    "Notes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "笔记"
+          }
+        }
+      }
+    },
+    "Off" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关"
+          }
+        }
+      }
+    },
+    "Off. %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关。%@"
+          }
+        }
+      }
+    },
+    "On" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开"
+          }
+        }
+      }
+    },
+    "One file per day, kept for 14 days. Password, code and card fields are never logged." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每天一个文件，保留 14 天。密码、验证码和银行卡字段永远不会被记录。"
+          }
+        }
+      }
+    },
+    "One shot" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "单次"
+          }
+        }
+      }
+    },
+    "Open Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开 Hex"
+          }
+        }
+      }
+    },
+    "New speech model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新的语音模型"
+          }
+        }
+      }
+    },
+    "Downloads in Hex on Wi-Fi" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Hex 中通过 Wi-Fi 下载"
+          }
+        }
+      }
+    },
+    "Open Hex, then try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请打开 Hex，然后重试。"
+          }
+        }
+      }
+    },
+    "Open Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开设置"
+          }
+        }
+      }
+    },
+    "The speech model didn't download. Check your connection and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音模型未能下载。请检查网络连接后重试。"
+          }
+        }
+      }
+    },
+    "Not enough memory for the speech model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存不足，无法使用语音模型。"
+          }
+        }
+      }
+    },
+    "Not enough memory for the speech model. Hex is using Apple's on-device speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存不足，无法使用语音模型。Hex 正在使用 Apple 的设备端语音识别。"
+          }
+        }
+      }
+    },
+    "The speech model isn't ready." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音模型尚未就绪。"
+          }
+        }
+      }
+    },
+    "Paste as spoken" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按原话粘贴"
+          }
+        }
+      }
+    },
+    "Ask" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "询问"
+          }
+        }
+      }
+    },
+    "Choose Allow in Settings so Paste doesn't ask every time." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“设置”中选择“允许”，粘贴时就不再每次询问。"
+          }
+        }
+      }
+    },
+    "Dismiss" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭"
+          }
+        }
+      }
+    },
+    "In Settings, choose Paste from Other Apps › Allow." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“设置”中选择“从其他App粘贴 › 允许”。"
+          }
+        }
+      }
+    },
+    "Paste from Other Apps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从其他App粘贴"
+          }
+        }
+      }
+    },
+    "Paste from Other Apps › Allow" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从其他App粘贴 › 允许"
+          }
+        }
+      }
+    },
+    "Checks a second keyboard language and keeps the better match" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同时识别另一种键盘语言，并保留更准确的结果"
+          }
+        }
+      }
+    },
+    "Clear emoji history?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除表情符号历史记录？"
+          }
+        }
+      }
+    },
+    "Feedback" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "反馈"
+          }
+        }
+      }
+    },
+    "Formatting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "格式"
+          }
+        }
+      }
+    },
+    "In bar" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "顶栏"
+          }
+        }
+      }
+    },
+    "Into field" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入框"
+          }
+        }
+      }
+    },
+    "iOS Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iOS 设置"
+          }
+        }
+      }
+    },
+    "Keyboard layout" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘布局"
+          }
+        }
+      }
+    },
+    "Learns where you tap each key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "学习你点击每个按键的位置"
+          }
+        }
+      }
+    },
+    "Live words" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实时文字"
+          }
+        }
+      }
+    },
+    "Typing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入"
+          }
+        }
+      }
+    },
+    "Paste without asking" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "粘贴时不再询问"
+          }
+        }
+      }
+    },
+    "New: Hex's own speech model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新功能：Hex 自带的语音模型"
+          }
+        }
+      }
+    },
+    "English dictation, right in the keyboard." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "英文听写，直接在键盘里完成。"
+          }
+        }
+      }
+    },
+    "Settings › Apps › Hex › Paste from Other Apps › Allow" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置 › App › Hex › 从其他App粘贴 › 允许"
+          }
+        }
+      }
+    },
+    "To paste without being asked, go to Settings, Apps, Hex, Paste from Other Apps, and choose Allow." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "若要粘贴时不再询问，请前往“设置”>“App”>“Hex”>“从其他App粘贴”，然后选择“允许”。"
+          }
+        }
+      }
+    },
+    "Paste in %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "以%@粘贴"
+          }
+        }
+      }
+    },
+    "Language" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语言"
+          }
+        }
+      }
+    },
+    "Translate to %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译成%@"
+          }
+        }
+      }
+    },
+    "Translating to %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在翻译成%@"
+          }
+        }
+      }
+    },
+    "Translation language" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译语言"
+          }
+        }
+      }
+    },
+    "Polished" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "精修"
+          }
+        }
+      }
+    },
+    "Preparing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备"
+          }
+        }
+      }
+    },
+    "Preparing model…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备模型…"
+          }
+        }
+      }
+    },
+    "Privacy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐私"
+          }
+        }
+      }
+    },
+    "Privacy policy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐私政策"
+          }
+        }
+      }
+    },
+    "Ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "就绪"
+          }
+        }
+      }
+    },
+    "%@ to %@ is ready. Works offline." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从%1$@翻译成%2$@已就绪，可离线使用。"
+          }
+        }
+      }
+    },
+    "Dictate once with the Hex keyboard, then check back here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先用 Hex 键盘听写一次，再回来这里查看。"
+          }
+        }
+      }
+    },
+    "Record typing logs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "记录打字日志"
+          }
+        }
+      }
+    },
+    "Record typing logs?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "记录打字日志？"
+          }
+        }
+      }
+    },
+    "Recording stopped." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音已停止。"
+          }
+        }
+      }
+    },
+    "Keeps 14 days of taps and typed text on this iPhone, to export" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 iPhone 上保留 14 天的轻点和输入的文字，供导出"
+          }
+        }
+      }
+    },
+    "Remove %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除“%@”"
+          }
+        }
+      }
+    },
+    "Requires iOS 26" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要 iOS 26"
+          }
+        }
+      }
+    },
+    "Right" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "右侧"
+          }
+        }
+      }
+    },
+    "Instead of the whole word at once" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "而不是一次删除整个词语"
+          }
+        }
+      }
+    },
+    "right" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏右"
+          }
+        }
+      }
+    },
+    "Run setup again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新运行设置"
+          }
+        }
+      }
+    },
+    "Set up" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始设置"
+          }
+        }
+      }
+    },
+    "Set up Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置 Hex"
+          }
+        }
+      }
+    },
+    "Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置"
+          }
+        }
+      }
+    },
+    "Share %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享%@"
+          }
+        }
+      }
+    },
+    "Share all" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全部共享"
+          }
+        }
+      }
+    },
+    "Short lines, a list for several items" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "简短分行，多项内容列成清单"
+          }
+        }
+      }
+    },
+    "Shows 1 to 0 above the letters" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在字母上方显示 1 到 0"
+          }
+        }
+      }
+    },
+    "Siri is using the microphone. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Siri 正在使用麦克风。请重试。"
+          }
+        }
+      }
+    },
+    "Skip for now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时跳过"
+          }
+        }
+      }
+    },
+    "Slurs are never suggested" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "绝不会建议歧视性词语"
+          }
+        }
+      }
+    },
+    "Add to vocabulary" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加到词汇表"
+          }
+        }
+      }
+    },
+    "Never autocorrected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不会被自动更正"
+          }
+        }
+      }
+    },
+    "So Hex can hear you dictate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让 Hex 能听到你的听写"
+          }
+        }
+      }
+    },
+    "space" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "空格"
+          }
+        }
+      }
+    },
+    "Spatial autocorrect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按触点自动改正"
+          }
+        }
+      }
+    },
+    "Speak one language, insert another" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "说一种语言，插入另一种语言"
+          }
+        }
+      }
+    },
+    "Speech model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音模型"
+          }
+        }
+      }
+    },
+    "Spell names and terms your way" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按你的方式拼写名字和术语"
+          }
+        }
+      }
+    },
+    "Lets the keyboard dictate without opening Hex." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让键盘无需打开 Hex 即可听写。"
+          }
+        }
+      }
+    },
+    "Starting microphone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在启动麦克风"
+          }
+        }
+      }
+    },
+    "Starting…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在启动…"
+          }
+        }
+      }
+    },
+    "Starts or finishes on-device dictation and copies the text." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始或结束设备端听写，并拷贝文字。"
+          }
+        }
+      }
+    },
+    "Press once to record, again to transcribe on device and copy the text." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按一下开始录音，再按一下在设备端转录并拷贝文字。"
+          }
+        }
+      }
+    },
+    "Stops recording, transcribes on device and copies the text." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止录音，在设备端转录并拷贝文字。"
+          }
+        }
+      }
+    },
+    "Style" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "风格"
+          }
+        }
+      }
+    },
+    "Style: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "风格：%@"
+          }
+        }
+      }
+    },
+    "Suggest swear words" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在建议中显示脏话"
+          }
+        }
+      }
+    },
+    "Support" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支持"
+          }
+        }
+      }
+    },
+    "Swipe bar to return" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻扫横条返回"
+          }
+        }
+      }
+    },
+    "Swipe typing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "滑行键入"
+          }
+        }
+      }
+    },
+    "Change the spoken language from the Hex key." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可通过 Hex 键更改说话的语言。"
+          }
+        }
+      }
+    },
+    "Switch to Hex with %@, then tap the Hex key." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用 %@ 切换到 Hex，然后轻点 Hex 键。"
+          }
+        }
+      }
+    },
+    "Talk instead of type,\nin any app." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在任何 App 中，\n用说话代替打字。"
+          }
+        }
+      }
+    },
+    "Tap here, then switch to Hex with %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻点这里，然后用 %@ 切换到 Hex"
+          }
+        }
+      }
+    },
+    "Tap the Hex key in any app to talk." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在任何 App 中轻点 Hex 键即可说话。"
+          }
+        }
+      }
+    },
+    "Test keyboard…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测试键盘…"
+          }
+        }
+      }
+    },
+    "Testing the full-width Dot Scope bar right now." : {
+      "shouldTranslate" : false
+    },
+    "Texting: lowercase start, no final period" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天风格：句首小写，句末不加句号"
+          }
+        }
+      }
+    },
+    "The download stopped. Check your connection and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载已停止。请检查网络连接后重试。"
+          }
+        }
+      }
+    },
+    "The microphone is busy. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风正忙。请重试。"
+          }
+        }
+      }
+    },
+    "Timed out" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已超时"
+          }
+        }
+      }
+    },
+    "Today" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "今天"
+          }
+        }
+      }
+    },
+    "Too long" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "太长"
+          }
+        }
+      }
+    },
+    "Transcribing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在转录"
+          }
+        }
+      }
+    },
+    "Transcribing…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在转录…"
+          }
+        }
+      }
+    },
+    "Translate what I say" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译我说的话"
+          }
+        }
+      }
+    },
+    "Try again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "再试一次"
+          }
+        }
+      }
+    },
+    "Try the keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "试用键盘"
+          }
+        }
+      }
+    },
+    "Turn On" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开"
+          }
+        }
+      }
+    },
+    "Turn on Allow Full Access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开“允许完全访问”"
+          }
+        }
+      }
+    },
+    "Turn on Apple Intelligence in Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“设置”中打开 Apple 智能"
+          }
+        }
+      }
+    },
+    "No logs yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有日志"
+          }
+        }
+      }
+    },
+    "Typing logs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打字日志"
+          }
+        }
+      }
+    },
+    "Up to 100 terms" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多 100 个词条"
+          }
+        }
+      }
+    },
+    "Use %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用%@"
+          }
+        }
+      }
+    },
+    "English, Spanish, French and Polish only" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅限英语、西班牙语、法语和波兰语"
+          }
+        }
+      }
+    },
+    "English and Spanish only" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅限英语和西班牙语"
+          }
+        }
+      }
+    },
+    "Verbatim" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "逐字"
+          }
+        }
+      }
+    },
+    "Warm Hex Keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让 Hex 键盘待命"
+          }
+        }
+      }
+    },
+    "Warm keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘待命"
+          }
+        }
+      }
+    },
+    "When are we reviewing the updated iOS keyboard build?" : {
+      "shouldTranslate" : false
+    },
+    "Where you tap off-center" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你偏离按键中心的位置"
+          }
+        }
+      }
+    },
+    "Words you fix most" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你最常修正的词"
+          }
+        }
+      }
+    },
+    "Yesterday" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "昨天"
+          }
+        }
+      }
+    },
+    "You're all set" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一切就绪"
+          }
+        }
+      }
+    },
+    "Your music keeps playing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音乐不会中断"
+          }
+        }
+      }
+    },
+    "Your words show up here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的文字会显示在这里"
+          }
+        }
+      }
+    },
+    "Hinglish (Hindi in Latin letters)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hinglish（用拉丁字母书写印地语）"
+          }
+        }
+      }
+    },
+    "Adds Hinglish to dictation languages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在听写语言中加入 Hinglish"
+          }
+        }
+      }
+    },
+    "Greeklish (Greek in Latin letters)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Greeklish（用拉丁字母书写希腊语）"
+          }
+        }
+      }
+    },
+    "Adds Greeklish to dictation languages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在听写语言中加入 Greeklish"
+          }
+        }
+      }
+    },
+    "Adds comma, period and semicolon keys to the English Dvorak keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "为英文 Dvorak 键盘添加逗号、句号和分号键"
+          }
+        }
+      }
+    },
+    "Comma and period beside the space bar" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "空格键两侧的逗号和句号"
+          }
+        }
+      }
+    },
+    "Setting up Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在设置 Hex"
+          }
+        }
+      }
+    },
+    "Downloading" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载"
+          }
+        }
+      }
+    },
+    "speech model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音模型"
+          }
+        }
+      }
+    },
+    "Your voice never leaves this iPhone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的声音不会离开这台 iPhone。"
+          }
+        }
+      }
+    },
+    "Skip" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跳过"
+          }
+        }
+      }
+    },
+    "With Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "有了 Hex"
+          }
+        }
+      }
+    },
+    "Tap the Hex key and say it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻点 Hex 键，说出来。"
+          }
+        }
+      }
+    },
+    "On my way. Oat or regular?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "马上去。要燕麦奶还是普通的？"
+          }
+        }
+      }
+    },
+    "Are you near the store? Could you grab some milk?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你在商店附近吗？能帮我带点牛奶吗？"
+          }
+        }
+      }
+    },
+    "Message" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "信息"
+          }
+        }
+      }
+    },
+    "Let Hex hear you" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让 Hex 听见你"
+          }
+        }
+      }
+    },
+    "Hex listens only after you tap the Hex key." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只有在你轻点 Hex 键后，Hex 才会聆听。"
+          }
+        }
+      }
+    },
+    "With Full Access" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "并允许完全访问"
+          }
+        }
+      }
+    },
+    "Almost ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "即将就绪"
+          }
+        }
+      }
+    },
+    "Download failed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载失败"
+          }
+        }
+      }
+    },
+    "Speech recognition isn't ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音识别尚未就绪"
+          }
+        }
+      }
+    },
+    "Getting the speech model ready." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备语音模型。"
+          }
+        }
+      }
+    },
+    "Continue without a model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不使用模型继续"
+          }
+        }
+      }
+    },
+    "Dictation won't work until the speech model downloads." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音模型下载完成前，听写无法使用。"
+          }
+        }
+      }
+    },
+    "The Hex keyboard dictates with Apple's speech recognition until it downloads." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载完成前，Hex 键盘使用 Apple 的语音识别听写。"
+          }
+        }
+      }
+    },
+    "Dictation won't work until speech recognition is ready." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音识别就绪前，听写无法使用。"
+          }
+        }
+      }
+    },
+    "Your turn" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轮到你了"
+          }
+        }
+      }
+    },
+    "That's Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这就是 Hex"
+          }
+        }
+      }
+    },
+    "It types wherever your cursor is, in any app." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在任何 App 中，它都会输入到光标所在的位置。"
+          }
+        }
+      }
+    },
+    "Say anything…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "随便说点什么…"
+          }
+        }
+      }
+    },
+    "Hex didn't hear any words. Try speaking louder." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 没有听到任何字词。请大声一点说。"
+          }
+        }
+      }
+    },
+    "Start using Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始使用 Hex"
+          }
+        }
+      }
+    },
+    "Allow the microphone in Settings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在“设置”中允许使用麦克风。"
+          }
+        }
+      }
+    },
+    "Add the Hex keyboard in Settings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在“设置”中添加 Hex 键盘。"
+          }
+        }
+      }
+    },
+    "Use the Hex keyboard once to finish." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用一次 Hex 键盘即可完成。"
+          }
+        }
+      }
+    },
+    "Adaptive touch" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自适应触控"
+          }
+        }
+      }
+    },
+    "Learns on this iPhone where you tap each key. Stores no text." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 iPhone 上学习你轻点每个按键的位置。不存储文字。"
+          }
+        }
+      }
+    },
+    "Without Full Access, resets when the keyboard closes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未开启完全访问时，键盘关闭后会重置"
+          }
+        }
+      }
+    },
+    "Learning: %lld of %lld taps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在学习：已有 %1$lld/%2$lld 次轻点"
+          }
+        }
+      }
+    },
+    "Active, using your own key centers" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已生效，使用你自己的按键中心"
+          }
+        }
+      }
+    },
+    "Reset touch learning" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重置触控学习"
+          }
+        }
+      }
+    },
+    "Reset touch learning?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要重置触控学习吗？"
+          }
+        }
+      }
+    },
+    "Switch to Hex below to confirm." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在下方切换到 Hex 即可确认。"
+          }
+        }
+      }
+    },
+    "Turn on Allow Full Access in Settings for dictation, haptics and copy and paste in the keyboard." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在“设置”中打开“允许完全访问”，以便在键盘中使用听写、触感反馈和拷贝粘贴。"
+          }
+        }
+      }
+    },
+    "Switch to Hex with %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用 %@ 切换到 Hex"
+          }
+        }
+      }
+    },
+    "German spatial autocorrect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "德语按触点自动改正"
+          }
+        }
+      }
+    },
+    "Needs Spatial autocorrect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需开启“按触点自动改正”"
+          }
+        }
+      }
+    },
+    "Swipe typing in more languages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更多语言的滑行键入"
+          }
+        }
+      }
+    },
+    "English, Spanish, French and Polish" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "英语、西班牙语、法语和波兰语"
+          }
+        }
+      }
+    },
+    "English, Spanish, French, Polish and German" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "英语、西班牙语、法语、波兰语和德语"
+          }
+        }
+      }
+    },
+    "French and Polish, and German with German spatial autocorrect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "法语和波兰语；德语需开启“德语按触点自动改正”"
+          }
+        }
+      }
+    },
+    "ABC under the emoji key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "表情符号键下方的 ABC"
+          }
+        }
+      }
+    },
+    "In the emoji panel, ABC takes the emoji key's place" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在表情符号面板中，ABC 位于原来表情符号键的位置"
+          }
+        }
+      }
+    },
+    "Layout" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘布局"
+          }
+        }
+      }
+    },
+    "Accents and autocorrect still follow the language." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重音字母和自动改正仍跟随该语言。"
+          }
+        }
+      }
+    },
+    "Learn each language separately" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分别学习每种语言"
+          }
+        }
+      }
+    },
+    "Learned words and fixes stay with their language" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "学到的词语和修正按语言分开保存"
+          }
+        }
+      }
+    },
+    "The multilingual model isn't ready." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言模型尚未就绪。"
+          }
+        }
+      }
+    },
+    "Needs an iPhone with 6 GB of memory or more" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要内存为 6 GB 或以上的 iPhone"
+          }
+        }
+      }
+    },
+    "Not enough memory for the multilingual model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存不足，无法使用多语言模型。"
+          }
+        }
+      }
+    },
+    "Not enough memory for the multilingual model. Hex is using its usual model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存不足，无法使用多语言模型。Hex 正在使用平时的模型。"
+          }
+        }
+      }
+    },
+    "Send" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送"
+          }
+        }
+      }
+    },
+    "Go" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "前往"
+          }
+        }
+      }
+    },
+    "Join" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加入"
+          }
+        }
+      }
+    },
+    "Route" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "路线"
+          }
+        }
+      }
+    },
+    "Search" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索"
+          }
+        }
+      }
+    },
+    "Emergency call" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "紧急呼叫"
+          }
+        }
+      }
+    },
+    "Next" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下一项"
+          }
+        }
+      }
+    },
+    "Return" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "换行"
+          }
+        }
+      }
+    },
+    "Don't see the Hex key? Tap %@ until the Hex keyboard appears." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "看不到 Hex 键？轻点 %@，直到出现 Hex 键盘。"
+          }
+        }
+      }
+    },
+    "That wasn't Hex. Tap the Hex key on the Hex keyboard." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这不是 Hex 输入的。请轻点 Hex 键盘上的 Hex 键。"
+          }
+        }
+      }
+    },
+    "Never" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从不"
+          }
+        }
+      }
+    },
+    "On switch" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换时"
+          }
+        }
+      }
+    },
+    "Always" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "始终"
+          }
+        }
+      }
+    },
+    "Auto-start" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动开始"
+          }
+        }
+      }
+    },
+    "Tap Dictate to start" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻点“听写”开始"
+          }
+        }
+      }
+    },
+    "When you switch to Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换到 Hex 时"
+          }
+        }
+      }
+    },
+    "Each time the dictation bar opens" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每次打开听写栏时"
+          }
+        }
+      }
+    },
+    "Two-thumb selection" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "双拇指选择"
+          }
+        }
+      }
+    },
+    "On the space bar trackpad, a second thumb selects text" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "空格键作为触控板时，用第二根拇指选择文本"
+          }
+        }
+      }
+    },
+    "Cut" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剪切"
+          }
+        }
+      }
+    },
+    "No text selected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未选择文本"
+          }
+        }
+      }
+    },
+    "Selected: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已选择：%@"
+          }
+        }
+      }
+    },
+    "Hide word suggestions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏词语建议"
+          }
+        }
+      }
+    },
+    "Autocorrect still works" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动改正仍然有效"
+          }
+        }
+      }
+    },
+    "Join the keyboard when unfolded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "展开时合并键盘"
+          }
+        }
+      }
+    },
+    "On the iPhone Duo unfolded, keeps the keys on one keyboard instead of splitting them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 iPhone Duo 展开时让按键保持在一个键盘上，而不是分开"
+          }
+        }
+      }
+    },
+    "The multilingual model isn't downloaded yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言模型尚未下载。"
+          }
+        }
+      }
+    },
+    "Hex closed while getting the multilingual model ready, likely short of memory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 在准备多语言模型时关闭了，可能是内存不足。"
+          }
+        }
+      }
+    },
+    "The multilingual model needs %@ of free space. Free some up, then try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言模型需要 %@ 的可用空间。请先释放一些空间，然后重试。"
+          }
+        }
+      }
+    },
+    "The multilingual model's download stopped. Check your connection and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言模型的下载已停止。请检查网络连接后重试。"
+          }
+        }
+      }
+    },
+    "Hugging Face is limiting downloads right now. Try again in a few minutes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hugging Face 目前限制了下载。请过几分钟再试。"
+          }
+        }
+      }
+    },
+    "The multilingual model didn't download (error %lld). Try again later." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言模型未能下载（错误 %lld）。请稍后再试。"
+          }
+        }
+      }
+    },
+    "Part of the multilingual model arrived damaged. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言模型有一部分下载后已损坏。请重试。"
+          }
+        }
+      }
+    },
+    "The multilingual model didn't download. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言模型未能下载。请重试。"
+          }
+        }
+      }
+    },
+    "Downloading the multilingual model: %@ of %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载多语言模型：已下载 %1$@，共 %2$@"
+          }
+        }
+      }
+    },
+    "Passwords" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "密码"
+          }
+        }
+      }
+    },
+    "The multilingual model's download stopped. Trying again in %lld s." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言模型的下载已停止。%lld 秒后重试。"
+          }
+        }
+      }
+    },
+    "The multilingual model's download resumes when you open Hex." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开 Hex 后，多语言模型会继续下载。"
+          }
+        }
+      }
+    },
+    "Getting the multilingual model ready" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备多语言模型"
+          }
+        }
+      }
+    },
+    "Until then, Hex uses its usual model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此之前，Hex 使用平时的模型。"
+          }
+        }
+      }
+    },
+    "Undo dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撤销听写"
+          }
+        }
+      }
+    },
+    "Paste" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "粘贴"
+          }
+        }
+      }
+    },
+    "Code from Messages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来自“信息”的验证码"
+          }
+        }
+      }
+    },
+    "Switches to the next keyboard, where iOS offers codes from Messages and Mail" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换到下一个键盘，iOS 会在那里提供来自“信息”和“邮件”的验证码"
+          }
+        }
+      }
+    },
+    "Undoes the autocorrection" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撤销自动改正"
+          }
+        }
+      }
+    },
+    "Allow Full Access to dictate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许完全访问以听写"
+          }
+        }
+      }
+    },
+    "Settings › Apps › Hex › Keyboards" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置 › App › Hex › 键盘"
+          }
+        }
+      }
+    },
+    "Settings, Apps, Hex, Keyboards" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置，App，Hex，键盘"
+          }
+        }
+      }
+    },
+    "Opens Hex's setup" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开 Hex 的设置步骤"
+          }
+        }
+      }
+    },
+    "Two-language dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "双语听写"
+          }
+        }
+      }
+    },
+    "Also reads dictation in another of your keyboard languages, when its Apple Speech model is downloaded, and keeps the better one for each phrase." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当另一种键盘语言的 Apple 语音模型已下载时，也会用它听写，并为每个短语保留更准确的那一种。"
+          }
+        }
+      }
+    },
+    "Black" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Black"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "黑色"
+          }
+        }
+      }
+    },
+    "Choose a color for the full keyboard" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a color for the full keyboard"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "为全键盘选择颜色"
+          }
+        }
+      }
+    },
+    "Ember" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ember"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "余烬"
+          }
+        }
+      }
+    },
+    "Forest" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forest"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "森林绿"
+          }
+        }
+      }
+    },
+    "Navy" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Navy"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "海军蓝"
+          }
+        }
+      }
+    },
+    "White" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "White"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "白色"
+          }
+        }
+      }
+    },
+    "The speech model isn't ready. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音模型尚未就绪。请重试。"
+          }
+        }
+      }
+    },
+    "Speech model in keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘内语音模型"
+          }
+        }
+      }
+    },
+    "Only for English dictation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅用于英语听写。"
+          }
+        }
+      }
+    },
+    "Downloads after you first use the Hex keyboard." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "首次使用 Hex 键盘后开始下载。"
+          }
+        }
+      }
+    },
+    "Downloads on Wi-Fi." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接 Wi-Fi 后下载。"
+          }
+        }
+      }
+    },
+    "Downloads once the iPhone has %@ free." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPhone 有 %@ 可用空间后下载。"
+          }
+        }
+      }
+    },
+    "Ready in the keyboard" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已可在键盘中使用"
+          }
+        }
+      }
+    },
+    "Shows your keyboards: pick Apple's, where iOS offers your saved passwords" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示你的键盘：选择 Apple 的键盘，iOS 会在那里提供你存储的密码"
+          }
+        }
+      }
+    },
+    "Switches to the next keyboard, where iOS offers your saved passwords" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换到下一个键盘，iOS 会在那里提供你存储的密码"
+          }
+        }
+      }
+    },
+    "Downloaded. The keyboard gets it ready the next time it opens." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载。键盘下次打开时会准备好它。"
+          }
+        }
+      }
+    },
+    "Shows your keyboards: pick Apple's, where iOS offers codes from Messages and Mail" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示你的键盘：选择 Apple 的键盘，iOS 会在那里提供来自“信息”和“邮件”的验证码"
+          }
+        }
+      }
+    },
+    "Listening…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在聆听…"
+          }
+        }
+      }
+    },
+    "Show what I say" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示我说的话"
+          }
+        }
+      }
+    },
+    "Type as I speak" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "边说边输入"
+          }
+        }
+      }
+    },
+    "Words can change until you stop" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停下前文字可能会变"
+          }
+        }
+      }
+    },
+    "Send feedback" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送反馈"
+          }
+        }
+      }
+    },
+    "Problem" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "问题"
+          }
+        }
+      }
+    },
+    "Idea" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "建议"
+          }
+        }
+      }
+    },
+    "Question" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提问"
+          }
+        }
+      }
+    },
+    "Other" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其他"
+          }
+        }
+      }
+    },
+    "Thanks for your feedback" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "感谢你的反馈"
+          }
+        }
+      }
+    },
+    "It's with the Hex team. If they reply, you'll get an email at %@, and you'll need to confirm your address once from that email. Nothing has been emailed yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "反馈已送达 Hex 团队。如果团队回复，你会在 %@ 收到邮件，并需要通过那封邮件确认一次你的地址。目前还没有发送任何邮件。"
+          }
+        }
+      }
+    },
+    "It's with the Hex team. It was sent anonymously, so it can't be answered." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "反馈已送达 Hex 团队。这是匿名发送的，因此无法回复。"
+          }
+        }
+      }
+    },
+    "It's with the Hex team." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "反馈已送达 Hex 团队。"
+          }
+        }
+      }
+    },
+    "Pictures" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图片"
+          }
+        }
+      }
+    },
+    "Subject (optional)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "主题（可选）"
+          }
+        }
+      }
+    },
+    "%@ of %@ characters" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ / %2$@ 个字符"
+          }
+        }
+      }
+    },
+    "What happened, or what would you like?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发生了什么，或者你希望怎样？"
+          }
+        }
+      }
+    },
+    "Email for a reply (optional)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于回复的邮箱（可选）"
+          }
+        }
+      }
+    },
+    "The message is too long. Keep it under 20,000 characters." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "留言太长了，请控制在 20,000 个字符以内。"
+          }
+        }
+      }
+    },
+    "The pictures are too large together. Remove one and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图片加起来太大了。请移除一张后再试。"
+          }
+        }
+      }
+    },
+    "Sending… trying again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在发送… 正在重试"
+          }
+        }
+      }
+    },
+    "Sending…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在发送…"
+          }
+        }
+      }
+    },
+    "Add a picture" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加图片"
+          }
+        }
+      }
+    },
+    "Add" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加"
+          }
+        }
+      }
+    },
+    "Remove picture %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除图片 %lld"
+          }
+        }
+      }
+    },
+    "Couldn't send: your iPhone seems to be offline. Your message is still here; try again when you're connected." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法发送：你的 iPhone 似乎没有联网。留言仍保留在这里，联网后再试一次。"
+          }
+        }
+      }
+    },
+    "That's too large to send. Remove a picture, or add a smaller one, and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内容太大，无法发送。请移除一张图片或换一张更小的，然后再试。"
+          }
+        }
+      }
+    },
+    "One of the pictures couldn't be read. Remove it and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "有一张图片无法读取。请移除它后再试。"
+          }
+        }
+      }
+    },
+    "Too many reports right now. Try again in a little while." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前反馈过多，请稍后再试。"
+          }
+        }
+      }
+    },
+    "Feedback is unavailable in this version of Hex." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此版本的 Hex 暂时无法发送反馈。"
+          }
+        }
+      }
+    },
+    "Couldn't send your feedback. Try again in a little while." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法发送你的反馈，请稍后再试。"
+          }
+        }
+      }
+    },
+    "When you tap Send, Hex sends your message, the pictures above, your email, Hex's version and the language and speech model it dictates with, your iPhone's model, iOS version and language, the screen you opened this from, and a random install ID that keeps your reports together, to Anomaly's feedback inbox. Nothing you dictate or type elsewhere is sent." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻点“发送”后，Hex 会把你的留言、上面的图片、你的邮箱、Hex 的版本及其听写所用的语言和语音模型、你的 iPhone 型号、iOS 版本和语言、打开此页面的位置，以及一个把你的反馈归在一起的随机安装 ID 发送到 Anomaly 的反馈收件箱。你在别处听写或输入的内容都不会发送。"
+          }
+        }
+      }
+    },
+    "Hex sends nothing unless you tap Send in Send feedback. The form lists exactly what goes with it. Your dictations, what you type and what Hex learned are never included." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "除非你在“发送反馈”中轻点“发送”，否则 Hex 不会发送任何内容。表单会列出随之发送的所有内容。你的听写、输入的内容以及 Hex 学到的内容都不会包含在内。"
+          }
+        }
+      }
+    },
+    "Hex downloads its own speech models from Hugging Face; that request carries nothing about you or what you say, though Hugging Face sees your internet address, as with any website." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 会从 Hugging Face 下载自己的语音模型；这个请求不包含任何关于你或你所说内容的信息，不过和访问任何网站一样，Hugging Face 会看到你的网络地址。"
+          }
+        }
+      }
+    },
+    "With an email, the team can reply. Without one, your feedback is anonymous." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "填写邮箱后，团队可以回复你。不填写，反馈就是匿名的。"
+          }
+        }
+      }
+    },
+    "When you tap Send, Hex sends your message, the pictures above, Hex's version and the language and speech model it dictates with, your iPhone's model, iOS version and language, and the screen you opened this from to Anomaly's feedback inbox. Nothing you dictate or type elsewhere is sent." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轻点“发送”后，Hex 会把你的留言、上面的图片、Hex 的版本及其听写所用的语言和语音模型、你的 iPhone 型号、iOS 版本和语言，以及打开此页面的位置发送到 Anomaly 的反馈收件箱。你在别处听写或输入的内容都不会发送。"
+          }
+        }
+      }
+    },
+    "That isn't an email address. Fix it, or clear it to send without one." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这不是有效的邮箱地址。请修正，或清空后不带邮箱发送。"
+          }
+        }
+      }
+    },
+    "Stopped at %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 %@ 处停止"
+          }
+        }
+      }
+    },
+    "The screen locked or you left the app" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "屏幕已锁定，或你离开了该应用"
+          }
+        }
+      }
+    },
+    "Download %@ in Hex to dictate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Hex 中下载%@语音后即可听写"
+          }
+        }
+      }
+    },
+    "Not enough memory to dictate here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存不足，无法在这里听写"
+          }
+        }
+      }
+    },
+    "Finish setting up Hex to dictate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成 Hex 设置后即可听写"
+          }
+        }
+      }
+    },
+    "Opens Hex to dictate there" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开 Hex，在那里听写"
+          }
+        }
+      }
+    },
+    "%@ isn't available on this iPhone yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 暂不支持%@"
+          }
+        }
+      }
+    },
+    "English" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "英语"
+          }
+        }
+      }
+    },
+    "Multilingual" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言"
+          }
+        }
+      }
+    },
+    "Model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型"
+          }
+        }
+      }
+    },
+    "Use English" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "改用英语"
+          }
+        }
+      }
+    },
+    "Use mobile data" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用蜂窝数据"
+          }
+        }
+      }
+    },
+    "Remove (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除（%@）"
+          }
+        }
+      }
+    },
+    "Until it's ready, the keyboard uses Apple's speech recognition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备好之前，键盘使用 Apple 的语音识别"
+          }
+        }
+      }
+    },
+    "Not for this dictation language, so the keyboard uses Apple's speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不适用于当前听写语言，因此键盘使用 Apple 的语音识别。"
+          }
+        }
+      }
+    },
+    "Other languages use Apple's speech recognition. Switching models downloads the new one and removes the old." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其他语言使用 Apple 的语音识别。切换模型会下载新模型并删除旧模型。"
+          }
+        }
+      }
+    },
+    "A %@ download on Wi-Fi" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通过 Wi-Fi 下载 %@"
+          }
+        }
+      }
+    },
+    "25 European languages, even mixed in one sentence. A %@ download on Wi-Fi." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支持 25 种欧洲语言，一句话里混着说也行。通过 Wi-Fi 下载 %@。"
+          }
+        }
+      }
+    },
+    "Words added" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已添加词汇"
+          }
+        }
+      }
+    },
+    "Words from a file" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来自文件的词汇"
+          }
+        }
+      }
+    },
+    "Your lists are back as they were." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的列表已恢复原样。"
+          }
+        }
+      }
+    },
+    "Undo" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撤销"
+          }
+        }
+      }
+    },
+    "Made by %@, as the file says" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件标明由 %@ 创建"
+          }
+        }
+      }
+    },
+    "Made by a newer Hex. Anything this version doesn’t know is left out." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由较新版本的 Hex 创建。此版本不认识的内容会被略过。"
+          }
+        }
+      }
+    },
+    "Turn on Custom vocabulary" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开自定词汇"
+          }
+        }
+      }
+    },
+    "Off, the words are added but Hex doesn’t use them until you turn it on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭时，词汇仍会添加，但在你打开之前 Hex 不会使用它们。"
+          }
+        }
+      }
+    },
+    "Word replacements" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "词语替换"
+          }
+        }
+      }
+    },
+    "Not usable on this iPhone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法在这台 iPhone 上使用"
+          }
+        }
+      }
+    },
+    "Skipped in the file" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件中被略过的内容"
+          }
+        }
+      }
+    },
+    "%lld skipped: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "略过 %lld 项：%@"
+          }
+        }
+      }
+    },
+    "and %lld more" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还有 %lld 项"
+          }
+        }
+      }
+    },
+    "Yours: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的：%@"
+          }
+        }
+      }
+    },
+    "This file: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此文件：%@"
+          }
+        }
+      }
+    },
+    "%lld new" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项新内容"
+          }
+        }
+      }
+    },
+    "%lld already there" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项已存在"
+          }
+        }
+      }
+    },
+    "%lld different from yours" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项与你的不同"
+          }
+        }
+      }
+    },
+    "Added %@ and %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已添加 %@ 和 %@"
+          }
+        }
+      }
+    },
+    "Added %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已添加 %@"
+          }
+        }
+      }
+    },
+    "No new words in that file" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该文件中没有新词汇"
+          }
+        }
+      }
+    },
+    "kept yours for %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项保留了你的"
+          }
+        }
+      }
+    },
+    "used the file’s for %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项改用文件中的"
+          }
+        }
+      }
+    },
+    "Hex didn’t open this file: it’s larger than 8 MB." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 没有打开此文件：文件大于 8 MB。"
+          }
+        }
+      }
+    },
+    "Hex didn’t open this file: it isn’t text Hex can read." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 没有打开此文件：它不是 Hex 能读取的文本。"
+          }
+        }
+      }
+    },
+    "Hex didn’t open this file: it’s empty." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 没有打开此文件：文件是空的。"
+          }
+        }
+      }
+    },
+    "Hex didn’t open this file: it’s nested too deeply to be a words file." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 没有打开此文件：嵌套层级太深，不是词汇文件。"
+          }
+        }
+      }
+    },
+    "Hex didn’t open this file: it names the same field twice." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 没有打开此文件：同一个字段出现了两次。"
+          }
+        }
+      }
+    },
+    "Hex didn’t open this file: it’s damaged or isn’t a words file." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 没有打开此文件：文件已损坏，或不是词汇文件。"
+          }
+        }
+      }
+    },
+    "Hex didn’t open this file: it isn’t a Hex words file." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 没有打开此文件：它不是 Hex 词汇文件。"
+          }
+        }
+      }
+    },
+    "Hex didn’t open this file: its version isn’t one Hex understands." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 没有打开此文件：Hex 不认识它的版本。"
+          }
+        }
+      }
+    },
+    "%lld didn’t fit, as this iPhone keeps up to 100 terms and 1,000 replacements: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项放不下，这台 iPhone 最多保存 100 个词汇和 1,000 条替换：%@"
+          }
+        }
+      }
+    },
+    "a part that isn’t a list" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "某部分不是列表"
+          }
+        }
+      }
+    },
+    "entries of the wrong shape" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "条目格式不对"
+          }
+        }
+      }
+    },
+    "fields of the wrong shape" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "字段格式不对"
+          }
+        }
+      }
+    },
+    "fields this Hex doesn’t know" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此版本 Hex 不认识的字段"
+          }
+        }
+      }
+    },
+    "hidden characters" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "含有隐藏字符"
+          }
+        }
+      }
+    },
+    "no letters or digits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有字母或数字"
+          }
+        }
+      }
+    },
+    "longer than the limit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "超过长度上限"
+          }
+        }
+      }
+    },
+    "more than 8 words" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "超过 8 个词"
+          }
+        }
+      }
+    },
+    "already in the file" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件中已有"
+          }
+        }
+      }
+    },
+    "a spelling the same as its term" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读音与词汇本身相同"
+          }
+        }
+      }
+    },
+    "past the file’s limit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "超出文件的数量上限"
+          }
+        }
+      }
+    },
+    "Use this one" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用这个"
+          }
+        }
+      }
+    },
+    "Keep mine" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留我的"
+          }
+        }
+      }
+    },
+    "Words Hex hears, and what to write instead" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 听到的词，以及要改写成什么"
+          }
+        }
+      }
+    },
+    "Words file" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "词汇文件"
+          }
+        }
+      }
+    },
+    "Open, share or save your words" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开、分享或保存你的词汇"
+          }
+        }
+      }
+    },
+    "Undo last import" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撤销上次导入"
+          }
+        }
+      }
+    },
+    "Hex writes these instead of the words it hears, matching whole words, up to 8. Yours win over fixes Hex learned." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 听到这些词时会改写成你设定的内容，按整词匹配，最多 8 个词。你的设定优先于 Hex 学到的修正。"
+          }
+        }
+      }
+    },
+    "Words Hex hears" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 听到的词"
+          }
+        }
+      }
+    },
+    "What to write" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "改写成"
+          }
+        }
+      }
+    },
+    "The words Hex hears need a letter or digit." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听到的词需要包含字母或数字。"
+          }
+        }
+      }
+    },
+    "This has a hidden character in it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其中含有隐藏字符。"
+          }
+        }
+      }
+    },
+    "Too long: up to 128 characters heard and 1,000 written." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "太长了：听到的词最多 128 个字符，改写内容最多 1,000 个字符。"
+          }
+        }
+      }
+    },
+    "Up to 8 words heard." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听到的词最多 8 个。"
+          }
+        }
+      }
+    },
+    "Write something. Removing words isn’t supported yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请填写改写内容。暂不支持删除词语。"
+          }
+        }
+      }
+    },
+    "You already replace these words." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已经为这些词设置了替换。"
+          }
+        }
+      }
+    },
+    "The list holds 1,000 replacements." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "列表最多 1,000 条替换。"
+          }
+        }
+      }
+    },
+    "Open a words file…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开词汇文件…"
+          }
+        }
+      }
+    },
+    "Check what a .hexwords file adds before anything changes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先查看 .hexwords 文件会添加什么，确认后才会更改"
+          }
+        }
+      }
+    },
+    "Export" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出"
+          }
+        }
+      }
+    },
+    "Include fixes Hex learned" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "包含 Hex 学到的修正"
+          }
+        }
+      }
+    },
+    "Adds the learned fixes in use, marked as learned" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加入正在使用的学到的修正，并标注为学到的"
+          }
+        }
+      }
+    },
+    "Share…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分享…"
+          }
+        }
+      }
+    },
+    "Exports your Custom vocabulary terms and Word replacements as hex-words.hexwords, which Hex on a Mac, a PC, an iPhone or an Android phone can open." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将你的自定词汇和词语替换导出为 hex-words.hexwords，Mac、PC、iPhone 或 Android 手机上的 Hex 都能打开。"
+          }
+        }
+      }
+    },
+    "Hex couldn’t write the file." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 无法写入该文件。"
+          }
+        }
+      }
+    },
+    "Exported %@ and %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已导出 %@ 和 %@。"
+          }
+        }
+      }
+    },
+    "Left out %lld: %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未导出 %lld 项：%@。"
+          }
+        }
+      }
+    },
+    "%lld terms" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld term"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld terms"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个词汇"
+          }
+        }
+      }
+    },
+    "%lld replacements" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld replacement"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld replacements"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 条替换"
+          }
+        }
+      }
+    },
+    "%lld terms have fewer than 2 letters or digits, too short for this iPhone: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%#@n@ fewer than 2 letters or digits, too short for this iPhone: %2$@"
+          },
+          "substitutions" : {
+            "n" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg term has"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg terms have"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个词汇少于 2 个字母或数字，对这台 iPhone 来说太短：%@"
+          }
+        }
+      }
+    },
+    "%lld spellings repeat words the file already replaces, so the first one is used: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%#@n@ words the file already replaces, so the first one is used: %2$@"
+          },
+          "substitutions" : {
+            "n" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg spelling repeats"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg spellings repeat"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个读音与文件中已有的替换重复，将使用先出现的那条：%@"
+          }
+        }
+      }
+    },
+    "Hex couldn’t open that file." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 无法打开该文件。"
+          }
+        }
+      }
+    },
+    "%lld replacements write nothing, or only spaces or line breaks, which this iPhone can't do yet: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%#@n@ nothing, or only spaces or line breaks, which this iPhone can't do yet: %2$@"
+          },
+          "substitutions" : {
+            "n" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg replacement writes"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg replacements write"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项替换不写入任何内容，或只写入空格或换行，这台 iPhone 暂时做不到：%@"
+          }
+        }
+      }
+    },
+    "Getting ready in the keyboard. After a download or an update, this takes a little longer." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在键盘中准备。下载或更新后，这一步会久一点。"
+          }
+        }
+      }
+    },
+    "Not enough free memory when the keyboard last opened, so it used Apple's speech recognition. It tries again the next time it opens." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘上次打开时可用内存不足，因此使用了 Apple 的语音识别。下次打开时会再试一次。"
+          }
+        }
+      }
+    },
+    "The keyboard had %lld MB free when it last opened; loading the model needs %lld MB, so it used Apple's speech recognition. It tries again the next time it opens." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘上次打开时只有 %1$lld MB 可用内存，载入模型需要 %2$lld MB，因此使用了 Apple 的语音识别。下次打开时会再试一次。"
+          }
+        }
+      }
+    },
+    "This iPhone can't run it in the keyboard, so the keyboard uses Apple's speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 无法在键盘中运行它，因此键盘使用 Apple 的语音识别。"
+          }
+        }
+      }
+    },
+    "The keyboard couldn't load it, so it uses Apple's speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘未能载入它，因此使用 Apple 的语音识别。"
+          }
+        }
+      }
+    },
+    "This iPhone's keyboard doesn't have the memory for it, so it uses Apple's speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 的键盘内存不够运行它，因此使用 Apple 的语音识别。"
+          }
+        }
+      }
+    },
+    "This iPhone's keyboard has %lld MB; the model needs %lld MB, so it uses Apple's speech recognition." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 iPhone 的键盘有 %1$lld MB 内存，模型需要 %2$lld MB，因此使用 Apple 的语音识别。"
+          }
+        }
+      }
+    },
+    "Voice isolation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音突显"
+          }
+        }
+      }
+    },
+    "Lets Mic Mode in Control Center isolate your voice. Other audio may go quiet, and Bluetooth headphones may drop to call quality while you dictate." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让控制中心的麦克风模式突显你的声音。听写时其他音频可能会变小，蓝牙耳机可能会降为通话音质。"
+          }
+        }
+      }
+    },
+    "Korean keyboard (두벌식)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "韩语键盘（두벌식）"
+          }
+        }
+      }
+    },
+    "Adds 한국어, composing syllables as you type" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加 한국어，输入时自动组合音节"
+          }
+        }
+      }
+    },
+    "What's new in Hex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 新功能"
+          }
+        }
+      }
+    },
+    "What's new" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新功能"
+          }
+        }
+      }
+    },
+    "Dutch, Swedish and Slovak" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "荷兰语、瑞典语和斯洛伐克语"
+          }
+        }
+      }
+    },
+    "Add one in Keyboard › Languages to type with its own letters, like å, ä and ö." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“键盘”›“语言”中添加，就能用它自己的字母打字，比如 å、ä 和 ö。"
+          }
+        }
+      }
+    },
+    "Hex's Swedish keyboard, with the keys å, ä and ö." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hex 的瑞典语键盘，带有 å、ä 和 ö 键。"
+          }
+        }
+      }
+    },
+    "Emoji as you type" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "边打字边出表情符号"
+          }
+        }
+      }
+    },
+    "Type a word like “smile” and tap the 😊 above the keys to put it in its place." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入“smile”这样的词，轻点按键上方的 😊，就能用它替换这个词。"
+          }
+        }
+      }
+    },
+    "The keyboard offering 😊 above the keys while “smile” is typed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入“smile”时，键盘在按键上方推荐 😊。"
+          }
+        }
+      }
+    },
+    "In Dictation › Custom vocabulary, tell Hex to write “GitHub” when it hears “jet hub”, and share your list as a file." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“听写”›“自定词汇”中，让 Hex 听到“jet hub”时写成“GitHub”，还能把列表分享为文件。"
+          }
+        }
+      }
+    },
+    "Word replacements, with “jet hub” written as “GitHub”." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "词语替换：“jet hub”写成“GitHub”。"
+          }
+        }
+      }
+    },
+    "Kept when the screen locks" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "锁屏也不会丢"
+          }
+        }
+      }
+    },
+    "If your iPhone locks mid-dictation, what you said is kept: tap Paste in the keyboard to put it in." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写中途 iPhone 锁屏时，你说过的话会被保留：在键盘上轻点“粘贴”即可放进去。"
+          }
+        }
+      }
+    },
+    "The keyboard saying the dictation stopped at 0:44, with Paste." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "键盘提示听写在 0:44 处停止，并提供“粘贴”。"
+          }
+        }
+      }
+    },
+    "Turn on Key colors in Labs, which used to be Experiments, and pick a color for the keys." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在“实验室”（原“实验”）中打开“按键颜色”，为按键选一种颜色。"
+          }
+        }
+      }
+    },
+    "Hex's keyboard with burgundy keys." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "按键为勃艮第红的 Hex 键盘。"
+          }
+        }
+      }
+    },
+    "Tap Send feedback at the bottom of Home to tell us what to fix or add, with a screenshot if it helps." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在主页底部轻点“发送反馈”，告诉我们哪里要修、想加什么，需要时可附上截图。"
+          }
+        }
+      }
+    },
+    "The Send feedback form." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“发送反馈”表单。"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

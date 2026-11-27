@@ -4,12 +4,7 @@ use std::fs;
 use std::sync::atomic::AtomicUsize;
 
 fn entry(source: MeetingSource, start_ms: u64, text: &str) -> TranscriptEntry {
-    TranscriptEntry {
-        source,
-        start_ms,
-        end_ms: start_ms + 5_000,
-        text: text.into(),
-    }
+    TranscriptEntry::new(source, start_ms, start_ms + 5_000, text)
 }
 
 /// One line every 30 s, alternating speakers so each is its own turn: the
@@ -199,6 +194,19 @@ fn the_prompt_names_the_current_chapter_terms_and_only_new_lines() {
          New transcript:\n[…]\n[00:00] Them: words\n\nCurrent chapter: Image storage"
     );
     assert!(prompt(&window(0, 1), None, &[]).ends_with("\n\nCurrent chapter: none yet"));
+}
+
+#[test]
+fn chapter_prompts_keep_the_transcripts_language() {
+    assert!(INSTRUCTIONS.contains(
+        "You MUST name chapters and write their summaries in the language spoken in the transcript"
+    ));
+    assert!(INSTRUCTIONS.contains("even though these instructions are in English"));
+    assert!(INSTRUCTIONS.contains("never translate them"));
+    assert!(
+        REFINE_INSTRUCTIONS
+            .contains("The transcript may be in a language other than English; that never changes")
+    );
 }
 
 #[test]
@@ -562,12 +570,28 @@ fn a_section_holds_its_chapters_turns_as_markdown() {
     assert_eq!(chapter_entries(&entries, &chapters, 1).len(), 2);
     assert!(chapter_entries(&entries, &chapters, 2).is_empty());
     assert_eq!(
-        section_markdown(&chapters[0], &chapter_entries(&entries, &chapters, 0)),
+        section_markdown(
+            &chapters[0],
+            &chapter_entries(&entries, &chapters, 0),
+            Labels::default()
+        ),
         "## Image storage\n\nWhere images live.\n\n**Them** · 00:00\nWhere do images live?\n\n**You** · 01:00\nIn the bucket."
     );
     assert_eq!(
-        section_markdown(&chapters[1], &chapter_entries(&entries, &chapters, 1)),
+        section_markdown(
+            &chapters[1],
+            &chapter_entries(&entries, &chapters, 1),
+            Labels::default()
+        ),
         "## Motion lint\n\n**Them** · 03:20\nNow the lint rules.\n\n**You** · 03:50\nThey flag snaps."
+    );
+    assert_eq!(
+        section_markdown(
+            &chapters[1],
+            &chapter_entries(&entries, &chapters, 1),
+            Labels::imported(&crate::meeting::Speakers::default())
+        ),
+        "## Motion lint\n\n**Speaker** · 03:20\nNow the lint rules.\n\n**Speaker** · 03:50\nThey flag snaps."
     );
 }
 

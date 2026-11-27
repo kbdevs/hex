@@ -53,6 +53,18 @@ pub fn models_dir() -> Result<PathBuf> {
     machine_local(&MODELS, "models")
 }
 
+/// Where Hex Annotate writes new `.hexannotation` packages by default:
+/// `<support>/annotations`, except on Windows without an explicit
+/// `HEX_APPLICATION_SUPPORT_DIR`, where `%LOCALAPPDATA%\hex\annotations` keeps
+/// large screen-recording media out of Roaming Profiles.
+pub fn annotations_dir() -> Result<PathBuf> {
+    let roaming = support_dir()?.join("annotations");
+    Ok(match local_support_dir() {
+        Some(local) => move_once(&roaming, &local.join("annotations")),
+        None => roaming,
+    })
+}
+
 /// `name` in the support folder, except on Windows, where logs and models
 /// belong to this computer: `%LOCALAPPDATA%\hex`, not the Roaming
 /// `%APPDATA%\hex`, which managed networks copy to a server at every sign-in.
@@ -224,19 +236,52 @@ pub fn desktop_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("Desktop"))
 }
 
+/// The Windows profile `USERPROFILE` names, when it is not the signed-in
+/// user's own: a copy of Hex launched with another profile folder (an
+/// isolated benchmark) keeps that profile's folders in use.
+#[cfg(windows)]
+fn redirected_profile() -> Option<PathBuf> {
+    let profile = home_dir()?;
+    let own = dirs::home_dir()?;
+    let name = |path: &Path| {
+        path.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_string()
+    };
+    (!name(&profile).eq_ignore_ascii_case(&name(&own))).then_some(profile)
+}
+
 /// The Documents folder: `dirs::document_dir`, or `Documents` in a Windows
 /// profile `USERPROFILE` points to that is not the signed-in user's own.
 pub fn document_dir() -> Option<PathBuf> {
     #[cfg(windows)]
-    if let (Some(profile), Some(own)) = (home_dir(), dirs::home_dir())
-        && !profile
-            .to_string_lossy()
-            .trim_end_matches(['\\', '/'])
-            .eq_ignore_ascii_case(own.to_string_lossy().trim_end_matches(['\\', '/']))
-    {
+    if let Some(profile) = redirected_profile() {
         return Some(profile.join("Documents"));
     }
     dirs::document_dir()
+}
+
+/// The Downloads folder (Labs › Transcribe dropped audio saves there when a
+/// dropped file's own folder can't take its transcript): `dirs::download_dir`,
+/// else `Downloads` in the home folder, and in a redirected Windows profile
+/// `Downloads` in that profile.
+pub fn downloads_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(profile) = redirected_profile() {
+        return Some(profile.join("Downloads"));
+    }
+    dirs::download_dir().or_else(|| home_dir().map(|home| home.join("Downloads")))
+}
+
+/// The Audio folder (the file dialog for Labs › Transcribe dropped audio
+/// starts there): `dirs::audio_dir`, or `Music` in a redirected Windows
+/// profile.
+pub fn audio_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(profile) = redirected_profile() {
+        return Some(profile.join("Music"));
+    }
+    dirs::audio_dir()
 }
 
 fn user_config_dir_in(home: &std::path::Path, test_build: bool) -> PathBuf {

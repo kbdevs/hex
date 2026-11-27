@@ -2,6 +2,28 @@
 use super::*;
 
 impl Flow {
+    pub(super) fn paste_bundle(&self) -> Option<&std::path::PathBuf> {
+        if self.uncopied {
+            return None;
+        }
+        let (bundle, routing) = self.written.as_ref()?;
+        match &self.phase {
+            Phase::Saved { .. } if !routing => Some(bundle),
+            Phase::Routed(r)
+                if !r.sending
+                    && !r.delivered
+                    && !r.taken_back
+                    && !matches!(r.route, Route::Rule { .. } | Route::ResolvingRule { .. })
+                    && !(r.open.is_none()
+                        && matches!(&r.route, Route::Guess { suggested, .. } if !suggested.is_empty()))
+                    && r.open.as_ref().is_none_or(|open| !open.typing) =>
+            {
+                Some(bundle)
+            }
+            _ => None,
+        }
+    }
+
     /// What a click on `id` does: the action for the host, after moving
     /// the capsule as the click shows.
     pub(crate) fn click(&mut self, id: super::super::surface::Id, now: f64) -> Vec<Action> {
@@ -12,8 +34,7 @@ impl Flow {
         if self.cues.len() == cued {
             self.cue(&before, &actions);
         }
-        self.closing(&before);
-        self.track_undo(&actions);
+        self.track_undo(&actions, now);
         let mut actions = actions;
         actions.extend(self.hold_countdown(now));
         actions
@@ -82,16 +103,15 @@ impl Flow {
                 self.phase = Phase::Hidden;
                 vec![Action::Cancel]
             }
-            // Pasting here takes back a send still waiting out its Undo, as
-            // Scrawl's Paste does.
             (_, Id::Paste) => {
-                let mut actions: Vec<Action> = self.undoable(now).into_iter().collect();
-                actions.push(Action::Paste);
-                self.phase = Phase::Hidden;
-                actions
+                let Some(bundle) = self.paste_bundle().cloned() else {
+                    return Vec::new();
+                };
+                self.phase = Phase::Dismissed;
+                vec![Action::Paste(bundle)]
             }
             (_, Id::Inspect) => {
-                self.phase = Phase::Hidden;
+                self.phase = Phase::Dismissed;
                 vec![Action::Inspect]
             }
             (_, Id::Undo) => self.input(Input::Undo, now),
@@ -133,7 +153,102 @@ impl Flow {
                     }
                 }
             }
-            (_, Id::Ask) => self.input(Input::OpenList, now),
+            (_, Id::Ask)
+                if self.uncopied
+                    && matches!(
+                        &self.phase,
+                        Phase::Saved { .. }
+                            | Phase::Routed(Routed {
+                                route: Route::Unreachable { .. },
+                                ..
+                            })
+                    ) =>
+            {
+                let Some((bundle, _)) = &self.written else {
+                    return Vec::new();
+                };
+                vec![Action::Copy(bundle.clone())]
+            }
+            (Phase::Routed(_), Id::QuickSend) => {
+                let Phase::Routed(routed) = std::mem::replace(&mut self.phase, Phase::Hidden)
+                else {
+                    unreachable!()
+                };
+                let mut actions = Vec::new();
+                let rule_match = self.rule_match.clone();
+                self.phase = quick_send(routed, now, rule_match, &mut actions);
+                actions
+            }
+            (Phase::Sent(_), Id::Always) => {
+                let mut closed = false;
+                if let Phase::Sent(sent) = &mut self.phase {
+                    if sent.always.is_some() {
+                        sent.always = None;
+                        closed = true;
+                    } else if let Some(rule_match) = sent.rule_match.clone() {
+                        sent.always = Some(AlwaysConfig::new(
+                            rule_match,
+                            sent.session.clone(),
+                            sent.to.clone(),
+                            sent.directory.as_deref(),
+                        ));
+                    }
+                }
+                if closed {
+                    self.fold_hold(now);
+                }
+                Vec::new()
+            }
+            (Phase::Sent(_), Id::AlwaysScopeNarrow) => {
+                if let Phase::Sent(sent) = &mut self.phase
+                    && let Some(always) = &mut sent.always
+                {
+                    always.use_subpath = true;
+                }
+                Vec::new()
+            }
+            (Phase::Sent(_), Id::AlwaysScopeWide) => {
+                if let Phase::Sent(sent) = &mut self.phase
+                    && let Some(always) = &mut sent.always
+                {
+                    always.use_subpath = false;
+                }
+                Vec::new()
+            }
+            (Phase::Sent(_), Id::AlwaysToSession) => {
+                if let Phase::Sent(sent) = &mut self.phase
+                    && let Some(always) = &mut sent.always
+                {
+                    always.to_session = true;
+                }
+                Vec::new()
+            }
+            (Phase::Sent(_), Id::AlwaysToProject) => {
+                if let Phase::Sent(sent) = &mut self.phase
+                    && let Some(always) = &mut sent.always
+                    && always.project_dir.is_some()
+                {
+                    always.to_session = false;
+                }
+                Vec::new()
+            }
+            (Phase::Sent(_), Id::AlwaysSave) => {
+                if let Phase::Sent(sent) = &mut self.phase
+                    && let Some(always) = sent.always.take()
+                {
+                    let (kind, key, target) = always.save_spec();
+                    sent.rule_saved = true;
+                    sent.saved_from_popover = true;
+                    sent.at = now;
+                    return vec![Action::SaveRule { kind, key, target }];
+                }
+                Vec::new()
+            }
+            (_, Id::OpenRules) => {
+                self.phase = Phase::Dismissed;
+                vec![Action::OpenRules]
+            }
+            (_, Id::Ask | Id::Search | Id::More) => self.input(Input::OpenList, now),
             (_, Id::Row(row) | Id::Pick(row)) => self.input(Input::SendRow(row), now),
             (_, Id::Next) => self.input(Input::Cycle(1), now),
             // The toast's line is its one guess: a click sends it.

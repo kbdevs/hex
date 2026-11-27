@@ -3,13 +3,14 @@
 
 use crate::app_settings::{
     AppSettings, HotkeyBinding, HotkeyKey, HotkeyModifiers, HotkeySlot, ModifierSide,
+    ShortcutRefusal, ShortcutValidationError, validate_shortcut,
 };
 
 use super::{ShortcutRules, invalid};
 
-/// Applies the checks a recorded shortcut meets: Labs › Mouse shortcuts
-/// where mouse buttons are recorded, the special-key rules, the OS's own
-/// rule for `slot`, and no key shared with another active shortcut.
+/// Applies the checks a recorded shortcut meets: the shared platform/Labs
+/// acceptance rules, the OS's own rule for `slot`, and no key shared with
+/// another active shortcut.
 pub(super) fn check_shortcut(
     settings: &AppSettings,
     candidate: &AppSettings,
@@ -18,29 +19,54 @@ pub(super) fn check_shortcut(
     binding: &HotkeyBinding,
     shortcuts: &ShortcutRules,
 ) -> Result<(), crate::control::ControlError> {
-    if cfg!(target_os = "macos")
-        && !candidate.labs.mouse_shortcuts
-        && binding.key.as_ref().is_some_and(HotkeyKey::is_mouse)
-    {
-        return Err(invalid(
-            name,
-            "mouse buttons need Labs › Mouse shortcuts: hex labs on mouse-shortcuts",
-        ));
+    validate_shortcut(candidate, settings, slot, binding, shortcuts.rule).map_err(|error| {
+        match error {
+            ShortcutValidationError::Host(why) => invalid(name, &why),
+            ShortcutValidationError::Policy(ShortcutRefusal::InUse) => {
+                crate::control::ControlError::new(
+                    "shortcut-in-use",
+                    format!(
+                        "{} is already in use by another Hex shortcut",
+                        format_hotkey(binding)
+                    ),
+                )
+            }
+            ShortcutValidationError::Policy(refusal) => {
+                invalid(name, &cli_refusal_message(refusal))
+            }
+        }
+    })
+}
+
+fn cli_refusal_message(refusal: ShortcutRefusal) -> String {
+    match refusal {
+        ShortcutRefusal::BarePrimaryClick => {
+            "mouse1 (left click) needs a modifier, such as option+mouse1".into()
+        }
+        ShortcutRefusal::BareErase => "add a modifier".into(),
+        ShortcutRefusal::NeedsMouseShortcutsLab => {
+            "mouse buttons need Labs › Mouse shortcuts: hex labs on mouse-shortcuts".into()
+        }
+        ShortcutRefusal::NeedsSectionKeyLab => {
+            "section needs Labs › § key alone: hex labs on section-key".into()
+        }
+        ShortcutRefusal::NeedsMicrophoneKeyLab => {
+            "the mic key needs Labs › Microphone key alone: hex labs on microphone-key".into()
+        }
+        ShortcutRefusal::MicrophoneKeyOnScreenshot => {
+            "the mic key can't be the screenshot shortcut: macOS takes it before Hex sees it".into()
+        }
+        ShortcutRefusal::NeedsNavigationKeyLab { key_name } => {
+            format!("{key_name} alone needs Labs › Special keys alone: hex labs on special-keys")
+        }
+        ShortcutRefusal::NeedsSpecialKeysLab { key_name, .. } => {
+            format!("{key_name} needs Labs › Special keys alone: hex labs on special-keys")
+        }
+        ShortcutRefusal::NeedsModifierForKey { key_name } => {
+            format!("add a modifier, such as option+{key_name}")
+        }
+        ShortcutRefusal::InUse => unreachable!("handled as shortcut-in-use"),
     }
-    if let Some(why) = special_key_refusal(candidate, binding) {
-        return Err(invalid(name, &why));
-    }
-    (shortcuts.rule)(slot, binding).map_err(|why| invalid(name, &why))?;
-    if settings.hotkey_in_use(slot, binding) {
-        return Err(crate::control::ControlError::new(
-            "shortcut-in-use",
-            format!(
-                "{} is already in use by another Hex shortcut",
-                format_hotkey(binding)
-            ),
-        ));
-    }
-    Ok(())
 }
 
 /// Reads a shortcut such as `option`, `right-command`, `fn`, `f5`,
@@ -118,14 +144,17 @@ pub fn parse_hotkey(
             return Err("mouse1 (left click) needs a modifier, such as option+mouse1".into());
         }
         // Menu, Pause, and Scroll Lock alone, and on Windows the navigation
-        // keys alone, are checked against their Labs toggle when set
-        // (`special_key_refusal`).
+        // keys alone, are checked against their Labs toggle when set.
+        // Windows accepts Caps Lock alone without a Lab.
         if modifiers.is_empty()
-            && !is_function_key(&key.label)
+            && !HotkeyKey::is_function_name(&key.label)
             && !key.is_mouse()
             && !HotkeyKey::special_name(&key.label)
-            && !(cfg!(target_os = "windows") && HotkeyKey::navigation_name(&key.label))
+            && !(cfg!(target_os = "windows")
+                && (HotkeyKey::navigation_name(&key.label)
+                    || HotkeyKey::caps_lock_name(&key.label)))
             && !(cfg!(any(target_os = "linux", target_os = "macos")) && key.is_section())
+            && !(cfg!(target_os = "macos") && key.is_microphone())
         {
             return Err("add a modifier, such as option+".to_string() + &key.label.to_lowercase());
         }
@@ -133,54 +162,6 @@ pub fn parse_hotkey(
         return Err("expected at least one modifier or key".into());
     }
     Ok(binding)
-}
-
-/// Why `binding` can't be saved for its Menu, Pause, or Scroll Lock key: on
-/// Linux they need Labs › Special keys alone; Windows takes them alone, and
-/// a navigation key alone needs the toggle there; elsewhere one alone still
-/// needs a modifier.
-pub(super) fn special_key_refusal(
-    settings: &AppSettings,
-    binding: &HotkeyBinding,
-) -> Option<String> {
-    // The ISO section key alone needs Labs › Section key alone (Linux,
-    // macOS).
-    if cfg!(any(target_os = "linux", target_os = "macos"))
-        && binding.is_lone_section_key()
-        && !settings.section_key_allowed()
-    {
-        return Some("section needs Labs › Section key alone: hex labs on section-key".into());
-    }
-    if cfg!(target_os = "windows") {
-        let key = binding.key.as_ref()?;
-        return (binding.is_lone_navigation_key() && !settings.special_keys_allowed()).then(|| {
-            format!(
-                "{} alone needs Labs › Special keys alone: hex labs on special-keys",
-                key.label.to_lowercase().replace(' ', "")
-            )
-        });
-    }
-    let key = binding.key.as_ref().filter(|key| key.is_special())?;
-    if settings.special_keys_allowed() {
-        return None;
-    }
-    let name = key.label.to_lowercase().replace(' ', "");
-    if cfg!(target_os = "linux") {
-        return Some(format!(
-            "{name} needs Labs › Special keys alone: hex labs on special-keys"
-        ));
-    }
-    binding
-        .modifiers
-        .is_empty()
-        .then(|| format!("add a modifier, such as option+{name}"))
-}
-
-fn is_function_key(label: &str) -> bool {
-    label
-        .strip_prefix(['F', 'f'])
-        .and_then(|number| number.parse::<u8>().ok())
-        .is_some_and(|number| (1..=20).contains(&number))
 }
 
 /// The text `parse_hotkey` reads back: `left-option`, `option+shift+v`,

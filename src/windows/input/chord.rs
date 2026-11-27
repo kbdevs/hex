@@ -1,7 +1,7 @@
 //! The settings pane's chord recorder: it polls the key state for the next
 //! shortcut the user presses.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 
@@ -12,16 +12,31 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
+use super::modifiers::{LeftControl, altgr_only, note_left_control};
 use super::{
-    CAPTURE_NAMED_KEYS, MOUSE_KEYS, ModifierState, NUMPAD_DOWN, NUMPAD_ENTER, WindowsHotkey,
-    key_down, track_numpad,
+    CAPTURE_NAMED_KEYS, HEX_INJECTED, MOUSE_KEYS, ModifierState, NUMPAD_DOWN, NUMPAD_ENTER,
+    VK_CAPITAL, WindowsHotkey, key_down, track_numpad,
 };
 use crate::app_settings::{HotkeyModifiers, ModifierSide};
+
+/// Caps Lock is down in the recorder, as the capture's hook saw it. The hook
+/// keeps that press from Windows, so recording Caps Lock never flips the
+/// lock, and the polled key state never shows it.
+static CAPS_LOCK_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the capture's hook keeps this Caps Lock event: a press while
+/// Hex's window is in front, then its repeats and its release, wherever
+/// focus went since. `held` is whether it kept the press this event
+/// belongs to. Other apps keep their Caps Lock while the recorder is open.
+fn keeps_caps_lock(is_down: bool, held: bool, foreground: impl FnOnce() -> bool) -> bool {
+    held || (is_down && foreground())
+}
 
 /// The capture's own keyboard hook, on the thread that polls: it tells
 /// numpad keys from the navigation keys they send with Num Lock off
 /// (`NUMPAD_DOWN`), whether or not the listener's hook runs (#815). It only
-/// watches; every key goes on to the next hook. The thread must `pump`.
+/// watches, and every key goes on to the next hook, except Caps Lock pressed
+/// in Hex's window (`CAPS_LOCK_DOWN`). The thread must `pump`.
 pub(crate) struct NumpadWatch(HHOOK);
 
 impl NumpadWatch {
@@ -58,6 +73,7 @@ impl Drop for NumpadWatch {
         // SAFETY: the hook this watch installed.
         unsafe { UnhookWindowsHookEx(self.0) };
         NUMPAD_DOWN.store(0, Ordering::Relaxed);
+        CAPS_LOCK_DOWN.store(false, Ordering::Relaxed);
     }
 }
 
@@ -67,7 +83,19 @@ unsafe extern "system" fn numpad_hook(code: i32, wparam: WPARAM, lparam: LPARAM)
         let is_down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
         if is_down || matches!(message, WM_KEYUP | WM_SYSKEYUP) {
             // SAFETY: a keyboard hook's lparam is a KBDLLHOOKSTRUCT.
-            track_numpad(unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) }, is_down);
+            let event = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+            // The listener's hook runs only while Hex listens, and this one
+            // only while the window records, so both feed the shared state
+            // the poll reads.
+            note_left_control(LeftControl::of(event.vkCode, event.scanCode), is_down);
+            track_numpad(event, is_down);
+            if event.vkCode == u32::from(VK_CAPITAL) && event.dwExtraInfo != HEX_INJECTED {
+                let held = CAPS_LOCK_DOWN.load(Ordering::Relaxed);
+                if keeps_caps_lock(is_down, held, super::app_is_foreground) {
+                    CAPS_LOCK_DOWN.store(is_down, Ordering::Relaxed);
+                    return 1;
+                }
+            }
         }
     }
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
@@ -116,16 +144,15 @@ impl ChordCapture {
                 return ChordPoll::Pending;
             }
         }
-        let held = ModifierState::current();
+        let read = ModifierState::read(key_down);
+        let altgr = altgr_only();
         if let Some(key) = pressed_capture_key() {
-            let any = |down: bool| down.then_some(ModifierSide::Either);
-            return ChordPoll::Captured(WindowsHotkey {
-                control: any(held.left_control || held.right_control),
-                windows: any(held.left_windows || held.right_windows),
-                alt: any(held.left_alt || held.right_alt),
-                shift: any(held.left_shift || held.right_shift),
-                key: Some(key),
-            });
+            // A key chord is what the keys say, AltGr's Ctrl counted: AltGr+Q
+            // records as Ctrl+Alt+Q, never Alt+Q. The listener refuses that
+            // chord on AltGr for a key that types a character (#1964), so it
+            // types `@` there and presses with a real Left Ctrl+Alt; only the
+            // modifier-only path below drops the Ctrl outright.
+            return ChordPoll::Captured(key_chord(&read, key));
         }
         if unsupported_key_down() {
             // A key the bindings cannot express (media keys, ...) is being
@@ -144,6 +171,7 @@ impl ChordCapture {
             };
         }
         self.unsupported = false;
+        let held = read.without_altgr(altgr);
         self.seen.add(&held);
         if self.seen.any() && !held.any() {
             return ChordPoll::Captured(self.held());
@@ -175,6 +203,21 @@ impl ChordCapture {
             shift: modifiers.shift,
             key: None,
         }
+    }
+}
+
+/// The chord a key press records: each modifier held with its side, and the
+/// key. `held` is the raw read (`ModifierState::read`), so AltGr keeps the
+/// Ctrl Windows adds: the recording names Ctrl, and the listener presses it
+/// only with a real Left Ctrl while AltGr types the key's character (#1964).
+fn key_chord(held: &ModifierState, key: String) -> WindowsHotkey {
+    let any = |down: bool| down.then_some(ModifierSide::Either);
+    WindowsHotkey {
+        control: any(held.left_control || held.right_control),
+        windows: any(held.left_windows || held.right_windows),
+        alt: any(held.left_alt || held.right_alt),
+        shift: any(held.left_shift || held.right_shift),
+        key: Some(key),
     }
 }
 
@@ -246,7 +289,15 @@ fn pressed_capture_key() -> Option<String> {
             }
         }
     }
-    if let Some((_, name)) = CAPTURE_NAMED_KEYS.into_iter().find(|&(vk, _)| key_down(vk)) {
+    if CAPS_LOCK_DOWN.load(Ordering::Relaxed) {
+        return Some("caps lock".into());
+    }
+    // Caps Lock is the hook's to report: a press the hook did not keep
+    // flipped the lock, and is not recorded.
+    if let Some((_, name)) = CAPTURE_NAMED_KEYS
+        .into_iter()
+        .find(|&(vk, _)| vk != VK_CAPITAL && key_down(vk))
+    {
         return Some(name.to_string());
     }
     for vk in 0x41..=0x5A_u16 {
@@ -268,4 +319,65 @@ fn pressed_capture_key() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_recorder_keeps_a_whole_caps_lock_press_made_in_hexs_window() {
+        let front = || true;
+        let behind = || false;
+        // A press in Hex's window is kept, so the lock does not flip.
+        assert!(keeps_caps_lock(true, false, front));
+        // Its repeats and its release are kept wherever focus went.
+        assert!(keeps_caps_lock(true, true, behind));
+        assert!(keeps_caps_lock(false, true, behind));
+        // Another app's Caps Lock is its own, press and release.
+        assert!(!keeps_caps_lock(true, false, behind));
+        assert!(!keeps_caps_lock(false, false, behind));
+        assert!(!keeps_caps_lock(false, false, front));
+    }
+
+    #[test]
+    fn altgr_records_right_alt_alone() {
+        // AltGr on a layout that has it: `GetAsyncKeyState` reports the
+        // synthesized Left Ctrl too, and the modifier-only path, which the
+        // recorder adds to the chord, drops it.
+        let altgr = ModifierState {
+            left_control: true,
+            right_alt: true,
+            ..ModifierState::default()
+        };
+        let mut capture = ChordCapture::default();
+        capture.seen.add(&altgr.without_altgr(true));
+        let held = capture.held();
+        assert_eq!(held.control, None);
+        assert_eq!(held.alt, Some(ModifierSide::Right));
+        assert_eq!(held.key, None);
+    }
+
+    #[test]
+    fn altgr_with_a_key_records_the_ctrl_windows_added() {
+        // `poll` builds a key chord from the raw read: AltGr+Q records as
+        // Ctrl+Alt+Q. The listener refuses that chord on AltGr for a key that
+        // types a character (#1964), so the recording presses only with a
+        // real Left Ctrl+Alt and AltGr still types the character.
+        let read = ModifierState {
+            left_control: true,
+            right_alt: true,
+            ..ModifierState::default()
+        };
+        let chord = key_chord(&read, "q".into());
+        assert_eq!(chord.control, Some(ModifierSide::Either));
+        assert_eq!(chord.alt, Some(ModifierSide::Either));
+        assert_eq!(chord.key.as_deref(), Some("q"));
+        // The masked view the modifier-only path adds drops that Ctrl, so
+        // handing it to `key_chord` would record Alt+Q instead.
+        assert_eq!(
+            key_chord(&read.without_altgr(true), "q".into()).control,
+            None
+        );
+    }
 }

@@ -8,6 +8,10 @@ const VERSION: &str = env!("HEX_BUILD_VERSION");
 
 #[cfg(target_os = "macos")]
 mod accessibility;
+/// The Annotate pane's Agents section: the hex-annotate skill in coding
+/// agents' folders and hex on PATH (`capture.agents`).
+#[cfg(hex_capture)]
+mod agent_install;
 mod app_paths;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod app_settings;
@@ -21,11 +25,16 @@ mod audio;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod calendar;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
+mod calendar_menu;
+#[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod caps_lock_dictation;
 #[cfg(hex_capture)]
 mod capture_host;
 #[cfg(hex_capture)]
 mod capture_zip;
+#[cfg(target_os = "macos")]
+mod codesign;
+mod continuation;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod control;
 mod desktop;
@@ -50,13 +59,13 @@ mod local_api;
 mod macos_rune;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod meeting;
-mod meeting_templates;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod microphone_activity;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod middle_mouse_dictation;
 mod net;
 #[cfg(target_os = "macos")]
 mod parakeet;
-#[cfg(target_os = "macos")]
 mod paste;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod personal_commands;
@@ -70,7 +79,6 @@ mod rune_ui;
 mod screenshots;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod shortcut_pause;
-mod superwhisper_import;
 #[cfg(target_os = "macos")]
 mod suppression;
 mod transcription;
@@ -83,7 +91,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 #[cfg(target_os = "macos")]
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
 #[cfg(target_os = "macos")]
 use color_eyre::eyre::eyre;
@@ -93,6 +101,7 @@ use color_eyre::eyre::eyre;
 #[command(
     name = "hex",
     version = crate::VERSION,
+    long_version = option_env!("HEX_LOCAL_LONG_VERSION"),
     about = "Local, observable voice control",
     long_about = "Local, observable voice control.\n\n\
         Control commands (status, dictation, meetings record, settings, model, window, …) drive \
@@ -223,33 +232,15 @@ enum DevCommand {
     /// Render offline audio through the Hex Microphone voice filter.
     VoiceFilter {
         #[command(subcommand)]
-        command: VoiceFilterCommand,
+        command: control::developer_control::VoiceFilterCommand,
     },
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Subcommand)]
-enum VoiceFilterCommand {
-    /// Apply a voice-filter mode across one or more dictation spans in a WAV file.
-    Render {
-        /// Input WAV path (16-bit PCM or 32-bit float).
-        input: PathBuf,
-        /// Voice filter mode id (muffled, muted, quiet, normal, chipmunk, robot, walkie, underwater, far).
-        #[arg(long, default_value = "muffled")]
-        mode: String,
-        /// Optional JSON mode spec override (matching presets.json).
-        #[arg(long)]
-        params: Option<String>,
-        /// Dictation span(s) in milliseconds, e.g. `1000-3500`.
-        #[arg(long = "dictation")]
-        dictation: Vec<String>,
-        /// Effect strength (`0.0` to `1.0`).
-        #[arg(long, default_value_t = 1.0)]
-        strength: f64,
-        /// Output WAV path.
-        #[arg(short = 'o', long = "output")]
-        output: PathBuf,
-    },
+    /// Read a call app's windows through Accessibility and report what is there.
+    #[command(
+        name = "call-window",
+        long_about = accessibility::probe::cli::ABOUT,
+        hide = !dev_build::is_dev_build()
+    )]
+    CallWindow(accessibility::probe::cli::Args),
 }
 
 #[cfg(debug_assertions)]
@@ -298,6 +289,12 @@ enum MeetingCommand {
 
 #[cfg(target_os = "macos")]
 fn main() -> Result<()> {
+    // ggml turns on its Metal tensor-API kernels by itself on M5/M6/A19/A20
+    // GPUs, and they give wrong results there: every model transcribed to
+    // empty or garbled text (#1965). The simdgroup kernels earlier Macs use
+    // are correct, so keep the tensor path off for every model.
+    // SAFETY: Before any other thread exists to read the environment.
+    unsafe { std::env::set_var("GGML_METAL_TENSOR_DISABLE", "1") };
     color_eyre::install()?;
     let cli = Cli::parse_from(mcp_alias_arguments(std::env::args_os().collect()));
     let executable_name = std::env::current_exe()
@@ -323,7 +320,9 @@ fn main() -> Result<()> {
     // lock, GUI, or permission setup of their own, so an agent may run them
     // over SSH while the app is running.
     let cli = match cli.command {
-        Some(Command::Control(command)) => control::cli::finish(control::cli::run(command)),
+        Some(Command::Control(command)) => {
+            control::cli::finish(control::cli::run(command, Cli::command))
+        }
         command => Cli { command },
     };
     #[cfg(debug_assertions)]
@@ -353,29 +352,16 @@ fn main() -> Result<()> {
         }
         _ => {}
     }
-    if let Some(Command::Dev {
-        command:
-            DevCommand::VoiceFilter {
-                command:
-                    VoiceFilterCommand::Render {
-                        input,
-                        mode,
-                        params,
-                        dictation,
-                        strength,
-                        output,
-                    },
-            },
-    }) = &cli.command
-    {
-        return audio::voice_filter::render_wav_command(
-            input,
-            mode,
-            params.as_deref(),
-            dictation,
-            *strength,
-            output,
-        );
+    // `hex dev` commands that run here: no data folder, log, lock, or
+    // settings (call-window asks the running Hex and writes one file).
+    match &cli.command {
+        Some(Command::Dev {
+            command: DevCommand::VoiceFilter { command },
+        }) => return command.run(),
+        Some(Command::Dev {
+            command: DevCommand::CallWindow(arguments),
+        }) => return accessibility::probe::cli::run(arguments, Cli::command),
+        _ => {}
     }
     // A headless render (`hex app -- --snap …`) draws fixtures: no data
     // folder, log, lock, or settings, so it never touches the user's Hex.
@@ -455,7 +441,9 @@ fn main() -> Result<()> {
                         println!("{}", bundle.display());
                         return Ok(());
                     }
-                    DevCommand::VoiceFilter { .. } => unreachable!("handled before startup"),
+                    DevCommand::VoiceFilter { .. } | DevCommand::CallWindow(_) => {
+                        unreachable!("handled before startup")
+                    }
                 };
                 let reply = local_api::call_developer(&command)?;
                 if let DeveloperReply::Error { code, message } = &reply {
@@ -467,7 +455,9 @@ fn main() -> Result<()> {
             #[cfg(not(debug_assertions))]
             {
                 match command {
-                    DevCommand::VoiceFilter { .. } => unreachable!("handled before startup"),
+                    DevCommand::VoiceFilter { .. } | DevCommand::CallWindow(_) => {
+                        unreachable!("handled before startup")
+                    }
                 }
             }
         }
@@ -482,6 +472,7 @@ fn main() -> Result<()> {
                     ..Default::default()
                 },
                 &SHUTDOWN,
+                None,
                 None,
             )
             .map(|_| ())
@@ -700,6 +691,26 @@ mod tests {
     }
 
     #[test]
+    fn the_cli_prints_completion_scripts() {
+        use clap::CommandFactory;
+        use clap_complete::Shell;
+
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "hex", &mut script);
+            let script = String::from_utf8(script).expect("a completion script is UTF-8");
+            assert!(
+                script.contains("dictation"),
+                "{shell:?} script has no dictation"
+            );
+            assert!(
+                script.contains("listen"),
+                "{shell:?} script has no macOS-only listen command"
+            );
+        }
+    }
+
+    #[test]
     fn control_commands_parse_beside_the_read_commands() {
         use crate::control::cli::CommandsCommand;
         use crate::control::transcript_cli;
@@ -893,7 +904,7 @@ fn main() -> Result<()> {
     // portal or rtkit.
     // SAFETY: Before any other thread exists to read the environment.
     unsafe { std::env::set_var("DISABLE_RTKIT", "1") };
-    linux::input_route::mark_streams();
+    linux::input::route::mark_streams();
     linux::run(&SHUTDOWN)
 }
 

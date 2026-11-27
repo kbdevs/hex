@@ -49,7 +49,7 @@ pub(crate) fn import(source: &Path) -> Result<MeetingManifest> {
     }
     let (_, selection) = crate::app_settings::transcription_selection();
     let model = crate::transcription::models::validate(&selection)?;
-    if !crate::transcription::models::is_installed(model, &selection.language) {
+    if !crate::transcription::models::is_installed(&model, &selection.language) {
         return Err(eyre!("{} is not installed", model.name));
     }
 
@@ -129,6 +129,7 @@ pub(crate) fn import(source: &Path) -> Result<MeetingManifest> {
             notes_export_removed: false,
             audio_removed_at_ms: None,
             imported: true,
+            speakers: Default::default(),
         };
         let system_path = directory.join("system.wav");
         fs::rename(&decoded, &system_path).wrap_err("could not keep the imported audio")?;

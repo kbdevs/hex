@@ -29,7 +29,7 @@
 			<key>PrefersRightToLeft</key>
 			<false/>
 			<key>PrimaryLanguage</key>
-			<string>en-US</string>
+			<string>mul</string>
 			<key>RequestsOpenAccess</key>
 			<true/>
 		</dict>
@@ -38,5 +38,9 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).KeyboardViewController</string>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Hex turns what you say into text on this iPhone. Audio never leaves it and is deleted once it's transcribed.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Hex uses Apple's on-device speech recognition to turn what you say into text. Nothing you say is sent to a server.</string>
 </dict>
 </plist>

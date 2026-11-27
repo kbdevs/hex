@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react"
-import Download, { PLATFORM_NAMES, SHORTCUTS } from "./Download"
+import Download, { OS_KEY_LEGENDS, OS_NAMES, OS_SHORTCUTS, osOf, type Os } from "./Download"
 import { guessPlatform, refinePlatform, type Platform } from "./platform"
 import { OptionKey, SoundToggle, useShout } from "./Shout"
 import signature from "./footer-signature.svg"
@@ -38,6 +38,11 @@ export default function App() {
     }
   }, [])
 
+  // The install tabs and the hero's key are one choice: clicking a tab takes
+  // the hero to that OS, until then it follows the detected platform.
+  const [chosenOs, setChosenOs] = useState<Os>()
+  const os = chosenOs ?? osOf(platform)
+
   const root = useRef<HTMLElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const head = useRef<HTMLDivElement>(null)
@@ -54,6 +59,9 @@ export default function App() {
           </a>
           <div className="header__tools" data-avoid>
             {shout.phase === "started" && <SoundToggle muted={shout.muted} onToggle={shout.toggleMuted} />}
+            <a className="header__link" href={`${import.meta.env.BASE_URL}meetings/`}>
+              Meetings
+            </a>
             <a className="header__github" href="https://github.com/anomalyco/hex">
               <GitHubMark />
               <span>GitHub</span>
@@ -65,7 +73,13 @@ export default function App() {
           <div className="show__head" ref={head}>
             <img src={`${import.meta.env.BASE_URL}shout-idle.webp`} alt="" width="640" height="640" decoding="async" fetchPriority="high" />
           </div>
-          <OptionKey phase={shout.phase} onStart={shout.start} onIntent={shout.intent} onPress={shout.pressKey} />
+          <OptionKey
+            os={os}
+            phase={shout.phase}
+            onStart={(el) => shout.start(el, OS_KEY_LEGENDS[os])}
+            onIntent={shout.intent}
+            onPress={shout.pressKey}
+          />
         </div>
 
         <section className="hero">
@@ -81,16 +95,27 @@ export default function App() {
                 appears.
               </span>
             </h1>
-            <p>
-              Local voice dictation for {PLATFORM_NAMES[platform]}. Hold {SHORTCUTS[platform]}, say what you mean, and
-              Hex pastes it where you are.
+            <p className="hero__device">
+              {os === "mobile"
+                ? "Local voice dictation for iOS and Android. Dictate right inside the keyboard, in any app, on your phone."
+                : `Local voice dictation for ${OS_NAMES[os]}. Hold ${OS_SHORTCUTS[os]}, say what you mean, and Hex pastes it where you are.`}
+            </p>
+            {/* Scripts off: the line above is only the page's first guess, so name
+                every platform; index.html's <noscript> stylesheet swaps them. */}
+            <p className="hero__any">
+              Local voice dictation for Mac, Windows, Linux, iOS, and Android. Hold your
+              shortcut or dictate from your phone&apos;s keyboard, and Hex types what you said.
             </p>
           </div>
 
-          <Download platform={platform} />
+          <Download platform={platform} os={os} onChooseOs={setChosenOs} />
         </section>
       </main>
       <footer className="site-footer">
+        <nav className="site-footer__links" aria-label="More about Hex">
+          <a href={`${import.meta.env.BASE_URL}meetings/`}>Meetings</a>
+          <a href={`${import.meta.env.BASE_URL}changelog`}>Changelog</a>
+        </nav>
         <div className="copyright">
           <img src={signature} alt="" aria-hidden="true" width={163} height={64} />
           <p>

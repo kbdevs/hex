@@ -8,6 +8,21 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>Hex</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Hex words file</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>anomaly.hex.words</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -26,7 +41,7 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>com.kitlangton.hex.mobile.keyboard-session</string>
+			<string>anomaly.hex.mobile.keyboard-session</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>hex-dictation</string>
@@ -37,10 +52,12 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Hex records only while you dictate and transcribes locally on this iPhone.</string>
+	<string>Hex turns what you say into text on this iPhone. Audio never leaves it and is deleted once it's transcribed.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Hex uses Apple's on-device SpeechTranscriber to turn your recording into text.</string>
+	<string>Hex uses Apple's on-device speech recognition to turn what you say into text. Nothing you say is sent to a server.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIBackgroundModes</key>
@@ -64,6 +81,30 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Hex words file</string>
+			<key>UTTypeIdentifier</key>
+			<string>anomaly.hex.words</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>hexwords</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/vnd.anomaly.hex-words+json</string>
+				</array>
+			</dict>
+		</dict>
 	</array>
 </dict>
 </plist>

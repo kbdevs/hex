@@ -46,8 +46,6 @@ pub(super) struct Capabilities {
     pub(super) listener_control: bool,
     /// The Terminal paste row in General (Linux; on Windows it is in Labs).
     pub(super) terminal_paste: bool,
-    /// Dictation can type keyboard events instead of using the clipboard.
-    pub(super) type_dictation: bool,
     /// The dictation shortcut can pass through to other apps (Windows).
     pub(super) share_shortcut: bool,
     /// Hex Microphone is a driver to install (macOS). Elsewhere with the
@@ -84,7 +82,6 @@ impl Capabilities {
         dock_icon: false,
         listener_control: true,
         terminal_paste: true,
-        type_dictation: false,
         share_shortcut: false,
         hex_microphone: false,
         practice_dictation: true,
@@ -104,7 +101,6 @@ impl Capabilities {
         dock_icon: true,
         listener_control: false,
         terminal_paste: false,
-        type_dictation: true,
         share_shortcut: false,
         hex_microphone: true,
         practice_dictation: true,
@@ -124,7 +120,6 @@ impl Capabilities {
         dock_icon: false,
         listener_control: true,
         terminal_paste: false,
-        type_dictation: false,
         share_shortcut: true,
         hex_microphone: false,
         practice_dictation: true,
@@ -256,6 +251,8 @@ pub(super) struct ScrawlView {
     pub(super) folder_error: Option<String>,
     /// Turning captures on or off failed (the pane sets it).
     pub(super) enable_error: Option<String>,
+    /// How it works is open (the pane sets it).
+    pub(super) how_it_works: bool,
 }
 
 #[cfg(hex_capture)]
@@ -280,6 +277,9 @@ pub(super) enum ScrawlRequest {
     /// ever quits it.
     QuitScrawl,
     RevealFolder,
+    /// Open the captures folder chooser. Linux and Windows open it from the
+    /// window (`scrawl::folder`), which saves their settings.
+    #[cfg(target_os = "macos")]
     ChooseFolder,
 }
 
@@ -337,9 +337,24 @@ pub(super) struct PlatformState {
     /// Developer builds: keeps Meetings available without opt-in in debug builds
     /// (`crate::DEVELOPER_FEATURES_ENABLED` on a native host).
     pub(super) developer: bool,
-    /// macOS 27 lists Accessibility as "Device Control and Data Access"
+    /// macOS 27 lists Accessibility as "Device Control and Data Access", and
+    /// 27.3 as "System & App Protection Override"
     /// (`permission_guide::list_name`); the permission rows use that name.
     pub(super) accessibility_renamed: bool,
+    /// Whether System Settings takes a tile dragged into the Accessibility
+    /// list (`permission_guide::drag_supported`); macOS 27.3 adds Hex with +
+    /// instead, so no copy asks for a drag there.
+    pub(super) accessibility_drag_supported: bool,
+    /// Whether macOS 27.3 split Accessibility from System & App Protection
+    /// Override (`permission_guide::split_accessibility`). There posting key
+    /// events is its own grant, and the post-event preflight can stay false
+    /// after a grant until Hex restarts, so a stale row offers a restart
+    /// rather than a TCC reset that would drop the grant.
+    pub(super) accessibility_split: bool,
+    /// Whether that one restart was already used (`onboarding::
+    /// post_event_restart_recorded`). A row that still reads stale then takes
+    /// the reset flow, so a grant that never lands cannot restart forever.
+    pub(super) accessibility_restart_done: bool,
     /// The Hex Microphone's live filter tuning
     /// (`hex_microphone::current_tuned_config`).
     pub(super) tuning: TunedFilterConfig,
@@ -426,6 +441,9 @@ impl PlatformState {
             preview: false,
             developer: false,
             accessibility_renamed: false,
+            accessibility_drag_supported: true,
+            accessibility_split: false,
+            accessibility_restart_done: false,
             tuning: TunedFilterConfig::default(),
             demo: None,
             hud: HudLab::default(),
@@ -534,6 +552,16 @@ impl PlatformState {
         self.permissions_stale.retain(|entry| *entry != kind);
     }
 
+    /// Whether a stale row should offer Restart Hex rather than resetting TCC:
+    /// macOS 27.3's post-event preflight keeps its launch-time answer, so a
+    /// reset there would drop a grant that may already be on. One restart is
+    /// offered per pending grant; a row stale after it takes the reset flow.
+    fn restart_on_stale(&self, kind: PermissionKind) -> bool {
+        self.accessibility_split
+            && !self.accessibility_restart_done
+            && kind == PermissionKind::Accessibility
+    }
+
     pub(super) fn control_for(
         &self,
         kind: PermissionKind,
@@ -542,6 +570,10 @@ impl PlatformState {
         use super::lists::PermissionControl;
         if permitted {
             PermissionControl::Allowed
+        } else if self.stale(kind) && self.restart_on_stale(kind) {
+            // macOS 27.3: the post-event preflight reads stale until Hex
+            // restarts, so resetting TCC would drop a grant that is already on.
+            PermissionControl::Restart
         } else if self.stale(kind) {
             PermissionControl::Stale
         } else if self.asked(kind) {
@@ -597,6 +629,15 @@ pub(super) enum MeetingRequest {
     Stop,
     /// Import a local audio file as a meeting (macOS; Labs › Import audio).
     Import(PathBuf),
+    /// Delete selected lines from a saved meeting's transcript
+    /// (Labs › Delete transcript lines).
+    DeleteTranscript {
+        id: String,
+        entries: Vec<crate::meeting::TranscriptEntryKey>,
+    },
+    /// Leave Hex's microphone out of the recording under way, or put it back
+    /// (macOS; Labs › Mute the microphone while recording).
+    SetMicrophoneMuted(bool),
     Rename {
         id: String,
         title: String,
@@ -812,8 +853,8 @@ fn scrawl_poll(state: &mut PlatformState) -> bool {
     true
 }
 
-/// Reveals the captures folder; choosing another is set in `settings.json`
-/// (`capture.folder`) for now.
+/// Reveals the captures folder. Choosing another is the window's own
+/// (`scrawl::folder`), since it saves the settings here.
 #[cfg(not(target_os = "macos"))]
 fn scrawl_request(request: ScrawlRequest) {
     if request == ScrawlRequest::RevealFolder {
@@ -855,10 +896,6 @@ impl Difference {
 
 #[cfg(test)]
 const DIFFERENCES: &[(&str, Difference)] = &[
-    (
-        "type_dictation",
-        Difference::Pending("Quartz can type on macOS; Linux and Windows have no typing adapter"),
-    ),
     (
         "calendar",
         Difference::OsPattern("EventKit; there is no cross-platform calendar source"),
@@ -916,7 +953,7 @@ const DIFFERENCES: &[(&str, Difference)] = &[
 impl Capabilities {
     /// Every capability by name. Destructuring makes a new capability a
     /// compile error here until it is named.
-    pub(super) fn fields(self) -> [(&'static str, bool); 16] {
+    pub(super) fn fields(self) -> [(&'static str, bool); 15] {
         let Self {
             os: _,
             meetings,
@@ -926,7 +963,6 @@ impl Capabilities {
             dock_icon,
             listener_control,
             terminal_paste,
-            type_dictation,
             share_shortcut,
             hex_microphone,
             practice_dictation,
@@ -944,7 +980,6 @@ impl Capabilities {
             ("dock_icon", dock_icon),
             ("listener_control", listener_control),
             ("terminal_paste", terminal_paste),
-            ("type_dictation", type_dictation),
             ("share_shortcut", share_shortcut),
             ("hex_microphone", hex_microphone),
             ("practice_dictation", practice_dictation),
@@ -955,6 +990,24 @@ impl Capabilities {
             ("typed_text", typed_text),
         ]
     }
+}
+
+/// What this OS's Hex can do, by capability name, for `hex status` and the
+/// settings `hex settings` can change here.
+pub(crate) fn capabilities() -> std::collections::BTreeMap<String, bool> {
+    Capabilities::current()
+        .fields()
+        .into_iter()
+        .map(|(name, on)| (name.to_owned(), on))
+        .collect()
+}
+
+/// Whether this OS's Hex has the capability `name` ([`capabilities`]).
+pub(crate) fn capability(name: &str) -> bool {
+    Capabilities::current()
+        .fields()
+        .into_iter()
+        .any(|(field, on)| field == name && on)
 }
 
 #[cfg(test)]

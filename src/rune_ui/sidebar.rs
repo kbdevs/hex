@@ -60,18 +60,14 @@ pub(super) enum Pane {
     /// What Hex does to every dictation and in some apps, read-only: the
     /// person's agent edits it.
     Output,
-    /// The old per-app editor, kept for its scenes until it is removed.
+    /// The old per-app editor, in the sidebar while Labs › Modes editor is on
+    /// (the `--snap` scenes render it directly).
     Modes,
     /// Recorded calls and their settings, or the opt-in (macOS beta).
     Meetings,
     History,
-    /// The shots and recordings Labs › Screenshots saved (macOS, while
-    /// it's on).
-    #[cfg(hex_capture)]
-    Captures,
-    /// Annotate (Scrawl's captures inside Hex): the switch, shortcuts,
-    /// permission, transcriber, folder, retention, and Scrawl's own app.
-    /// Dev builds, macOS and Linux only.
+    /// Annotate (Scrawl's captures inside Hex): past annotations (or captures
+    /// when Labs › Screenshots is on) and its settings, switched in the header.
     #[cfg(hex_capture)]
     Annotate,
     /// The Hex Microphone's driver, tuning, and try-it demo (macOS, while
@@ -81,6 +77,7 @@ pub(super) enum Pane {
     HudLab,
     /// Legacy event-log inspector scene (Playground only).
     Activity,
+    WhatsNew,
 }
 
 impl Pane {
@@ -92,8 +89,6 @@ impl Pane {
         Pane::Meetings,
         Pane::History,
         #[cfg(hex_capture)]
-        Pane::Captures,
-        #[cfg(hex_capture)]
         Pane::Annotate,
         Pane::VoiceFilter,
         Pane::HudLab,
@@ -103,15 +98,21 @@ impl Pane {
     pub(super) fn shown(self, ui: &Ui) -> bool {
         let caps = ui.platform.caps;
         match self {
-            Pane::Modes | Pane::HudLab | Pane::Activity => false,
-            Pane::Meetings => caps.meetings && meetings::available(ui),
+            Pane::HudLab | Pane::Activity => false,
+            // Labs › Modes editor; scenes render the pane without the lab.
+            Pane::Modes => ui.settings.labs.modes_editor,
+            // On a Mac an ordinary item even while off: the pane itself
+            // offers to turn it on. Elsewhere it shows once it is on.
+            Pane::Meetings => {
+                caps.meetings
+                    && (meetings::available(ui)
+                        || (caps.os == super::platform::Os::Macos
+                            && crate::labs::Feature::Meetings.managed().is_none()))
+            }
             // On from Labs (dev builds), or while its driver is installed.
             Pane::VoiceFilter => caps.fun && fun::running(ui),
             #[cfg(hex_capture)]
             Pane::Annotate => ui.platform.scrawl.is_some(),
-            // The Lab turns on only on macOS.
-            #[cfg(hex_capture)]
-            Pane::Captures => ui.settings.labs.screenshots,
             _ => true,
         }
     }
@@ -122,14 +123,13 @@ impl Pane {
             Pane::Output => tr("Output"),
             Pane::Modes => tr("Modes"),
             Pane::History => tr("History"),
-            #[cfg(hex_capture)]
-            Pane::Captures => tr("Captures"),
             Pane::Meetings => tr("Meetings"),
             #[cfg(hex_capture)]
             Pane::Annotate => tr("Annotate"),
             Pane::VoiceFilter => tr("Voice Filter"),
             Pane::HudLab => "HUD Lab",
             Pane::Activity => tr("Activity"),
+            Pane::WhatsNew => tr("What's new"),
         }
     }
 
@@ -139,14 +139,13 @@ impl Pane {
             Pane::Output => "nav-output",
             Pane::Modes => "nav-modes",
             Pane::History => "nav-history",
-            #[cfg(hex_capture)]
-            Pane::Captures => "nav-captures",
             Pane::Meetings => "nav-meetings",
             #[cfg(hex_capture)]
             Pane::Annotate => "nav-annotate",
             Pane::VoiceFilter => "nav-voice-filter",
             Pane::HudLab => "nav-hud-lab",
             Pane::Activity => "nav-activity",
+            Pane::WhatsNew => "nav-whats-new",
         }
     }
 
@@ -156,14 +155,13 @@ impl Pane {
             Pane::Output => &OUTPUT_ICON,
             Pane::Modes => &MODES_ICON,
             Pane::History => &HISTORY_ICON,
-            #[cfg(hex_capture)]
-            Pane::Captures => &captures::CAPTURES_ICON,
             Pane::Meetings => &MEETINGS_ICON,
             #[cfg(hex_capture)]
             Pane::Annotate => &SCRAWL_ICON,
             Pane::VoiceFilter => &VOICE_FILTER_ICON,
             Pane::HudLab => &HUD_LAB_ICON,
             Pane::Activity => &ACTIVITY_ICON,
+            Pane::WhatsNew => &icons::PLAIN_BOOK,
         }
     }
 }
@@ -173,12 +171,12 @@ impl Pane {
 const SIDEBAR_TOP: f32 = if cfg!(target_os = "macos") {
     40.0
 } else {
-    12.0
+    20.0
 };
 
 /// Sidebar rows follow OpenCode Desktop's settings navigation: 28 pt rows
 /// with a 4 pt gap, so each row's highlight stays its own.
-pub(super) const NAV_ROW_HEIGHT: f32 = 28.0;
+pub(super) const NAV_ROW_HEIGHT: f32 = METRICS.row_h_compact;
 pub(super) const NAV_ROW_GAP: f32 = 4.0;
 
 /// On macOS the sidebar and the pane header stand in for the title bar the
@@ -197,7 +195,7 @@ pub(super) fn title_bar(element: El) -> El {
 pub(super) fn pane_header(p: Paint, title: &str, switch: Option<El>, actions: Vec<El>) -> El {
     title_bar(row())
         .key("pane-header")
-        .h(52.0)
+        .h(METRICS.header_h)
         .px(METRICS.gutter)
         .gap(8.0)
         .center_y()
@@ -206,7 +204,7 @@ pub(super) fn pane_header(p: Paint, title: &str, switch: Option<El>, actions: Ve
                 .key("pane-title")
                 .role("heading")
                 .level(1)
-                .font(p.k.ty.body_medium)
+                .font(p.title())
                 .color(p.text())
                 .shrink()
                 .truncate(),
@@ -214,6 +212,16 @@ pub(super) fn pane_header(p: Paint, title: &str, switch: Option<El>, actions: Ve
         .children(switch.map(|switch| switch.ml(8.0)))
         .child(el().key("header-spacer").grow(1.0))
         .children(actions)
+}
+
+/// The hairline under the pane header, full bleed across the panel, so
+/// every pane's body starts under the same rule and a split's divider runs
+/// up to meet it.
+pub(super) fn pane_header_rule(p: Paint) -> El {
+    el().key("header-rule")
+        .h(p.hair)
+        .fill(p.k.c.border_weak)
+        .a11y_hidden()
 }
 
 pub(super) fn sidebar(ui: &Ui, p: Paint) -> El {
@@ -229,6 +237,14 @@ pub(super) fn sidebar(ui: &Ui, p: Paint) -> El {
     }
     nav = nav.children(labs::playground_nav(ui, p));
     nav = nav.child(labs::nav(ui, p));
+    // Pinned to the foot of the list, but still reached by Down from Labs.
+    nav = nav.child(el().key("spacer").grow(1.0)).child(nav_slot(
+        p,
+        Pane::WhatsNew,
+        ui.pane == Pane::WhatsNew && !ui.labs_open,
+        NAV_ROW_GAP / 2.0,
+        NAV_ROW_GAP / 2.0,
+    ));
     title_bar(col())
         .key("sidebar")
         .role("navigation")
@@ -236,14 +252,8 @@ pub(super) fn sidebar(ui: &Ui, p: Paint) -> El {
         .h_full()
         .pt(SIDEBAR_TOP - NAV_ROW_GAP / 2.0)
         .pb(12.0)
-        .pl(10.0)
-        .pr(6.0)
-        .child(nav)
-        .child(el().key("spacer").grow(1.0))
-        .children(sidebar_update::control(ui, p))
-        .children(sidebar_update::notes(ui, p))
-        .children(sidebar_update::blocked(ui, p))
-        .children(host::QUIT_IN_WINDOW.then(|| quit_item(p)))
+        .px(8.0)
+        .child(nav.grow(1.0))
         .child(footer(ui, p))
 }
 
@@ -251,7 +261,7 @@ pub(super) fn sidebar(ui: &Ui, p: Paint) -> El {
 /// Both lines keep their place in every state, so a check never moves the
 /// version, and the status line is one element whose words change in place
 /// rather than two that cross-fade over each other. An available update is
-/// the Update button above.
+/// the Update button in place of the status line.
 fn footer(ui: &Ui, p: Paint) -> El {
     let c = &p.k.c;
     let line = |key: &str, words: &str, color| {
@@ -270,6 +280,7 @@ fn footer(ui: &Ui, p: Paint) -> El {
                     .truncate(),
             )
     };
+    let build = ui.build_preview.unwrap_or_else(build_kind);
     let status = ui.view.as_ref().map(|view| &view.update_status);
     let status = match status {
         None
@@ -322,13 +333,10 @@ fn footer(ui: &Ui, p: Paint) -> El {
         Some(DesktopUpdateStatus::Downloading) => {
             Some(line("update-status", tr("Downloading update"), p.faint()))
         }
+        Some(DesktopUpdateStatus::SourceBuild) if matches!(build, BuildKind::Local { .. }) => None,
         Some(DesktopUpdateStatus::SourceBuild) => Some(line(
             "update-status",
-            if ui.build_preview.unwrap_or_else(build_kind) == BuildKind::Local {
-                tr("Local build · updates off")
-            } else {
-                tr("Updated from your source checkout")
-            },
+            tr("Updated from your source checkout"),
             p.faint(),
         )),
         Some(DesktopUpdateStatus::PackageManager) => Some(line(
@@ -346,24 +354,56 @@ fn footer(ui: &Ui, p: Paint) -> El {
                 .py(2.0),
         ),
     };
+    let version = match build {
+        BuildKind::Local { version, commit } => {
+            let words = tr_fill("{} · Local build", version);
+            let detail = tr("Local build · updates off");
+            let version = line("version", &words, c.text_muted)
+                .role("group")
+                .label(words)
+                .help(detail)
+                .help_above();
+            match commit {
+                Some(sha) => version.help_row(sha),
+                None => version,
+            }
+        }
+        _ => version_line(ui, p, line("version", &version_label(), p.faint())),
+    };
+    let version = if host::QUIT_IN_WINDOW {
+        // Long build labels and translations get a second line rather than
+        // crowding the badge or overlaying Quit's hit target.
+        row()
+            .key("version-and-quit")
+            .flex_wrap()
+            .justify_between()
+            .center_y()
+            .child(version)
+            .child(
+                line("quit", tr("Quit Hex"), c.text_muted)
+                    .role("button")
+                    .label(tr("Quit Hex"))
+                    .hover(c.hover)
+                    .press(c.pressed)
+                    .focusable(true)
+                    .focus_ring(2.0, -2.0, c.border_focus)
+                    .on_press(|ui: &mut Ui| ui.quit()),
+            )
+    } else {
+        version
+    };
     col()
         .key("footer")
         .mt(8.0)
-        .child(version_line(
-            ui,
-            p,
-            line("version", &version_label(), p.faint()),
-        ))
+        .child(version)
         .children(status)
-        .children(release_notes_link(ui, p))
+        .children(sidebar_update::control(ui, p))
+        .children(sidebar_update::notes(ui, p))
+        .children(sidebar_update::blocked(ui, p))
 }
 
-/// This build's release notes, under the version and status while Labs ›
-/// Release notes link is on. Unlike What's new, it needs no staged update.
-fn release_notes_link(ui: &Ui, p: Paint) -> Option<El> {
-    if !crate::labs::Feature::ReleaseNotesLink.on(&ui.settings) {
-        return None;
-    }
+/// The version itself links to what changed since this build.
+fn release_notes_url(ui: &Ui) -> Option<String> {
     // A source or test build has no published notes for its code.
     if ui.build_preview.unwrap_or_else(build_kind) != BuildKind::Release {
         return None;
@@ -374,47 +414,31 @@ fn release_notes_link(ui: &Ui, p: Paint) -> Option<El> {
     } else {
         crate::VERSION
     };
-    let url = crate::updater::notes::release_notes_url(version)?;
-    let c = &p.k.c;
-    Some(
-        row()
+    crate::updater::notes::release_notes_url(version)
+}
+
+/// Published releases can link to their notes; test builds keep their badge.
+fn version_line(ui: &Ui, p: Paint, version: El) -> El {
+    if let Some(url) = release_notes_url(ui) {
+        return version
             .key("release-notes")
-            .h(FOOTER_LINE)
-            .px(6.0)
-            .center_y()
-            .self_start()
-            .radius(p.k.radius.sm)
             .role("link")
             .label(tr("Release notes"))
-            .hover(c.hover)
-            .press(c.pressed)
             .focusable(true)
-            .focus_ring(2.0, -2.0, c.border_focus)
+            .focus_ring(2.0, -2.0, p.k.c.border_focus)
+            .hover(p.k.c.hover)
+            .press(p.k.c.pressed)
             .on_press(move |ui: &mut Ui| {
                 if ui.live()
                     && let Err(error) = crate::desktop::opencode_catalog::open_url(&url)
                 {
                     ui.error = Some(format!("{error:#}"));
                 }
-            })
-            .child(
-                text(tr("Release notes"))
-                    .key("label")
-                    .font(p.k.ty.small)
-                    .color(c.text_muted)
-                    .truncate(),
-            ),
-    )
-}
-
-/// A local or test build marks itself beside the version, quietly: an outline
-/// pill with a dot, in muted theme tokens.
-fn version_line(ui: &Ui, p: Paint, version: El) -> El {
-    let badge = match ui.build_preview.unwrap_or_else(build_kind) {
-        BuildKind::Release => return version,
-        BuildKind::Local => tr("Local"),
-        BuildKind::Test => tr("Test"),
-    };
+            });
+    }
+    if ui.build_preview.unwrap_or_else(build_kind) != BuildKind::Test {
+        return version;
+    }
     let c = &p.k.c;
     row()
         .key("version-row")
@@ -428,7 +452,7 @@ fn version_line(ui: &Ui, p: Paint, version: El) -> El {
                 .px(6.0)
                 .gap(4.0)
                 .center_y()
-                .radius(8.0)
+                .radius(p.k.radius.lg)
                 .border(p.hair.max(0.5), c.border_muted)
                 .child(
                     controls::status_dot(c.text_faint)
@@ -436,7 +460,7 @@ fn version_line(ui: &Ui, p: Paint, version: El) -> El {
                         .radius(2.5),
                 )
                 .child(
-                    text(badge)
+                    text(tr("Test"))
                         .key("label")
                         .font(p.k.ty.small)
                         .color(c.text_muted),
@@ -449,13 +473,19 @@ fn version_line(ui: &Ui, p: Paint, version: El) -> El {
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum BuildKind {
     Release,
-    Local,
+    Local {
+        version: &'static str,
+        commit: Option<&'static str>,
+    },
     Test,
 }
 
 fn build_kind() -> BuildKind {
     if crate::app_paths::is_local_build() {
-        BuildKind::Local
+        BuildKind::Local {
+            version: crate::VERSION,
+            commit: option_env!("HEX_COMMIT"),
+        }
     } else if option_env!("HEX_TEST_BUILD") == Some("1") {
         BuildKind::Test
     } else {
@@ -466,20 +496,13 @@ fn build_kind() -> BuildKind {
 /// The footer's lines: as tall as each other, so a check moves nothing.
 pub(super) const FOOTER_LINE: f32 = 20.0;
 
-/// Test and local builds also name their commit: main moves past a release without
+/// A test build names its commit too: dev moves past a release without
 /// changing the version.
 fn version_label() -> String {
-    // Goldens render a fixed version: a local build's names its commit.
+    // Goldens render a fixed version.
     let version = if cfg!(test) { "0.0.0" } else { crate::VERSION };
     match option_env!("HEX_COMMIT") {
-        Some(commit) => {
-            let kind = if crate::app_paths::is_local_build() {
-                "local"
-            } else {
-                "test"
-            };
-            tr_fill("Version {}", &format!("{version} ({kind} {commit})"))
-        }
+        Some(commit) => tr_fill("Version {}", &format!("{version} (test {commit})")),
         None => tr_fill("Version {}", version),
     }
 }
@@ -555,32 +578,4 @@ fn nav_item(p: Paint, pane: Pane, on: bool) -> El {
         item = item.fill(c.layer_02);
     }
     lists::source_item(item, on)
-}
-
-/// Linux has no tray: the window's way to stop Hex. Closing the window
-/// keeps Hex dictating.
-fn quit_item(p: Paint) -> El {
-    let c = &p.k.c;
-    row()
-        .key("quit")
-        .role("button")
-        .label(tr("Quit Hex"))
-        .h(NAV_ROW_HEIGHT)
-        .px(6.0)
-        .mt(NAV_ROW_GAP)
-        .center_y()
-        .radius(p.k.radius.sm)
-        .hover(c.hover)
-        .press(c.pressed)
-        .on_press(|ui: &mut Ui| ui.quit())
-        .focusable(true)
-        .focus_ring(2.0, -2.0, c.border_focus)
-        .child(
-            text(tr("Quit Hex"))
-                .key("label")
-                .font(p.k.ty.ui)
-                .color(c.text_muted)
-                .truncate()
-                .a11y_hidden(),
-        )
 }

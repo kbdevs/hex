@@ -38,6 +38,8 @@ pub(crate) struct Follow {
     /// The shown capture is a Screenshots recording: once it stops, the
     /// screenshot card takes it and the capsule folds.
     clip: bool,
+    /// The shown capture's initial clipboard copy failed.
+    uncopied: bool,
 }
 
 impl Follow {
@@ -97,6 +99,7 @@ impl Follow {
                 self.worked = recording.worked;
                 self.began = recording.screen;
                 self.clip = recording.clip;
+                self.uncopied = false;
                 // No target chips: Annotate records the screen, and the
                 // capsule's toolbar (the pen) takes their place.
                 inputs.push(Input::Stage(Stage::Recording));
@@ -123,13 +126,17 @@ impl Follow {
             return inputs;
         }
         let stage = self.stage(snapshot);
-        if stage == Some(Input::Stage(Stage::Done)) {
+        if matches!(stage, Some(Input::Written { .. })) {
             if heard_nothing(snapshot, self.shown.as_ref()) {
                 inputs.push(Input::NothingHeard);
             }
             if copy_failed(snapshot, self.shown.as_ref()) {
+                self.uncopied = true;
                 inputs.push(Input::CopyFailed);
             }
+        } else if self.uncopied && !copy_failed(snapshot, self.shown.as_ref()) {
+            self.uncopied = false;
+            inputs.push(Input::Copied);
         }
         inputs.extend(stage);
         inputs.extend(self.routed(snapshot));
@@ -171,6 +178,9 @@ impl Follow {
         let answered = |route: Option<&CaptureRoute>| {
             route.is_some_and(|route| route.answer != RouteAnswer::Looking)
         };
+        if before.as_ref().and_then(|b| b.rule_match.as_ref()) != route.rule_match.as_ref() {
+            inputs.push(Input::RuleMatch(route.rule_match.clone()));
+        }
         if answered(Some(&route)) && !answered(before.as_ref()) {
             inputs.extend(capsule_route(&route.answer).map(Input::Routed));
         } else if before
@@ -231,6 +241,20 @@ impl Follow {
                 .take_if(|(_, stage)| *stage == Stage::Recording)?;
             return Some(Input::Gone);
         };
+        // A writer's last progress tick is not its publication: the settled
+        // bundle also tells us whether a routing answer is still pending.
+        let written = if stage == Stage::Done {
+            let last = snapshot
+                .last
+                .as_ref()
+                .filter(|last| last.bundle == *bundle && last.stage == Stage::Done)?;
+            Some(Input::Written {
+                bundle: bundle.clone(),
+                routing: last.route.is_some(),
+            })
+        } else {
+            None
+        };
         if self
             .shown
             .as_ref()
@@ -252,7 +276,7 @@ impl Follow {
             };
             return Some(Input::Failed(what, error));
         }
-        Some(Input::Stage(stage))
+        written.or(Some(Input::Stage(stage)))
     }
 }
 
@@ -264,8 +288,9 @@ fn copy_failed(snapshot: &CaptureSnapshot, shown: Option<&(PathBuf, Stage)>) -> 
 }
 
 /// Whether the shown capture was written with a transcript that has no
-/// words. One that has no transcript at all (the transcriber was missing
-/// or failed) wasn't silence.
+/// words: none timed and none in its text, so only silence reads as "no
+/// speech" for a model that gives no times. One that has no transcript at
+/// all (the transcriber was missing or failed) wasn't silence.
 fn heard_nothing(snapshot: &CaptureSnapshot, shown: Option<&(PathBuf, Stage)>) -> bool {
     snapshot.last.as_ref().is_some_and(|last| {
         shown.is_some_and(|(bundle, _)| *bundle == last.bundle)
@@ -287,9 +312,14 @@ fn capsule_route(answer: &RouteAnswer) -> Option<Route> {
                     .as_deref()
                     .and_then(|directory| directory.file_name())
                     .map(|name| name.to_string_lossy().into_owned());
+                let directory = dest
+                    .directory
+                    .as_deref()
+                    .map(|dir| dir.display().to_string());
                 Dest::new(dest.name.clone(), dest.why.clone())
                     .session(dest.session.clone())
                     .folder(folder)
+                    .directory(directory)
             })
             .collect()
     };
@@ -301,6 +331,7 @@ fn capsule_route(answer: &RouteAnswer) -> Option<Route> {
             suggested,
             recent,
             site,
+            by,
         } => Route::Rule {
             to: dests(std::slice::from_ref(to)).remove(0),
             suggested: dests(std::slice::from_ref(to))
@@ -309,6 +340,7 @@ fn capsule_route(answer: &RouteAnswer) -> Option<Route> {
                 .collect(),
             recent: dests(recent),
             site: site.clone(),
+            by: *by,
         },
         RouteAnswer::Guess {
             suggested,
@@ -329,7 +361,7 @@ fn capsule_route(answer: &RouteAnswer) -> Option<Route> {
     })
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 /// The capsule, its picker, and the ink, installed together.
 pub(crate) struct CaptureOverlays {
     capsule: CaptureCapsule,
@@ -345,10 +377,25 @@ impl CaptureOverlays {
     /// windows too, so a Hex that never annotates holds none: idle
     /// screen-sized panels emptied macOS 27's Mission Control Space
     /// thumbnails (#1315).
-    pub(crate) fn install<S: 'static>(app: &mut rune::App<S>) -> Self {
+    pub(crate) fn install(app: &mut rune::App<crate::rune_ui::Ui>) -> Self {
         let picker = PickerOverlay::install(app, act);
         let aim = picker.clone();
-        let capsule = CaptureCapsule::install(app, move |action| act(aim.resolve(action)));
+        #[cfg(not(target_os = "macos"))]
+        let window = app.handle();
+        let capsule = CaptureCapsule::install(app, move |action| match aim.resolve(action) {
+            Action::OpenRules => {
+                #[cfg(target_os = "macos")]
+                crate::macos_rune::open_routing_rules();
+                #[cfg(not(target_os = "macos"))]
+                {
+                    window.open();
+                    window.update(|ui, tx| {
+                        crate::rune_ui::show(ui, crate::rune_ui::Destination::RoutingRules, tx);
+                    });
+                }
+            }
+            other => act(other),
+        });
         capsule.attach(picker.clone());
         let ink = InkOverlay::install(app);
         let lit = capsule.clone();
@@ -364,7 +411,7 @@ impl CaptureOverlays {
         }
     }
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     /// Follows `capture.show_overlays_in_recordings` on windows already
     /// made.
     pub(crate) fn follow_recordings(&mut self) {
@@ -398,7 +445,9 @@ pub(crate) fn follow(capsule: CaptureCapsule, ink: InkOverlay) {
                 // The first frame goes ahead of "Copied", so the capsule
                 // lands with it rather than swapping its check a moment on.
                 let mut screenless = false;
-                if inputs.contains(&Input::Stage(Stage::Done))
+                if inputs
+                    .iter()
+                    .any(|input| matches!(input, Input::Written { .. }))
                     && let Some((bundle, _)) = &follow.shown
                 {
                     screenless = !bundle.join("frames/frame-01.png").exists();
@@ -536,13 +585,22 @@ pub(crate) fn act(action: Action) {
             to,
             always: always.is_some(),
         })],
+        Action::SaveRule { kind, key, target } => {
+            vec![command(CaptureCommand::SaveRule(kind, key, target))]
+        }
+        Action::OpenRules => {
+            #[cfg(target_os = "macos")]
+            crate::macos_rune::open_routing_rules();
+            return;
+        }
         Action::Undo { .. } => vec![command(CaptureCommand::Undo)],
         Action::Hold(on) => vec![command(CaptureCommand::Hold(on))],
         Action::Pen => {
             crate::capture_host::toggle_pen();
             return;
         }
-        Action::Paste => vec![command(CaptureCommand::Paste)],
+        Action::Copy(bundle) => vec![command(CaptureCommand::Copy(bundle))],
+        Action::Paste(bundle) => vec![command(CaptureCommand::Paste(bundle))],
         Action::Inspect => vec![command(CaptureCommand::Inspect)],
         Action::Allow(need) => {
             crate::capture_host::allow_permission(need);
@@ -662,6 +720,7 @@ mod tests {
                 stage,
                 words: Some(12),
                 gaps: Some(0),
+                audio_stopped_at_ms: None,
                 missing_transcript: None,
                 error: None,
                 copy_error: None,
@@ -669,6 +728,48 @@ mod tests {
             }),
             phone: None,
         }
+    }
+
+    fn written(name: &str, routing: bool) -> Input {
+        Input::Written {
+            bundle: bundle(name),
+            routing,
+        }
+    }
+
+    #[test]
+    fn a_failed_copy_recovers_when_retry_clears_copy_error() {
+        let mut follow = Follow::default();
+        assert_eq!(
+            follow.next(&recording("a")),
+            [Input::Stage(Stage::Recording)]
+        );
+        let mut failed = settled("a", Stage::Done);
+        failed.last.as_mut().unwrap().copy_error = Some("clipboard busy".into());
+        assert_eq!(
+            follow.next(&failed),
+            [Input::CopyFailed, written("a", false)]
+        );
+        // Once the retry clears copy_error on the same bundle, Follow emits Copied.
+        assert_eq!(follow.next(&settled("a", Stage::Done)), [Input::Copied]);
+        assert_eq!(follow.next(&settled("a", Stage::Done)), []);
+    }
+
+    #[test]
+    fn paste_follows_the_displayed_bundle_not_a_later_completion() {
+        use super::super::{flow::Flow, surface::Id};
+        let mut follow = Follow::default();
+        let mut flow = Flow::new();
+        for snapshot in [
+            recording("shown"),
+            settled("shown", Stage::Done),
+            settled("other", Stage::Done),
+        ] {
+            for input in follow.next(&snapshot) {
+                flow.input(input, 1.0);
+            }
+        }
+        assert_eq!(flow.click(Id::Paste, 1.1), [Action::Paste(bundle("shown"))]);
     }
 
     #[test]
@@ -686,7 +787,7 @@ mod tests {
         );
         assert_eq!(
             follow.next(&settled("a", Stage::Done)),
-            [Input::Stage(Stage::Done)]
+            [written("a", false)]
         );
         assert_eq!(follow.next(&settled("a", Stage::Done)), []);
     }
@@ -754,13 +855,13 @@ mod tests {
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&silent(None)),
-            [Input::NothingHeard, Input::Stage(Stage::Done)]
+            [Input::NothingHeard, written("a", false)]
         );
         let mut follow = Follow::default();
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&silent(Some("Transcriber unavailable."))),
-            [Input::Stage(Stage::Done)],
+            [written("a", false)],
             "no transcript at all isn't silence"
         );
     }
@@ -773,13 +874,13 @@ mod tests {
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&uncopied),
-            [Input::CopyFailed, Input::Stage(Stage::Done)]
+            [Input::CopyFailed, written("a", false)]
         );
         let mut follow = Follow::default();
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&settled("a", Stage::Done)),
-            [Input::Stage(Stage::Done)]
+            [written("a", false)]
         );
     }
 
@@ -904,7 +1005,7 @@ mod tests {
         assert_eq!(follow.next(&c_failed), []);
         assert_eq!(
             follow.next(&settled("b", Stage::Done)),
-            [Input::Stage(Stage::Done)]
+            [written("b", false)]
         );
     }
 
@@ -938,6 +1039,7 @@ mod tests {
             answer,
             delivery,
             offer: None,
+            rule_match: None,
         });
         snapshot
     }
@@ -948,13 +1050,14 @@ mod tests {
         follow.next(&recording("a"));
         assert_eq!(
             follow.next(&routed("a", RouteAnswer::Looking, None)),
-            [Input::Stage(Stage::Done)]
+            [written("a", true)]
         );
         let rule = || RouteAnswer::Rule {
             to: dest("SEER", "rule"),
             suggested: vec![dest("HEX", "last sent")],
             recent: vec![dest("HOME", "yesterday")],
             site: Some("seer.example.com".into()),
+            by: crate::capture_host::AutoSendBy::Rule,
         };
         // The router sends a rule's answer at once.
         let sending = || Some(RouteDelivery::Sending { to: "SEER".into() });
@@ -969,6 +1072,7 @@ mod tests {
                     ],
                     recent: vec![Dest::new("HOME", "yesterday").session("ses_HOME")],
                     site: Some("seer.example.com".into()),
+                    by: crate::capture_host::AutoSendBy::Rule,
                 }),
                 Input::Sending
             ]

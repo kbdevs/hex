@@ -9,13 +9,13 @@ static READS_BROWSER: AtomicBool = AtomicBool::new(false);
 static READS_WINDOW_TITLE: AtomicBool = AtomicBool::new(false);
 
 /// Whether anything the user set up looks at the page: a mode chosen by
-/// website, an enabled local refiner, an OpenCode rewrite, a script
-/// transformation (it receives the page address), or Labs › Voice prompt
-/// (its request carries the browser host). Otherwise Hex never asks a browser
-/// for its page. On macOS, any of these can bring up the browser Automation
-/// prompt.
+/// website, an OpenCode rewrite (its prompt names the site), a script
+/// transformation (it receives the page address), or Labs › Rewrite by voice
+/// (its request carries the browser host). Otherwise Hex never asks a
+/// browser for its page. On macOS, any of these, the voice prompt's lab
+/// included, can bring up the Automation prompt for the browser.
 pub fn reads_browser() -> bool {
-    READS_BROWSER.load(Ordering::Acquire) || crate::labs::phonon_refiner()
+    READS_BROWSER.load(Ordering::Acquire)
 }
 
 /// Whether a script transformation is set up, the only reader of the front
@@ -32,7 +32,7 @@ fn uses_scripts(settings: &DictationProcessingSettings) -> bool {
 }
 
 fn uses_browser(settings: &DictationProcessingSettings, voice_prompt: bool) -> bool {
-    // Labs › Voice prompt's request carries the browser host, so its lab
+    // Labs › Rewrite by voice's request carries the browser host, so its lab
     // asks for the page too.
     crate::dictation::modes::uses_page(settings) || voice_prompt
 }

@@ -15,6 +15,8 @@ use color_eyre::eyre::WrapErr;
 use color_eyre::eyre::eyre;
 use url::Url;
 
+use crate::dictation::caret_text::CaretText;
+
 /// How soon the worker retries a refreshed snapshot the one-slot channel held
 /// back, instead of waiting the whole poll interval.
 const REFRESH_RETRY: Duration = Duration::from_millis(10);
@@ -30,10 +32,18 @@ pub struct ContextSnapshot {
     pub browser_url: Option<Url>,
     pub window_title: Option<String>,
     pub input_revision: Option<u64>,
-    /// Labs › Screen vocabulary: names and terms read from the focused window
+    /// Labs › Words on screen: names and terms read from the focused window
     /// as this capture became real. Set only on the snapshot a capture
     /// finishes with, so they never reach another dictation or a meeting.
     pub screen_terms: Vec<String>,
+    /// Labs › Rewrite reads nearby text: the focused text element's text
+    /// around this dictation's insertion point. Set only on the snapshot a
+    /// capture finishes with, and never saved or logged.
+    pub caret_text: Option<CaretText>,
+    /// macOS: the name Finder shows for the frontmost app's bundle, which is
+    /// what the app picker saves, when it differs from the name the running
+    /// app reports (`Rex Beta.app` runs as `Rex`). Matching accepts either.
+    pub bundle_name: Option<String>,
 }
 
 /// The page refresh one capture owes. A shortcut's press starts it
@@ -105,6 +115,8 @@ pub struct ContextMonitor {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Frontmost {
     application: Option<String>,
+    /// [`ContextSnapshot::bundle_name`].
+    bundle_name: Option<String>,
     bundle_id: Option<String>,
     pid: i32,
     window_title: Option<String>,
@@ -277,6 +289,8 @@ fn snapshot_of(front: &Frontmost, page: Option<Url>) -> ContextSnapshot {
         window_title: front.window_title.clone(),
         input_revision: None,
         screen_terms: Vec::new(),
+        caret_text: None,
+        bundle_name: front.bundle_name.clone(),
     }
 }
 
@@ -326,6 +340,8 @@ impl ContextSnapshot {
                         window_title,
                         input_revision: None,
                         screen_terms: Vec::new(),
+                        caret_text: None,
+                        bundle_name: None,
                     });
                 }
                 Ok(None) => {}
@@ -339,18 +355,24 @@ impl ContextSnapshot {
                     .map(|(pid, _)| pid)
             });
             // Chromium browsers behind another app expose no focused element,
-            // and Arc's chrome sits between its window and the page. Read one
-            // selected window so a page address and title stay together; the
-            // Meet tab title can name the call when no address does (#827,
-            // #831). Report the browser's window, not the app in front.
+            // and Arc's chrome sits between its windows and the page, so every
+            // window's web areas and titles are read (`browser_page`), and a
+            // Meet tab's title still names the call when no address does
+            // (#827, #831). The browser's own window is reported rather than
+            // the app in front.
             if let Some(pid) = pid {
-                let page = crate::accessibility::browser_page(pid);
+                let pages = crate::accessibility::browser_pages(pid);
+                // A call's tab title outranks another tab's address; the
+                // rule is shared with Windows (`detection::call_page`).
+                let (url, title) = crate::meeting::detection::call_page(&pages);
                 return Ok(Self {
                     application: Some(browser.name.into()),
-                    browser_url: page.url.as_deref().and_then(web_url),
-                    window_title: page.title,
+                    browser_url: url,
+                    window_title: title,
                     input_revision: None,
                     screen_terms: Vec::new(),
+                    caret_text: None,
+                    bundle_name: None,
                 });
             }
         }
@@ -366,7 +388,12 @@ impl ContextSnapshot {
         Ok(snapshot_of(&front, page))
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    pub fn capture_for_meeting(canonical_bundle_id: &str) -> Result<Self> {
+        crate::windows::context::capture_for_meeting(canonical_bundle_id)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     pub fn capture_for_meeting(_canonical_bundle_id: &str) -> Result<Self> {
         Ok(Self::default())
     }
@@ -382,9 +409,10 @@ impl ContextSnapshot {
     }
 
     pub fn application_is(&self, application: &str) -> bool {
-        self.application
-            .as_deref()
-            .is_some_and(|current| application_names_equal(current, application))
+        [&self.application, &self.bundle_name]
+            .into_iter()
+            .flatten()
+            .any(|current| application_names_equal(current, application))
     }
 
     pub fn label(&self) -> String {
@@ -420,16 +448,19 @@ fn frontmost() -> Result<Frontmost> {
 
 #[cfg(target_os = "macos")]
 fn capture_frontmost(reads: Reads) -> Result<Frontmost> {
-    let (application, bundle_id, pid) = autoreleasepool(|_| {
+    let (application, bundle_name, bundle_id, pid) = autoreleasepool(|_| {
         let application = NSWorkspace::sharedWorkspace()
             .frontmostApplication()
             .ok_or_else(|| eyre!("macOS did not report a foreground application"))?;
-        let name = application
-            .localizedName()
-            .map(|name| name.to_string())
+        let (name, bundle_name) = application_names(&application)
             .ok_or_else(|| eyre!("the foreground application has no display name"))?;
         let bundle_id = application.bundleIdentifier().map(|id| id.to_string());
-        Ok::<_, color_eyre::Report>((name, bundle_id, application.processIdentifier()))
+        Ok::<_, color_eyre::Report>((
+            name,
+            bundle_name,
+            bundle_id,
+            application.processIdentifier(),
+        ))
     })?;
     // A scriptable browser's page is read out of process and cached, so its
     // Accessibility fallback runs with that read instead of every poll.
@@ -447,12 +478,33 @@ fn capture_frontmost(reads: Reads) -> Result<Frontmost> {
         .flatten();
     Ok(Frontmost {
         application: Some(application),
+        bundle_name,
         bundle_id,
         pid,
         window_title,
         page,
         scripted,
     })
+}
+
+/// A running application's own name and, when it differs, the name Finder
+/// shows for its bundle ([`ContextSnapshot::bundle_name`]).
+#[cfg(target_os = "macos")]
+fn application_names(
+    application: &objc2_app_kit::NSRunningApplication,
+) -> Option<(String, Option<String>)> {
+    let name = application.localizedName()?.to_string();
+    let bundle_name = application
+        .bundleURL()
+        .and_then(|url| url.path())
+        .map(|path| {
+            objc2_foundation::NSFileManager::defaultManager()
+                .displayNameAtPath(&path)
+                .to_string()
+        })
+        .map(|finder| strip_bundle_extension(&finder).to_owned())
+        .filter(|finder| !finder.is_empty() && !application_names_equal(finder, &name));
+    Some((name, bundle_name))
 }
 
 /// A scriptable browser's page: its front tab over AppleScript, else the
@@ -499,18 +551,31 @@ pub fn frontmost_bundle_path() -> Option<std::path::PathBuf> {
     })
 }
 
-/// The frontmost application's display name, without reading a page or a
-/// window title: a dictation mode's application name (Labs › Switch model
-/// with app). `None` when Hex itself owns the frontmost application, since
-/// its own window names no mode, or when macOS reports none.
+/// The frontmost application's bundle identifier, as a paste reads it before
+/// choosing an insertion path the app can accept.
 #[cfg(target_os = "macos")]
-pub fn frontmost_other_application() -> Option<String> {
+pub fn frontmost_bundle_id() -> Option<String> {
+    autoreleasepool(|_| {
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()?
+            .bundleIdentifier()
+            .map(|id| id.to_string())
+    })
+}
+
+/// The frontmost application's names, as [`application_names`] reads them,
+/// without reading a page or a window title: what a dictation mode's
+/// application matches (Labs › Switch model with app). `None` when Hex itself
+/// owns the frontmost application, since its own window names no mode, or
+/// when macOS reports none.
+#[cfg(target_os = "macos")]
+pub fn frontmost_other_application() -> Option<(String, Option<String>)> {
     autoreleasepool(|_| {
         let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
         if application.processIdentifier() == std::process::id() as i32 {
             return None;
         }
-        application.localizedName().map(|name| name.to_string())
+        application_names(&application)
     })
 }
 
@@ -559,6 +624,7 @@ macro_rules! browsers {
 
 #[cfg(any(target_os = "macos", test))]
 const SCRIPTABLE_BROWSERS: &[ScriptableBrowser] = browsers![
+    ("at.studio.AsideBrowser", "Aside", Chromium),
     ("com.apple.Safari", "Safari", Safari),
     (
         "com.apple.SafariTechnologyPreview",
@@ -744,6 +810,24 @@ mod tests {
             );
             assert!(!ContextSelector::browser_host("news.x.com").matches(&context));
         }
+    }
+
+    /// A Mode picked as `Visual Studio Code` matches the app macOS reports
+    /// as `Code`, through the name Finder shows for its bundle.
+    #[test]
+    fn an_application_selector_matches_the_bundles_finder_name_too() {
+        let context = ContextSnapshot {
+            application: Some("Code".into()),
+            bundle_name: Some("Visual Studio Code".into()),
+            ..Default::default()
+        };
+        for picked in ["Code", "Visual Studio Code", "visual studio code.app"] {
+            assert!(
+                ContextSelector::application(picked).matches(&context),
+                "{picked}"
+            );
+        }
+        assert!(!ContextSelector::application("Visual Studio").matches(&context));
     }
 
     fn next(monitor: &ContextMonitor) -> ContextSnapshot {
@@ -998,8 +1082,8 @@ mod tests {
     #[test]
     fn scriptable_browsers_are_found_by_bundle_id() {
         assert_eq!(
-            ScriptableBrowser::from_bundle_id("net.imput.helium").map(|browser| browser.name),
-            Some("Helium")
+            ScriptableBrowser::from_bundle_id("at.studio.AsideBrowser").map(|browser| browser.name),
+            Some("Aside")
         );
         assert_eq!(
             ScriptableBrowser::from_bundle_id("com.google.Chrome").map(|browser| browser.name),

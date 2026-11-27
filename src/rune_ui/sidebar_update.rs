@@ -8,22 +8,10 @@ const SHOWN: usize = 3;
 
 /// An available update, as a secondary button with a dot.
 pub(super) fn control(ui: &Ui, p: Paint) -> Option<El> {
-    let action = match ui.view.as_ref().map(|view| &view.update_status) {
-        Some(DesktopUpdateStatus::ReadyToRestart) => Some((
-            tr("Restart to update").to_owned(),
-            DesktopAction::RestartIntoUpdate,
-        )),
-        Some(DesktopUpdateStatus::Available) => {
-            Some((tr("Download update").to_owned(), DesktopAction::OpenUpdate))
-        }
-        Some(DesktopUpdateStatus::SwitchAvailable { channel, version }) => Some((
-            crate::updater::switch_label(channel, version),
-            DesktopAction::ConfirmUpdateSwitch,
-        )),
-        _ => None,
-    };
+    let offer = crate::updater::offer(&ui.view.as_ref()?.update_status)?;
+    let action = offer.action;
     // An available update is a state, not the screen's main action.
-    action.map(|(label, action)| {
+    Some(
         row()
             .key("sidebar-update-control")
             .gap(8.0)
@@ -33,11 +21,11 @@ pub(super) fn control(ui: &Ui, p: Paint) -> Option<El> {
             .child(controls::button(
                 p,
                 "sidebar-update",
-                &label,
+                &offer.label,
                 controls::ButtonKind::Secondary,
                 move |ui: &mut Ui, _| ui.send(Request::Desktop(action.clone())),
-            ))
-    })
+            )),
+    )
 }
 
 /// Under Download update on Windows, why this Hex can't update itself and
@@ -67,8 +55,7 @@ pub(super) fn notes(ui: &Ui, p: Paint) -> Option<El> {
         .and_then(|notes| list(p, notes))
 }
 
-/// The first few changes and What's new, which opens the build's entry in
-/// the dev changelog.
+/// The first few changes and the release notes for this staged build.
 fn list(p: Paint, notes: &crate::desktop::host::UpdateNotes) -> Option<El> {
     if notes.items.is_empty() {
         return None;
@@ -83,7 +70,7 @@ fn list(p: Paint, notes: &crate::desktop::host::UpdateNotes) -> Option<El> {
         .self_start()
         .radius(p.k.radius.sm)
         .role("link")
-        .label(tr("What's new"))
+        .label(tr("Release notes"))
         .hover(c.hover)
         .press(c.pressed)
         .focusable(true)
@@ -96,7 +83,7 @@ fn list(p: Paint, notes: &crate::desktop::host::UpdateNotes) -> Option<El> {
             }
         })
         .child(
-            text(tr("What's new"))
+            text(tr("Release notes"))
                 .key("label")
                 .font(p.k.ty.small)
                 .color(c.text_muted)

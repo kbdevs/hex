@@ -88,6 +88,37 @@ final class ShiftStateMachineTests: XCTestCase {
         XCTAssertTrue(shift.isUppercase)
     }
 
+    /// Auto-capitalization's shift is not a shift you pressed: caps lock and your own press are
+    /// `isUserShift`, and only those type the Dvorak punctuation keys' symbols.
+    func testAutoCapsIsNotAUserShift() {
+        var shift = ShiftStateMachine()
+        shift.refreshAutoCapitalization(true)
+        XCTAssertTrue(shift.isUppercase)
+        XCTAssertFalse(shift.isUserShift)
+        shift.didType()
+        XCTAssertFalse(shift.isUserShift)
+
+        shift.shiftDown(now: 0)
+        XCTAssertTrue(shift.isUserShift, "a press")
+        shift.didType()
+        shift.shiftUp()
+        shift.shiftDown(now: 1)
+        shift.shiftUp()
+        XCTAssertEqual(shift.state, .on)
+        XCTAssertTrue(shift.isUserShift, "one-shot from a tap")
+        shift.didType()
+        XCTAssertFalse(shift.isUserShift)
+
+        shift.refreshAutoCapitalization(true)
+        XCTAssertFalse(shift.isUserShift, "auto-caps again")
+        shift.shiftDown(now: 5)
+        shift.shiftUp()
+        shift.shiftDown(now: 5.1)
+        shift.shiftUp()
+        XCTAssertEqual(shift.state, .locked)
+        XCTAssertTrue(shift.isUserShift, "caps lock")
+    }
+
     // MARK: - Auto-capitalization
 
     func testSentenceCapitalization() {
@@ -123,6 +154,10 @@ final class ShiftStateMachineTests: XCTestCase {
         XCTAssertTrue(AutoCapitalization.shouldCapitalize(mode: .allCharacters, before: "abc", hasText: true))
         XCTAssertTrue(AutoCapitalization.shouldCapitalize(mode: .words, before: "Jane ", hasText: true))
         XCTAssertFalse(AutoCapitalization.shouldCapitalize(mode: .words, before: "Ja", hasText: true))
+        // Greek's ; is its question mark: the system Greek keyboard capitalizes after "; ".
+        XCTAssertTrue(AutoCapitalization.shouldCapitalize(mode: .sentences, before: "Τι κάνεις; ", hasText: true, language: .greek))
+        XCTAssertTrue(AutoCapitalization.shouldCapitalize(mode: .sentences, before: "Τι κάνεις\u{037E} ", hasText: true, language: .greek))
+        XCTAssertFalse(AutoCapitalization.shouldCapitalize(mode: .sentences, before: "first; ", hasText: true))
         XCTAssertEqual(AutoCapitalization.Mode(UITextAutocapitalizationType.none), .none)
         XCTAssertEqual(AutoCapitalization.Mode(nil), .sentences)
     }
@@ -169,9 +204,14 @@ final class ShiftStateMachineTests: XCTestCase {
         XCTAssertEqual(KeyboardFieldRouting.route(for: nil), .keys(.text, initialLayer: .letters))
         XCTAssertEqual(KeyboardFieldRouting.route(for: .URL), .keys(.url, initialLayer: .letters))
         XCTAssertEqual(KeyboardFieldRouting.route(for: .emailAddress), .keys(.email, initialLayer: .letters))
+        XCTAssertEqual(KeyboardFieldRouting.route(for: .webSearch), .keys(.webSearch, initialLayer: .letters))
         XCTAssertEqual(KeyboardFieldRouting.route(for: .numbersAndPunctuation), .keys(.text, initialLayer: .numbers))
-        XCTAssertEqual(KeyboardFieldRouting.route(for: .numberPad), .handOff)
-        XCTAssertEqual(KeyboardFieldRouting.route(for: .decimalPad), .handOff)
-        XCTAssertEqual(KeyboardFieldRouting.route(for: .asciiCapableNumberPad), .handOff)
+        // Hex's own pads: nothing goes to the next keyboard any more, on any iPhone or posture.
+        XCTAssertEqual(KeyboardFieldRouting.route(for: .numberPad), .keys(.numberPad, initialLayer: .numbers))
+        XCTAssertEqual(KeyboardFieldRouting.route(for: .asciiCapableNumberPad), .keys(.numberPad, initialLayer: .numbers))
+        XCTAssertEqual(KeyboardFieldRouting.route(for: .decimalPad), .keys(.decimalPad, initialLayer: .numbers))
+        // iOS keeps these for its own keyboards (iOS 26.5 and 27.2); Apple's shows letters for the second.
+        XCTAssertEqual(KeyboardFieldRouting.route(for: .phonePad), .keys(.numberPad, initialLayer: .numbers))
+        XCTAssertEqual(KeyboardFieldRouting.route(for: .namePhonePad), .keys(.text, initialLayer: .letters))
     }
 }

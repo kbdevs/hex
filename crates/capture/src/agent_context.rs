@@ -885,6 +885,7 @@ mod tests {
             video: None,
             video_offset_ms: 0,
             audio: None,
+            audio_stopped_at_ms: None,
             source: None,
             device: None,
             context: Default::default(),
@@ -893,8 +894,10 @@ mod tests {
             windows: Vec::new(),
             cursor: Vec::new(),
             autocrop: None,
+            clean_frames: None,
             destination: None,
             no_screen: None,
+            extra: Default::default(),
         }
     }
 

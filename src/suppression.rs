@@ -13,8 +13,10 @@ use color_eyre::eyre::{Result, eyre};
 use crate::app_settings::HotkeyBinding;
 use crate::app_settings::{HOTKEY_MODIFIERS_MASK, RuntimeHotkey, RuntimeHotkeys};
 use crate::audio::CaptureInstant;
+use crate::continuation::InputActivity;
 use crate::dictation::{BOTH_SIDES_WINDOW, DOUBLE_TAP_WINDOW, MINIMUM_HOLD_DURATION};
 
+pub(crate) mod dictation_key;
 mod hotkey;
 pub(crate) mod physical_keys;
 pub(crate) mod secure_input;
@@ -46,7 +48,6 @@ const MOUSE_EVENT_BUTTON_NUMBER: u32 = 3;
 const EVENT_MOUSE_MOVED: u32 = 5;
 #[cfg(hex_capture)]
 const EVENT_SCROLL_WHEEL: u32 = 22;
-#[cfg(hex_capture)]
 const KEYBOARD_EVENT_AUTOREPEAT: u32 = 8;
 #[cfg(hex_capture)]
 const SCROLL_WHEEL_DELTA_AXIS_1: u32 = 11;
@@ -59,6 +60,9 @@ const EVENT_SOURCE_USER_DATA: u32 = 42;
 
 // Assistive keyboards inject downstream of HID; observe them alongside hardware input.
 const ANNOTATED_SESSION_EVENT_TAP: u32 = 2;
+// macOS's own symbolic hot keys are matched in the window server before the
+// app and before an annotated-session tap; only a session tap still sees them.
+const SESSION_EVENT_TAP: u32 = 1;
 // Another app's global shortcut (Carbon hotkeys such as a window manager's
 // Option-1) consumes its key before the session, so only HID sees that press.
 const HID_EVENT_TAP: u32 = 0;
@@ -100,7 +104,6 @@ unsafe extern "C" {
     fn CGEventGetFlags(event: EventRef) -> u64;
     fn CGEventGetTimestamp(event: EventRef) -> u64;
     fn CGEventGetIntegerValueField(event: EventRef, field: u32) -> i64;
-    #[cfg(hex_capture)]
     fn CGEventGetLocation(event: EventRef) -> CgPoint;
     #[cfg(hex_capture)]
     fn CGEventKeyboardGetUnicodeString(
@@ -111,7 +114,6 @@ unsafe extern "C" {
     );
 }
 
-#[cfg(hex_capture)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct CgPoint {
@@ -144,6 +146,7 @@ unsafe extern "C" {
     fn CFRunLoopTimerInvalidate(timer: *mut c_void);
     fn CFAbsoluteTimeGetCurrent() -> f64;
     fn CFMachPortIsValid(port: *mut c_void) -> u8;
+    fn CFMachPortInvalidate(port: *mut c_void);
     fn CFRelease(value: *const c_void);
     static kCFRunLoopCommonModes: *const c_void;
 }
@@ -277,12 +280,72 @@ impl PendingInputEvents {
     }
 }
 
+/// Extra keys the session tap keeps from the app in front besides Hex's
+/// always-bound shortcuts. Published as one policy so Escape and Toggle's
+/// cancel shortcut cannot disagree across a listener pass, and a programmatic
+/// dictation claims neither.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TapPolicy {
+    /// No extra keys claimed (idle, or a programmatic dictation owns input).
+    #[default]
+    None,
+    /// Extra keys claimed by an active capture or dictation.
+    Claim {
+        /// Keep Escape from the app in front (held Hold dictation past the
+        /// hold threshold, or Annotate's pre-start shortcut / picker).
+        takes_escape: bool,
+        /// Keep the recording machine's cancel shortcut from the app in front.
+        cancel: Option<RuntimeHotkey>,
+    },
+}
+
+impl TapPolicy {
+    /// The policy for one listener pass. While a programmatic dictation
+    /// records, the listener ignores every key so Escape and cancel keys stay
+    /// with the owner app.
+    pub fn for_listener(
+        programmatic: bool,
+        capture_escape: bool,
+        held_dictation_escape: bool,
+        recording_cancel: Option<RuntimeHotkey>,
+    ) -> Self {
+        if programmatic {
+            return Self::None;
+        }
+        let takes_escape = capture_escape || held_dictation_escape;
+        if !takes_escape && recording_cancel.is_none() {
+            Self::None
+        } else {
+            Self::Claim {
+                takes_escape,
+                cancel: recording_cancel,
+            }
+        }
+    }
+
+    pub fn takes_escape(self) -> bool {
+        matches!(
+            self,
+            Self::Claim {
+                takes_escape: true,
+                ..
+            }
+        )
+    }
+
+    pub fn cancel(self) -> Option<RuntimeHotkey> {
+        match self {
+            Self::None => None,
+            Self::Claim { cancel, .. } => cancel,
+        }
+    }
+}
+
 pub struct InputMonitor {
     pub events: Receiver<ObservedInputEvent>,
     pub activity: InputActivity,
     pending: PendingInputEvents,
-    takes_escape: Arc<AtomicBool>,
-    cancel: Arc<Mutex<Option<RuntimeHotkey>>>,
+    policy: Arc<Mutex<TapPolicy>>,
     run_loop: Arc<AtomicPtr<c_void>>,
     worker: Option<JoinHandle<()>>,
     /// Held only so dropping the input monitor stops the HID tracker.
@@ -300,18 +363,7 @@ impl Drop for PendingInputAcknowledgement<'_> {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct InputActivity(Arc<AtomicU64>);
-
 impl InputActivity {
-    pub fn revision(&self) -> u64 {
-        self.0.load(Ordering::Acquire)
-    }
-
-    pub fn invalidate(&self) {
-        self.0.fetch_add(1, Ordering::AcqRel);
-    }
-
     fn observe(&self, input: InputEvent, suppressed: bool) {
         if !suppressed
             && matches!(
@@ -332,20 +384,15 @@ impl InputMonitor {
         let tap_activity = activity.clone();
         let run_loop = Arc::new(AtomicPtr::new(ptr::null_mut()));
         let tap_run_loop = run_loop.clone();
-        let takes_escape = Arc::new(AtomicBool::new(false));
-        let tap_takes_escape = takes_escape.clone();
-        let cancel = Arc::new(Mutex::new(None));
-        let tap_cancel = cancel.clone();
+        let policy = Arc::new(Mutex::new(TapPolicy::None));
+        let tap_policy = policy.clone();
         let pending = PendingInputEvents::default();
         let tap_pending = pending.clone();
         let worker = thread::spawn(move || {
             run_event_tap(
                 sender,
                 tap_activity,
-                TapFlags {
-                    takes_escape: tap_takes_escape,
-                    cancel: tap_cancel,
-                },
+                tap_policy,
                 tap_pending,
                 tap_run_loop,
                 ready_sender,
@@ -362,25 +409,20 @@ impl InputMonitor {
             events,
             activity,
             pending,
-            takes_escape,
-            cancel,
+            policy,
             run_loop,
             worker: Some(worker),
             _physical_keys: physical_keys,
         })
     }
 
-    pub fn set_takes_escape(&self, enabled: bool) {
-        self.takes_escape.store(enabled, Ordering::Release);
-    }
-
-    /// The cancel shortcut the tap keeps from the app in front: the
-    /// recording's own, only while it records.
-    pub fn set_cancel(&self, cancel: Option<RuntimeHotkey>) {
+    /// Updates what extra keys (Escape, Toggle's cancel shortcut) the session
+    /// tap keeps from the app in front.
+    pub fn set_tap_policy(&self, policy: TapPolicy) {
         *self
-            .cancel
+            .policy
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = cancel;
+            .unwrap_or_else(|error| error.into_inner()) = policy;
     }
 
     pub fn pending_events(&self) -> PendingInputEvents {
@@ -417,12 +459,6 @@ pub(crate) fn alpha_shift_now() -> bool {
         != 0
 }
 
-/// The modifiers held on the physical keyboard, excluding toggle state.
-pub(crate) fn held_modifiers() -> u64 {
-    // SAFETY: a read-only CoreGraphics state query.
-    (unsafe { CGEventSourceFlagsState(HID_SYSTEM_STATE) }) & HOTKEY_MODIFIERS_MASK
-}
-
 /// The modifier flags that keep a keyboard from reading neutral. Caps Lock's
 /// alpha shift is a toggle rather than a hold, and arrow-key metadata can
 /// leave SecondaryFn set after release, which `recover_stale_keys_with`
@@ -454,6 +490,13 @@ pub(crate) fn keyboard_is_neutral() -> bool {
         || unsafe { CGEventSourceFlagsState(HID_SYSTEM_STATE) },
         input_is_held,
     )
+}
+
+/// Whether the middle mouse button reads as held now (Labs › Middle mouse
+/// dictation checks before a long press counts).
+pub(crate) fn middle_button_down() -> bool {
+    crate::app_settings::HotkeyKey::mouse_code(crate::middle_mouse_dictation::MIDDLE_BUTTON)
+        .is_some_and(input_is_held)
 }
 
 /// The first key code that reads as held: what a pending resume is still
@@ -505,11 +548,14 @@ impl InputSink {
 struct EventTapContext {
     sink: Arc<InputSink>,
     activity: InputActivity,
-    takes_escape: Arc<AtomicBool>,
-    cancel: Arc<Mutex<Option<RuntimeHotkey>>>,
+    policy: Arc<Mutex<TapPolicy>>,
     key_tap: AtomicPtr<c_void>,
     observation_tap: AtomicPtr<c_void>,
     physical_tap: AtomicPtr<c_void>,
+    /// Labs › Microphone key alone's tap, present only while its lab is on.
+    dictation_key_tap: AtomicPtr<c_void>,
+    /// The microphone key's presses the session tap took, with their releases.
+    microphone_key: Mutex<crate::app_settings::MicrophoneKey>,
     shortcut_suppression: Mutex<ShortcutSuppression>,
 }
 
@@ -633,6 +679,8 @@ unsafe extern "C" fn event_callback(
     ) {
         // The key and modifier taps share this callback.
         reenable_disabled_taps(context, event_type, "session");
+        // A middle-button release may have gone missing with the tap.
+        crate::middle_mouse_dictation::reset();
         send_input(context, InputEvent::TapDisabled, CaptureInstant::ZERO);
         return event;
     }
@@ -655,6 +703,30 @@ unsafe extern "C" fn event_callback(
         } else {
             event
         };
+    }
+    // Labs › Middle mouse dictation: the gesture only watches the middle
+    // button, whose press, drag, and release still reach the app below. A
+    // middle button bound as a shortcut is that shortcut's alone.
+    // A press that drags (panning, autoscroll) is the app's, never a long
+    // press.
+    if matches!(
+        event_type,
+        EVENT_OTHER_MOUSE_DOWN | EVENT_OTHER_MOUSE_UP | EVENT_OTHER_MOUSE_DRAGGED
+    ) && crate::labs::middle_mouse_dictation()
+        // SAFETY: CoreGraphics supplied a valid mouse event.
+        && unsafe { CGEventGetIntegerValueField(event, MOUSE_EVENT_BUTTON_NUMBER) }
+            == i64::from(crate::middle_mouse_dictation::MIDDLE_BUTTON)
+        && !middle_button_bound(crate::app_settings::runtime_hotkeys())
+    {
+        // SAFETY: CoreGraphics supplied a valid mouse event.
+        let CgPoint { x, y } = unsafe { CGEventGetLocation(event) };
+        match event_type {
+            EVENT_OTHER_MOUSE_DOWN => {
+                crate::middle_mouse_dictation::press(CaptureInstant::now(), (x, y));
+            }
+            EVENT_OTHER_MOUSE_DRAGGED => crate::middle_mouse_dictation::drag((x, y)),
+            _ => crate::middle_mouse_dictation::reset(),
+        }
     }
     // Labs › Caps Lock dictation: every AlphaShift change, including Hex's
     // own lock reset, reaches the gate; no IOKit runs on this thread.
@@ -796,16 +868,12 @@ unsafe extern "C" fn event_callback(
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let mut hotkeys = crate::app_settings::runtime_hotkeys();
-    hotkeys.cancel = *context
-        .cancel
+    let policy = *context
+        .policy
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let suppress = suppression.process_all(
-        input,
-        hotkeys,
-        delivered,
-        context.takes_escape.load(Ordering::Acquire),
-    );
+    hotkeys.cancel = policy.cancel();
+    let suppress = suppression.process_all(input, hotkeys, delivered, policy.takes_escape());
     context.activity.observe(input, suppress);
     // A key Hex consumed (its shortcuts, Escape) was never the app's chord.
     #[cfg(hex_capture)]
@@ -910,6 +978,49 @@ fn list_tap(event_type: u32, event: EventRef) -> ListSwallow {
         } else {
             ListSwallow::No
         };
+    }
+    if *taken & bit != 0 {
+        return ListSwallow::Only;
+    }
+    if crate::paste::browse::active() && !crate::app_settings::shortcuts_suspended() {
+        use crate::paste::browse::{self, Key, KeyUse, Nav};
+        // SAFETY: CoreGraphics supplied a valid keyboard event.
+        let (flags, repeat) = unsafe {
+            (
+                CGEventGetFlags(event),
+                CGEventGetIntegerValueField(event, KEYBOARD_EVENT_AUTOREPEAT) != 0,
+            )
+        };
+        let bindings = crate::app_settings::runtime_hotkeys();
+        let paste_last = bindings.paste_last;
+        let trigger = paste_last.is_some_and(|key| key.matches_key_press(code, flags));
+        let other_shortcut = !trigger
+            && bindings
+                .all()
+                .iter()
+                .flatten()
+                .any(|key| key.matches_key_press(code, flags));
+        let key = Key {
+            code,
+            repeat,
+            trigger,
+            trigger_key: paste_last.is_some_and(|key| key.key_code == Some(code)),
+            other_shortcut,
+        };
+        match browse::key_use(key, browse::open()) {
+            KeyUse::Nav(nav) if browse::nav(nav) => {
+                *taken |= bit;
+                return ListSwallow::Only;
+            }
+            KeyUse::Swallow => {
+                *taken |= bit;
+                return ListSwallow::Only;
+            }
+            KeyUse::Pass => {}
+            KeyUse::Nav(_) | KeyUse::Close => {
+                browse::nav(Nav::Cancel);
+            }
+        }
     }
     let suggesting = suggesting();
     if !list_takes_keys(
@@ -1140,14 +1251,11 @@ impl ShortcutSuppression {
     ) -> bool {
         let mut paste_last = HotkeyBinding::paste_last_default().runtime();
         paste_last.key_code = Some(paste_key_code);
-        let mut paste_meeting = HotkeyBinding::paste_meeting_default().runtime();
-        paste_meeting.key_code = Some(paste_key_code);
         self.process_all(
             input,
             RuntimeHotkeys {
                 dictation: hotkey,
                 paste_last: Some(paste_last),
-                paste_meeting: Some(paste_meeting),
                 ..RuntimeHotkeys::default()
             },
             delivered,
@@ -1169,28 +1277,30 @@ fn paste_action(input: InputEvent, hotkeys: RuntimeHotkeys) -> Option<HotkeyActi
         .paste_last
         .filter(|binding| binding.matches_key_press(code, flags))
         .map(|_| HotkeyAction::PasteLast)
-        .or_else(|| {
-            hotkeys
-                .paste_meeting
-                .filter(|binding| binding.matches_key_press(code, flags))
-                .map(|_| HotkeyAction::PasteMeeting)
-        })
+}
+
+/// Labs › Model switch shortcut, matched like Paste Last: its press is Hex's
+/// and nothing else acts on it.
+fn model_switch_action(input: InputEvent, hotkeys: RuntimeHotkeys) -> Option<HotkeyAction> {
+    let InputEvent::Key {
+        code,
+        down: true,
+        flags,
+    } = input
+    else {
+        return None;
+    };
+    hotkeys
+        .model_switch
+        .filter(|binding| binding.matches_key_press(code, flags))
+        .map(|_| HotkeyAction::ModelSwitch)
 }
 
 #[cfg(test)]
-fn paste_action_with_meetings(
-    input: InputEvent,
-    paste_key_code: u16,
-    meetings_enabled: bool,
-) -> Option<HotkeyAction> {
+fn paste_action_on(input: InputEvent, paste_key_code: u16) -> Option<HotkeyAction> {
     let mut hotkeys = RuntimeHotkeys::default();
     if let Some(binding) = &mut hotkeys.paste_last {
         binding.key_code = Some(paste_key_code);
     }
-    hotkeys.paste_meeting = meetings_enabled.then(|| {
-        let mut binding = HotkeyBinding::paste_meeting_default().runtime();
-        binding.key_code = Some(paste_key_code);
-        binding
-    });
     paste_action(input, hotkeys)
 }

@@ -5,6 +5,8 @@
 - Mac (Apple silicon, macOS 15 or later): https://anoma.ly/hex/files/releases/HEX-latest-arm64.dmg, or `brew install --cask anomalyco/tap/hex`
 - Windows 10 or 11 beta, x64 and ARM64: per-user Setup.exe installers at __ORIGIN__/
 - Linux beta, x86_64 Arch with glibc 2.44 or later: `curl -fsSL https://anoma.ly/hex/files/install-linux.sh | sh`
+- iOS (iPhone, iOS 18 or later): __ORIGIN__/ios (App Store) and __ORIGIN__/iphone (setup and FAQ)
+- Android (Hex Preview APK, Android 12 or later): __ORIGIN__/android
 
 ## Docs
 
@@ -13,4 +15,7 @@
 - [Linux guide](https://github.com/anomalyco/hex/blob/dev/docs/linux.md)
 - [Transforms](https://anoma.ly/hex/docs/transforms): the JavaScript API for changing dictated text before Hex pastes it, including `fetch` and `node:child_process`
 - [Managing Hex](https://anoma.ly/hex/docs/admin): macOS configuration-profile keys that turn off Meetings, Annotate, OpenCode processing, transforms, Labs, and updates, or hold transforms to this computer
+- [Meetings](__ORIGIN__/meetings/): Hex sees a call start, offers to record it, and writes the transcript and notes on the Mac; `hex meetings` reads them back
+- [Hex Labs](__ORIGIN__/labs): features Hex is trying out, each off until it's turned on in Settings › Labs or with `hex labs on <id>`, one page per lab at __ORIGIN__/labs/<id>
+- [Changelog](__ORIGIN__/changelog): what changed in each stable release, newest first; dev builds' notes are at __ORIGIN__/dev
 - [TypeScript SDK](https://github.com/anomalyco/hex/blob/dev/sdk/typescript/README.md): local transcription for other apps

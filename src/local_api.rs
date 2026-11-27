@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 use color_eyre::eyre::{Result, WrapErr, bail, eyre};
 use serde::Serialize;
 
+use crate::app_settings::AppSettings;
 use crate::desktop::events::{EventLog, VoiceEvent, now_ms};
-use cors::{Cors, CorsOrigin};
 
-mod cors;
+mod developer;
 mod dictation;
 mod discovery;
 mod http;
@@ -24,12 +24,16 @@ mod streams;
 pub(crate) mod timestamps;
 mod transcriptions;
 
+#[cfg(target_os = "macos")]
+pub use developer::accessibility_probe;
 #[cfg(debug_assertions)]
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub use discovery::call_developer;
 use discovery::*;
+pub(crate) use discovery::{Discovered, Endpoint, discover, error_code};
+#[cfg(not(target_os = "macos"))]
+pub use discovery::{ExitWatch, watch_running};
 pub use discovery::{call_control, running_pid};
-pub(crate) use discovery::{error_code, post_wav};
 use http::*;
 pub use processing::Processing;
 pub use timestamps::Timestamps;
@@ -106,7 +110,6 @@ struct HttpContext {
     meeting_events: meeting_events::Source,
     processing: processing::Processing,
     timestamps: timestamps::Timestamps,
-    cors: Cors,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -153,9 +156,6 @@ pub struct LocalApiOptions {
     /// Where `/streams` finds its engine; the running app's shared engine
     /// when unset.
     pub(crate) stream_engine: Option<crate::transcription::stream::EngineSource>,
-    /// The origins whose browser pages may call this API (Labs › Browser
-    /// access to the local API). Tests install their own gate here.
-    pub(crate) cors: Cors,
 }
 
 impl LocalApi {
@@ -238,7 +238,7 @@ impl LocalApi {
         meeting_events: meeting_events::Source,
     ) -> Result<Self> {
         if let Some(path) = &discovery_path {
-            prepare_discovery_path(path)?;
+            prepare_discovery_path(path, instance.is_some())?;
         }
         let (transcription_service, transcription) =
             crate::transcription::service::TranscriptionService::start()?;
@@ -288,7 +288,6 @@ impl LocalApi {
             meeting_events,
             processing: options.processing,
             timestamps: options.timestamps,
-            cors: options.cors,
         };
         let (ready, readiness) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
@@ -381,6 +380,10 @@ pub fn run_service(
     };
     let events = EventLog::create(&service_event_path)?;
     let local_api = if embedded {
+        // This service runs no launch that publishes settings, so read them
+        // here: transcription biases on the saved vocabulary rather than an
+        // empty one.
+        AppSettings::apply_for_embedded_service();
         let api = LocalApi::start_embedded(events)?;
         thread::Builder::new()
             .name("embedded-host-lease".into())
@@ -483,7 +486,7 @@ fn serve(listener: TcpListener, context: HttpContext, ready: mpsc::SyncSender<bo
             Ok((stream, _)) => match connections.try_send(stream) {
                 Ok(()) => {}
                 Err(TrySendError::Full(mut stream)) => {
-                    let _ = write_response(&mut stream, HttpResponse::empty(503), None);
+                    let _ = write_response(&mut stream, HttpResponse::empty(503));
                 }
                 Err(TrySendError::Disconnected(_)) => break,
             },
@@ -566,27 +569,20 @@ fn http_worker(pending: Arc<Mutex<Receiver<TcpStream>>>, context: Arc<HttpContex
             tracing::debug!(%error, "could not set local API write timeout");
             continue;
         }
-        let (action, cors) = match read_request(&mut stream, &context.shutdown) {
+        let action = match read_request(&mut stream, &context.shutdown) {
             Ok(request) => handle_request(request, &context),
-            Err(RequestReadError::TooLarge) => {
-                (RequestAction::Respond(HttpResponse::empty(431)), None)
-            }
-            Err(RequestReadError::Invalid) => {
-                (RequestAction::Respond(HttpResponse::empty(400)), None)
-            }
-            Err(RequestReadError::Deadline) => {
-                (RequestAction::Respond(HttpResponse::empty(408)), None)
-            }
+            Err(RequestReadError::TooLarge) => RequestAction::Respond(HttpResponse::empty(431)),
+            Err(RequestReadError::Invalid) => RequestAction::Respond(HttpResponse::empty(400)),
+            Err(RequestReadError::Deadline) => RequestAction::Respond(HttpResponse::empty(408)),
             Err(RequestReadError::Shutdown) => return,
             Err(RequestReadError::Io(error)) => {
                 tracing::debug!(%error, "local API client disconnected while sending a request");
                 continue;
             }
         };
-        let cors = cors.as_ref();
         match action {
             RequestAction::Respond(response) => {
-                if let Err(error) = write_response(&mut stream, response, cors) {
+                if let Err(error) = write_response(&mut stream, response) {
                     tracing::debug!(%error, "local API client disconnected");
                 }
             }
@@ -598,7 +594,6 @@ fn http_worker(pending: Arc<Mutex<Receiver<TcpStream>>>, context: Arc<HttpContex
                     context.model_preparing.clone(),
                     &context.shutdown,
                     context.transcription.clone(),
-                    cors,
                 );
             }
             RequestAction::Transcribe {
@@ -622,23 +617,14 @@ fn http_worker(pending: Arc<Mutex<Receiver<TcpStream>>>, context: Arc<HttpContex
                     &context,
                 );
                 if let Some(response) = response
-                    && let Err(error) = write_response(&mut stream, response, cors)
+                    && let Err(error) = write_response(&mut stream, response)
                 {
                     tracing::debug!(%error, "transcription client disconnected");
                 }
             }
-            RequestAction::DeveloperControl {
-                content_length,
-                body_prefix,
-            } => {
-                let response = developer_control(
-                    &mut stream,
-                    content_length,
-                    body_prefix,
-                    context.developer_control.as_ref(),
-                    &context.shutdown,
-                );
-                if let Err(error) = write_response(&mut stream, response, cors) {
+            RequestAction::Developer(action) => {
+                let response = developer::handle(&mut stream, action, &context);
+                if let Err(error) = write_response(&mut stream, response) {
                     tracing::debug!(%error, "developer control client disconnected");
                 }
             }
@@ -653,7 +639,7 @@ fn http_worker(pending: Arc<Mutex<Receiver<TcpStream>>>, context: Arc<HttpContex
                     context.control.as_ref(),
                     &context.shutdown,
                 );
-                if let Err(error) = write_response(&mut stream, response, cors) {
+                if let Err(error) = write_response(&mut stream, response) {
                     tracing::debug!(%error, "control client disconnected");
                 }
             }
@@ -662,7 +648,7 @@ fn http_worker(pending: Arc<Mutex<Receiver<TcpStream>>>, context: Arc<HttpContex
                 body_prefix,
             } => {
                 let response = dictation::start(&mut stream, content_length, body_prefix, &context);
-                if let Err(error) = write_response(&mut stream, response, cors) {
+                if let Err(error) = write_response(&mut stream, response) {
                     tracing::debug!(%error, "dictation client disconnected");
                 }
             }
@@ -671,36 +657,17 @@ fn http_worker(pending: Arc<Mutex<Receiver<TcpStream>>>, context: Arc<HttpContex
                 owner_token,
                 action,
             } => {
-                dictation::handle(&mut stream, id, owner_token, action, &context, cors);
+                dictation::handle(&mut stream, id, owner_token, action, &context);
             }
-            RequestAction::Stream(action) => streams::handle(&mut stream, action, &context, cors),
+            RequestAction::Stream(action) => streams::handle(&mut stream, action, &context),
             RequestAction::MeetingEvents(subscription) => {
-                meeting_events::stream(&mut stream, subscription, &context, cors);
+                meeting_events::stream(&mut stream, subscription, &context);
             }
         }
     }
 }
 
-/// Routes one request, and answers a CORS preflight for an allowed browser
-/// origin before authentication: a browser's preflight carries no
-/// credentials, so it cannot hold the bearer token.
-fn handle_request(
-    request: HttpRequest,
-    context: &HttpContext,
-) -> (RequestAction, Option<CorsOrigin>) {
-    let cors = context.cors.allowed(&request);
-    if request.method == "OPTIONS"
-        && let Some(cors) = cors.clone()
-    {
-        return (
-            RequestAction::Respond(HttpResponse::preflight(cors.private_network)),
-            Some(cors),
-        );
-    }
-    (route(request, context), cors)
-}
-
-fn route(request: HttpRequest, context: &HttpContext) -> RequestAction {
+fn handle_request(request: HttpRequest, context: &HttpContext) -> RequestAction {
     let path = request.path.split('?').next().unwrap_or("/");
     if request.authorization.as_deref() != Some(&format!("Bearer {}", context.token)) {
         context
@@ -716,8 +683,8 @@ fn route(request: HttpRequest, context: &HttpContext) -> RequestAction {
             &context.timestamps,
         );
     }
-    if request.method == "POST" && path == "/dev/control" {
-        return developer_control_action(request, context.developer_control.is_some());
+    if request.method == "POST" && developer::routes(path) {
+        return developer::action(request, context);
     }
     if request.method == "POST" && path == "/control" {
         return json_post_action(
@@ -789,7 +756,6 @@ fn route(request: HttpRequest, context: &HttpContext) -> RequestAction {
                 reason: reason(200),
                 content_type: Some("application/json"),
                 body: snapshot.to_json().into_bytes(),
-                headers: Vec::new(),
             },
             None => HttpResponse::code(503, "vitals-unavailable"),
         },
@@ -808,7 +774,7 @@ fn route(request: HttpRequest, context: &HttpContext) -> RequestAction {
             if !model.available() {
                 return RequestAction::Respond(HttpResponse::code(404, "unknown-model"));
             }
-            let Ok(selection) = installation_selection(model, &request.path) else {
+            let Ok(selection) = installation_selection(&model, &request.path) else {
                 return RequestAction::Respond(HttpResponse::code(400, "unsupported-model"));
             };
             if context
@@ -861,15 +827,7 @@ fn transcription_action(
         }
     };
     let model = crate::transcription::models::definition(selection.model);
-    let prepared = match model.runtime {
-        crate::transcription::models::ModelRuntime::Gguf(_) => {
-            crate::transcription::models::is_verified(model)
-        }
-        crate::transcription::models::ModelRuntime::AppleSpeech => {
-            crate::transcription::models::is_installed(model, &selection.language)
-        }
-    };
-    if !prepared {
+    if !crate::transcription::readiness::is_ready(&model, &selection.language) {
         return RequestAction::Respond(HttpResponse::code(409, "model-not-ready"));
     }
     let Some(admission) = transcription.admit_audio() else {
@@ -883,20 +841,6 @@ fn transcription_action(
         processing: guard,
         timestamps: requested,
     }
-}
-
-fn developer_control_action(request: HttpRequest, available: bool) -> RequestAction {
-    json_post_action(
-        request,
-        available,
-        "developer-control-unavailable",
-        MAX_DEVELOPER_CONTROL_BYTES,
-        "developer-control-too-large",
-        |content_length, body_prefix| RequestAction::DeveloperControl {
-            content_length,
-            body_prefix,
-        },
-    )
 }
 
 fn dictation_start_action(request: HttpRequest, available: bool) -> RequestAction {
@@ -941,48 +885,6 @@ fn dictation_path(path: &str) -> Option<(u64, &str)> {
     let id = parts.next()?.parse().ok()?;
     let action = parts.next()?;
     (parts.next().is_none()).then_some((id, action))
-}
-
-fn developer_control(
-    stream: &mut TcpStream,
-    content_length: usize,
-    mut body: Vec<u8>,
-    controls: Option<&SyncSender<crate::control::developer_control::DeveloperCall>>,
-    shutdown: &AtomicBool,
-) -> HttpResponse {
-    if let Err(error) = read_body_bounded(
-        stream,
-        content_length,
-        &mut body,
-        shutdown,
-        MAX_DEVELOPER_CONTROL_BYTES,
-        DEVELOPER_CONTROL_TIMEOUT,
-    ) {
-        return body_read_response(error);
-    }
-    let Ok(command) = serde_json::from_slice(&body) else {
-        return HttpResponse::code(400, "invalid-developer-command");
-    };
-    let Some(controls) = controls else {
-        return HttpResponse::code(404, "developer-control-unavailable");
-    };
-    let (reply, response) = mpsc::sync_channel(1);
-    match controls.try_send(crate::control::developer_control::DeveloperCall { command, reply }) {
-        Ok(()) => {}
-        Err(TrySendError::Full(_)) => {
-            return HttpResponse::code(503, "developer-control-busy");
-        }
-        Err(TrySendError::Disconnected(_)) => {
-            return HttpResponse::code(503, "developer-control-unavailable");
-        }
-    }
-    match response.recv_timeout(DEVELOPER_CONTROL_TIMEOUT) {
-        Ok(reply) => HttpResponse::json(200, &reply),
-        Err(RecvTimeoutError::Timeout) => HttpResponse::code(504, "developer-ui-timeout"),
-        Err(RecvTimeoutError::Disconnected) => {
-            HttpResponse::code(503, "developer-control-unavailable")
-        }
-    }
 }
 
 /// Hands one `hex` control request to the app and waits for its reply.
@@ -1121,26 +1023,18 @@ fn model_infos(path: &str) -> std::result::Result<Vec<ModelInfo>, &'static str> 
     if !crate::transcription::models::is_known_language(&language) {
         return Err("unsupported-language");
     }
-    Ok(crate::transcription::models::all_models()
+    Ok(crate::transcription::readiness::catalog_models(&language)
         .into_iter()
-        .filter(|model| model.available())
-        .map(|model| {
-            let managed = matches!(
-                model.runtime,
-                crate::transcription::models::ModelRuntime::AppleSpeech
-            );
-            let installed = crate::transcription::models::is_installed(model, &language);
-            ModelInfo {
-                id: model.id.as_str(),
-                name: model.name,
-                installed,
-                verified: managed && installed || crate::transcription::models::is_verified(model),
-                managed,
-                download_bytes: model.download_bytes(),
-                languages: model.presentation_languages(),
-                supports_language_detection: model.supports_language_detection,
-                source: crate::control::model_source(model, &language),
-            }
+        .map(|model| ModelInfo {
+            id: model.id_str,
+            name: model.name,
+            installed: model.readiness.installed,
+            verified: model.readiness.verified,
+            managed: model.managed,
+            download_bytes: model.download_bytes,
+            languages: model.languages,
+            supports_language_detection: model.supports_language_detection,
+            source: model.source,
         })
         .collect())
 }
@@ -1155,45 +1049,43 @@ fn installation_selection(
 
 fn stream_model_prepare(
     stream: &mut TcpStream,
-    model: &'static crate::transcription::models::ModelDefinition,
+    model: crate::transcription::models::ModelRef,
     selection: crate::transcription::models::TranscriptionSelection,
     preparing: Arc<AtomicBool>,
     shutdown: &AtomicBool,
     transcription: crate::transcription::service::TranscriptionServiceHandle,
-    cors: Option<&CorsOrigin>,
 ) {
-    let preparer: ModelPreparer = Box::new(move |canceled, downloaded, stage| {
-        if matches!(
-            model.runtime,
-            crate::transcription::models::ModelRuntime::Gguf(_)
-        ) {
-            crate::transcription::models::download_with_stage_progress(
-                model,
-                &canceled,
-                &downloaded,
-                &stage,
-            )?;
+    let preparer: ModelPreparer = Box::new({
+        let model = model.clone();
+        move |canceled, downloaded, stage| {
+            if model.runtime.is_gguf() {
+                crate::transcription::models::download_with_stage_progress(
+                    &model,
+                    &canceled,
+                    &downloaded,
+                    &stage,
+                )?;
+            }
+            if canceled.load(Ordering::Acquire) {
+                bail!("model preparation canceled");
+            }
+            crate::transcription::models::ModelPreparationStage::Loading.store(&stage);
+            transcription
+                .prepare(selection, canceled)
+                .map_err(|error| eyre!("model preparation failed: {error:?}"))
         }
-        if canceled.load(Ordering::Acquire) {
-            bail!("model preparation canceled");
-        }
-        crate::transcription::models::ModelPreparationStage::Loading.store(&stage);
-        transcription
-            .prepare(selection, canceled)
-            .map_err(|error| eyre!("model preparation failed: {error:?}"))
     });
-    stream_model_prepare_with(stream, model, preparing, shutdown, preparer, cors);
+    stream_model_prepare_with(stream, model, preparing, shutdown, preparer);
 }
 
 fn stream_model_prepare_with(
     stream: &mut TcpStream,
-    model: &'static crate::transcription::models::ModelDefinition,
+    model: crate::transcription::models::ModelRef,
     preparing: Arc<AtomicBool>,
     shutdown: &AtomicBool,
     preparer: ModelPreparer,
-    cors: Option<&CorsOrigin>,
 ) {
-    if let Err(error) = write_sse_headers(stream, cors) {
+    if let Err(error) = write_sse_headers(stream) {
         preparing.store(false, Ordering::Release);
         tracing::debug!(%error, "model preparation client disconnected before streaming");
         return;
@@ -1201,7 +1093,7 @@ fn stream_model_prepare_with(
     let canceled = Arc::new(AtomicBool::new(false));
     let downloaded = Arc::new(AtomicU64::new(0));
     let initial_stage = if matches!(
-        model.runtime,
+        &model.runtime,
         crate::transcription::models::ModelRuntime::AppleSpeech
     ) {
         crate::transcription::models::ModelPreparationStage::Loading as u8
@@ -1361,7 +1253,7 @@ impl AuthObservationLimiter {
 enum RequestAction {
     Respond(HttpResponse),
     Prepare {
-        model: &'static crate::transcription::models::ModelDefinition,
+        model: crate::transcription::models::ModelRef,
         selection: crate::transcription::models::TranscriptionSelection,
     },
     Transcribe {
@@ -1374,10 +1266,7 @@ enum RequestAction {
         /// `timestamps=segment|word` was asked for, and the lab allows it.
         timestamps: crate::transcription::transcript::TimestampLevel,
     },
-    DeveloperControl {
-        content_length: usize,
-        body_prefix: Vec<u8>,
-    },
+    Developer(developer::Action),
     Control {
         content_length: usize,
         body_prefix: Vec<u8>,
@@ -1416,8 +1305,8 @@ impl Drop for PrepareGuard {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelInfo {
-    id: &'static str,
-    name: &'static str,
+    id: String,
+    name: std::borrow::Cow<'static, str>,
     installed: bool,
     verified: bool,
     managed: bool,
@@ -1447,155 +1336,6 @@ mod tests {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     /// How long a test waits on another thread before failing instead of hanging.
     const TEST_WAIT: Duration = Duration::from_secs(5);
-
-    #[test]
-    fn browser_access_is_off_unless_the_lab_lists_the_origin() {
-        // Off: the preflight is unauthenticated like every other request,
-        // and nothing about CORS is added.
-        let api = start_cors(Vec::new);
-        let refused = preflight(api.document.port, "https://app.example", true);
-        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
-        assert!(!refused.to_ascii_lowercase().contains("access-control"));
-        assert!(!refused.contains("Vary"));
-
-        // On: an origin the lab doesn't list is refused the same way, so a
-        // page can't read even a 401 from another site.
-        let api = start_cors(app_origin);
-        let other = preflight(api.document.port, "https://other.example", false);
-        assert!(other.starts_with("HTTP/1.1 401"), "{other}");
-        assert!(!other.to_ascii_lowercase().contains("access-control"));
-        assert!(!other.contains("Vary"));
-
-        // A missing Origin is an ordinary request too.
-        let missing = raw_request(
-            api.document.port,
-            "OPTIONS /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-        );
-        assert!(missing.starts_with("HTTP/1.1 401"), "{missing}");
-        assert!(!missing.contains("Vary"));
-    }
-
-    #[test]
-    fn an_allowed_origin_gets_its_preflight_without_a_token() {
-        let api = start_cors(app_origin);
-        let answered = preflight(api.document.port, "https://app.example", true);
-        assert!(answered.starts_with("HTTP/1.1 204"), "{answered}");
-        for header in [
-            "Access-Control-Allow-Origin: https://app.example\r\n",
-            "Access-Control-Allow-Methods: GET, POST\r\n",
-            "Access-Control-Allow-Headers: Authorization, Content-Type, X-Hex-Dictation-Token, X-Hex-Stream-Token\r\n",
-            "Access-Control-Max-Age: 600\r\n",
-            "Access-Control-Allow-Private-Network: true\r\n",
-            "Vary: Origin\r\n",
-        ] {
-            assert!(
-                answered.contains(header),
-                "{header:?} missing from {answered}"
-            );
-        }
-        assert!(!answered.contains("Access-Control-Allow-Credentials"));
-        assert!(!answered.contains("*"));
-
-        // The private-network permission is given only when it was asked for.
-        let plain = preflight(api.document.port, "https://app.example", false);
-        assert!(plain.starts_with("HTTP/1.1 204"), "{plain}");
-        assert!(!plain.contains("Access-Control-Allow-Private-Network"));
-    }
-
-    #[test]
-    fn a_duplicate_origin_header_never_earns_cors_but_still_routes() {
-        // Before this lab, Origin was ignored: a request with two of them is
-        // handled exactly as it was, with no CORS permission either way.
-        for origins in [Vec::new as fn() -> Vec<String>, app_origin] {
-            let api = start_cors(origins);
-            let port = api.document.port;
-            let duplicate = |method: &str, path: &str, token: Option<&str>| {
-                let authorization = token
-                    .map(|token| format!("Authorization: Bearer {token}\r\n"))
-                    .unwrap_or_default();
-                raw_request(
-                    port,
-                    &format!(
-                        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{authorization}Origin: https://app.example\r\nOrigin: https://app.example\r\nConnection: close\r\n\r\n"
-                    ),
-                )
-            };
-
-            let preflight = duplicate("OPTIONS", "/health", None);
-            assert!(preflight.starts_with("HTTP/1.1 401"), "{preflight}");
-            assert!(!preflight.to_ascii_lowercase().contains("access-control"));
-            assert!(!preflight.contains("Vary"));
-
-            let health = duplicate("GET", "/health", Some(&api.document.token));
-            assert!(health.starts_with("HTTP/1.1 200"), "{health}");
-            assert!(!health.to_ascii_lowercase().contains("access-control"));
-            assert!(!health.contains("Vary"));
-        }
-    }
-
-    #[test]
-    fn authenticated_responses_carry_only_the_allowed_origin() {
-        let api = start_cors(app_origin);
-        let token = api.document.token.clone();
-        let port = api.document.port;
-        let get = |path: &str, token: Option<&str>| {
-            let authorization = token
-                .map(|token| format!("Authorization: Bearer {token}\r\n"))
-                .unwrap_or_default();
-            raw_request(
-                port,
-                &format!(
-                    "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{authorization}Origin: https://app.example\r\nConnection: close\r\n\r\n"
-                ),
-            )
-        };
-
-        let health = get("/health", Some(&token));
-        assert!(health.starts_with("HTTP/1.1 200"), "{health}");
-        assert!(health.contains("Access-Control-Allow-Origin: https://app.example\r\n"));
-        assert!(health.contains("Vary: Origin\r\n"));
-        assert!(!health.contains("Access-Control-Allow-Credentials"));
-
-        // The token is still required, and its 401 is readable so a page can
-        // show what went wrong.
-        let unauthorized = get("/health", None);
-        assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
-        assert!(unauthorized.contains("Access-Control-Allow-Origin: https://app.example\r\n"));
-
-        // A 404 too.
-        let missing = get("/nope", Some(&token));
-        assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
-        assert!(missing.contains("Access-Control-Allow-Origin: https://app.example\r\n"));
-    }
-
-    #[test]
-    fn a_streams_events_response_carries_the_allowed_origin() {
-        let api = start_cors(app_origin);
-        let token = api.document.token.clone();
-        let port = api.document.port;
-        let body = r#"{"sampleFormat":"f32le","sampleRate":16000}"#;
-        let created = raw_request(
-            port,
-            &format!(
-                "POST /streams HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            ),
-        );
-        assert!(created.starts_with("HTTP/1.1 201"), "{created}");
-        let created: serde_json::Value = serde_json::from_str(response_body(&created)).unwrap();
-        let id = created["id"].as_u64().unwrap();
-        let owner = created["ownerToken"].as_str().unwrap();
-        let headers = raw_request_headers(
-            port,
-            &format!(
-                "GET /streams/{id}/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nX-Hex-Stream-Token: {owner}\r\nOrigin: https://app.example\r\nConnection: close\r\n\r\n"
-            ),
-        );
-        assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
-        assert!(headers.contains("Content-Type: text/event-stream\r\n"));
-        assert!(headers.contains("Access-Control-Allow-Origin: https://app.example\r\n"));
-        assert!(headers.contains("Vary: Origin\r\n"));
-    }
 
     #[test]
     fn authenticated_server_reports_live_health_and_cleans_up_discovery() {
@@ -2062,7 +1802,9 @@ mod tests {
         let apple = crate::transcription::models::definition(
             crate::transcription::models::TranscriptionModelId::AppleSpeech,
         );
-        assert!(installation_selection(apple, "/models/apple_speech/prepare?language=de").is_err());
+        assert!(
+            installation_selection(&apple, "/models/apple_speech/prepare?language=de").is_err()
+        );
     }
 
     #[test]
@@ -2263,8 +2005,6 @@ mod tests {
                 stream_token: None,
                 content_type: Some("audio/webm".into()),
                 content_length: Some(10),
-                origin: None,
-                private_network: false,
                 body_prefix: Vec::new(),
             },
             &transcription,
@@ -2285,8 +2025,6 @@ mod tests {
                 stream_token: None,
                 content_type: Some("audio/wav".into()),
                 content_length: Some(MAX_AUDIO_BYTES + 1),
-                origin: None,
-                private_network: false,
                 body_prefix: Vec::new(),
             },
             &transcription,
@@ -2323,9 +2061,8 @@ mod tests {
             meeting_events: meeting_events::Source::default(),
             processing: Processing::default(),
             timestamps: Timestamps::default(),
-            cors: Cors::default(),
         };
-        let (action, _cors) = handle_request(
+        let action = handle_request(
             HttpRequest {
                 method: "POST".into(),
                 path: "/models/parakeet_v2/prepare".into(),
@@ -2334,8 +2071,6 @@ mod tests {
                 stream_token: None,
                 content_type: None,
                 content_length: None,
-                origin: None,
-                private_network: false,
                 body_prefix: Vec::new(),
             },
             &context,
@@ -2388,7 +2123,6 @@ mod tests {
             preparing.clone(),
             &AtomicBool::new(false),
             preparer,
-            None,
         );
         drop(stream);
         let response = client.join().unwrap();
@@ -2427,7 +2161,6 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             &AtomicBool::new(false),
             preparer,
-            None,
         );
         drop(stream);
         let response = client.join().unwrap();
@@ -2479,59 +2212,6 @@ mod tests {
 
     fn start_unpublished(events: EventLog, options: LocalApiOptions) -> Result<LocalApi> {
         LocalApi::start_bound(None, Arc::new(test_health), events, options, None)
-    }
-
-    /// A local API whose browser-access gate is `origins`, without touching
-    /// the process's Labs switches.
-    fn start_cors(origins: fn() -> Vec<String>) -> LocalApi {
-        let directory = temp_directory();
-        let events = EventLog::create(&directory.join("events.ndjson")).unwrap();
-        start_unpublished(
-            events,
-            LocalApiOptions {
-                cors: Cors::gated(origins),
-                stream_engine: Some(crate::transcription::stream::tests::fake_source()),
-                ..LocalApiOptions::default()
-            },
-        )
-        .unwrap()
-    }
-
-    fn app_origin() -> Vec<String> {
-        vec!["https://app.example".to_owned()]
-    }
-
-    /// The browser's preflight: no token, and the request headers it would
-    /// send.
-    fn preflight(port: u16, origin: &str, private_network: bool) -> String {
-        let private_network = if private_network {
-            "Access-Control-Request-Private-Network: true\r\n"
-        } else {
-            ""
-        };
-        raw_request(
-            port,
-            &format!(
-                "OPTIONS /health HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: {origin}\r\nAccess-Control-Request-Method: GET\r\n{private_network}Connection: close\r\n\r\n"
-            ),
-        )
-    }
-
-    /// Reads only a response's headers, for a stream that never ends.
-    fn raw_request_headers(port: u16, request: &str) -> String {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        stream.write_all(request.as_bytes()).unwrap();
-        let mut seen = Vec::new();
-        let mut buffer = [0_u8; 1024];
-        while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
-            let read = stream.read(&mut buffer).unwrap();
-            assert!(read > 0, "the response closed before its headers");
-            seen.extend_from_slice(&buffer[..read]);
-        }
-        String::from_utf8(seen).unwrap()
     }
 
     fn test_health() -> HealthResponse {

@@ -295,6 +295,7 @@ fn lone_rule() -> Route {
         suggested: Vec::new(),
         recent: Vec::new(),
         site: Some("docs.example.com".into()),
+        by: crate::capture_host::AutoSendBy::Rule,
     }
 }
 
@@ -361,7 +362,10 @@ fn stop() -> Input {
 }
 
 fn done() -> Step {
-    Step::Input(Input::Stage(scrawl_capture::capture::Stage::Done))
+    Step::Input(Input::Written {
+        bundle: "example.scrawl".into(),
+        routing: false,
+    })
 }
 
 fn routed(route: Route) -> Step {
@@ -375,7 +379,7 @@ fn dest(name: &str, why: &str, folder: &str) -> Dest {
 
 fn recent() -> Vec<Dest> {
     vec![
-        dest("RUNE", "2 min ago", "rune"),
+        dest("RUNE", "2m ago", "rune"),
         dest("SCRAWL", "an hour ago", "hex"),
         dest("HOME", "yesterday", "home"),
     ]
@@ -389,6 +393,7 @@ fn rule() -> Route {
         suggested: vec![to],
         recent: recent(),
         site: Some("example.com".into()),
+        by: crate::capture_host::AutoSendBy::Rule,
     }
 }
 
@@ -450,10 +455,13 @@ impl Playground {
             | Action::Discard
             | Action::OpenScreenshots { .. }
             | Action::Send { .. }
-            | Action::Paste
+            | Action::Copy(_)
+            | Action::Paste(_)
             | Action::Pen
             | Action::Hold(_)
-            | Action::Inspect => {}
+            | Action::Inspect
+            | Action::SaveRule { .. }
+            | Action::OpenRules => {}
         }
     }
 
@@ -517,6 +525,10 @@ fn poll(s: &mut CapsuleState, wall: f64, tx: &mut Tx) -> bool {
             Step::Hover(on) => {
                 s.now = now;
                 s.hover(super::Part::Pill, on, tx);
+                // A pointer that comes onto the capsule moves on it.
+                if on {
+                    s.pointer_moved(tx);
+                }
             }
             Step::Again => {
                 if let Some(pg) = s.playground.as_mut() {
@@ -581,8 +593,8 @@ fn on_key(s: &mut CapsuleState, key: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Enter if list => Input::Send {
             always: key.mods.shift,
         },
-        Key::Enter if cycle && !key.mods.shift => Input::Send { always: false },
-        Key::Tab if cycle => Input::Cycle(if key.mods.shift { -1 } else { 1 }),
+        Key::Enter if cycle && search && !key.mods.shift => Input::Send { always: false },
+        Key::Tab if cycle && search => Input::Cycle(if key.mods.shift { -1 } else { 1 }),
         Key::Backspace if list => Input::Backspace,
         Key::Text(t) if list => Input::Type(t.clone()),
         Key::Text(t)

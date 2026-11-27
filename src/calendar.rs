@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+pub(crate) mod date;
+
 use serde::Deserialize;
 use url::Url;
 
@@ -136,8 +138,8 @@ impl CallProvider {
         }
     }
 
-    /// The Detected calls key whose Ask / Always record / Never offer
-    /// choice applies to this service's calls.
+    /// The key the Calls sheet saves this service's answer under (Ask each
+    /// time, Always record, or Don't offer).
     pub fn choice_key(self) -> Option<&'static str> {
         match self {
             Self::Zoom => Some("us.zoom.xos"),
@@ -177,7 +179,7 @@ impl CallProvider {
     }
 
     /// The service a recorded meeting's app names: the exact label detection
-    /// or a calendar reminder records (`Zoom`, `Slack Huddle`), or a browser
+    /// or a calendar reminder records (`Zoom`, `Slack huddle`), or a browser
     /// call's website host, which matches a service's host or its
     /// subdomains. `None` for any other app or website.
     pub fn from_meeting_app(app: &str) -> Option<Self> {
@@ -192,7 +194,7 @@ impl CallProvider {
         let site = app.strip_prefix("www.").unwrap_or(app);
         ALL.into_iter().find(|provider| {
             app == provider.label()
-                || (*provider == Self::Slack && app == "Slack Huddle")
+                || (*provider == Self::Slack && (app == "Slack huddle" || app == "Slack Huddle"))
                 || provider
                     .detection_keys()
                     .iter()
@@ -442,6 +444,25 @@ impl ReminderScheduler {
             .is_some_and(|(showing, _)| showing.occurrence() == occurrence)
         {
             self.showing = None;
+        }
+    }
+
+    /// The meeting was joined somewhere other than its reminder, such as the
+    /// menu bar. Records the occurrence as already reminded so it never
+    /// pops, and closes the showing reminder when it is this one, returning
+    /// its occurrence so the capsule withdraws.
+    pub fn joined_elsewhere(&mut self, meeting: &CalendarMeeting) -> Option<String> {
+        let occurrence = meeting.occurrence();
+        self.reminded.insert(occurrence.clone(), meeting.end_ms);
+        if self
+            .showing
+            .as_ref()
+            .is_some_and(|(showing, _)| showing.occurrence() == occurrence)
+        {
+            self.showing = None;
+            Some(occurrence)
+        } else {
+            None
         }
     }
 
@@ -896,6 +917,40 @@ mod tests {
         assert_eq!(scheduler.poll(&meetings, 99 * MINUTE + 500, MINUTE), None);
         scheduler.answered(&meetings[0].occurrence());
         assert_eq!(scheduler.poll(&meetings, 100 * MINUTE, MINUTE), None);
+    }
+
+    #[test]
+    fn joining_elsewhere_before_the_lead_time_never_reminds() {
+        let mut scheduler = ReminderScheduler::default();
+        let meetings = [meeting("sync", 100)];
+        assert_eq!(scheduler.joined_elsewhere(&meetings[0]), None);
+        // The occurrence was joined already: its lead time, start, and late
+        // grace never show a reminder.
+        assert_eq!(scheduler.poll(&meetings, 99 * MINUTE, MINUTE), None);
+        assert_eq!(scheduler.poll(&meetings, 100 * MINUTE, MINUTE), None);
+        assert_eq!(scheduler.poll(&meetings, 104 * MINUTE, MINUTE), None);
+        // A moved meeting is a new occurrence, which may remind again.
+        let moved = [meeting("sync", 110)];
+        assert!(matches!(
+            scheduler.poll(&moved, 109 * MINUTE, MINUTE),
+            Some(ReminderUpdate::Show(_))
+        ));
+    }
+
+    #[test]
+    fn joining_elsewhere_while_showing_withdraws_it_for_good() {
+        let mut scheduler = ReminderScheduler::default();
+        let meetings = [meeting("sync", 100)];
+        assert!(matches!(
+            scheduler.poll(&meetings, 99 * MINUTE, MINUTE),
+            Some(ReminderUpdate::Show(_))
+        ));
+        assert_eq!(
+            scheduler.joined_elsewhere(&meetings[0]),
+            Some(meetings[0].occurrence())
+        );
+        // Nothing shows, and the answered occurrence never comes back.
+        assert_eq!(scheduler.poll(&meetings, 99 * MINUTE + 500, MINUTE), None);
     }
 
     #[test]

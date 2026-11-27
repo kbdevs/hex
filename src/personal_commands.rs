@@ -90,8 +90,8 @@ const BUILTIN_TRANSFORMATIONS: &[BuiltinTransformation] = &[
     },
     BuiltinTransformation {
         id: NO_TRAILING_PUNCTUATION_TRANSFORMATION_ID,
-        name: "No trailing punctuation",
-        description: "Remove punctuation at the end of the text",
+        name: "No final period",
+        description: "Remove the final period, keeping ? and !",
         apply: remove_trailing_punctuation,
     },
 ];
@@ -939,16 +939,19 @@ fn spongebob_case(text: &str) -> String {
     output
 }
 
-// Sentence marks only. Closing quotes and brackets stay so a dictated
-// quotation or parenthetical keeps its pairing intact.
+// Full stops and pauses only. A question mark, an exclamation mark, or an
+// ellipsis changes what a message says, so those stay, and so do closing
+// quotes and brackets, keeping a dictated quotation or parenthetical paired.
 const TRAILING_PUNCTUATION: &[char] = &[
-    '.', ',', '!', '?', ';', ':', '\u{2026}', '\u{3002}', '\u{ff01}', '\u{ff1f}', '\u{3001}',
-    '\u{ff0c}', '\u{ff1b}', '\u{ff1a}',
+    '.', ',', ';', ':', '\u{3002}', '\u{3001}', '\u{ff0c}', '\u{ff1b}', '\u{ff1a}',
 ];
 
 fn remove_trailing_punctuation(text: &str) -> String {
     let body = text.trim_end();
     let trailing_whitespace = &text[body.len()..];
+    if body.ends_with("...") {
+        return text.to_string();
+    }
     let mut output = body.trim_end_matches(TRAILING_PUNCTUATION).to_string();
     output.push_str(trailing_whitespace);
     output
@@ -980,6 +983,45 @@ fn invocation_context(
         browser_url: context.browser_url.as_ref().map(ToString::to_string),
         window_title: context.window_title.clone(),
     }
+}
+
+/// Extensions the script host loads, in any case, shared with the loader so
+/// every file it can import is one the watcher reloads.
+const SCRIPT_EXTENSIONS: [&str; 5] = ["ts", "js", "mjs", "mts", "json"];
+/// Extensions the script host erases types from, and the ones a TypeScript
+/// declaration file can have.
+const TYPESCRIPT_EXTENSIONS: [&str; 2] = ["ts", "mts"];
+
+/// `.ts, .js, .mjs, .mts, .json` for messages about what can be imported.
+fn script_extension_list() -> String {
+    SCRIPT_EXTENSIONS
+        .iter()
+        .map(|extension| format!(".{extension}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The last component's stem and lowercased extension, or None when it has no
+/// extension.
+fn script_name_parts(path: &Path) -> Option<(&str, String)> {
+    let name = path.file_name()?.to_str()?;
+    let (stem, extension) = name.rsplit_once('.')?;
+    Some((stem, extension.to_ascii_lowercase()))
+}
+
+/// Whether `path` names a file the script host loads, and so one the reload
+/// watcher tracks. Declaration files only describe the API, so editing one
+/// never needs a reload.
+fn is_script_file(path: &Path) -> bool {
+    let Some((stem, extension)) = script_name_parts(path) else {
+        return false;
+    };
+    if !SCRIPT_EXTENSIONS.contains(&extension.as_str()) {
+        return false;
+    }
+    let declaration = (stem.ends_with(".d") || stem.ends_with(".D"))
+        && TYPESCRIPT_EXTENSIONS.contains(&extension.as_str());
+    !declaration
 }
 
 fn workspace_fingerprint(root: &Path) -> u64 {
@@ -1015,12 +1057,7 @@ fn workspace_fingerprint(root: &Path) -> u64 {
             }
             if metadata.is_dir() {
                 queue.push_back((path, depth + 1));
-            } else if metadata.is_file()
-                && matches!(
-                    path.extension().and_then(|value| value.to_str()),
-                    Some("ts" | "json")
-                )
-            {
+            } else if metadata.is_file() && is_script_file(&path) {
                 for byte in path.as_os_str().as_encoded_bytes() {
                     hash = hash
                         .wrapping_mul(1099511628211)
@@ -1228,10 +1265,25 @@ mod tests {
             remove_trailing_punctuation("The quick, brown fox jumped over the lazy dog."),
             "The quick, brown fox jumped over the lazy dog"
         );
-        assert_eq!(remove_trailing_punctuation("Wait, what?!…"), "Wait, what");
         assert_eq!(remove_trailing_punctuation("好的。"), "好的");
         assert_eq!(remove_trailing_punctuation("你好："), "你好");
         assert_eq!(remove_trailing_punctuation("你好；"), "你好");
+    }
+
+    #[test]
+    fn no_trailing_punctuation_keeps_questions_exclamations_and_ellipses() {
+        for input in [
+            "Are you coming?",
+            "Ship it!",
+            "Wait, what?!",
+            "你好？",
+            "太好了！",
+            "Well…",
+            "Well...",
+        ] {
+            assert_eq!(remove_trailing_punctuation(input), input);
+        }
+        assert_eq!(remove_trailing_punctuation("Really?."), "Really?");
     }
 
     #[test]
@@ -1246,7 +1298,7 @@ mod tests {
         assert_eq!(remove_trailing_punctuation("Good dog. "), "Good dog ");
         assert_eq!(remove_trailing_punctuation("   "), "   ");
         assert_eq!(remove_trailing_punctuation(""), "");
-        assert_eq!(remove_trailing_punctuation("..."), "");
+        assert_eq!(remove_trailing_punctuation("..."), "...");
     }
 
     #[test]
@@ -1327,7 +1379,47 @@ mod tests {
             ]
         );
         assert_eq!(status.transformations[0].name, "Lowercase");
-        assert_eq!(status.transformations[2].name, "No trailing punctuation");
+        assert_eq!(status.transformations[2].name, "No final period");
+    }
+
+    #[test]
+    fn workspace_fingerprint_tracks_every_loaded_file_kind() {
+        let root = unique_temp_dir("hex-watch-kinds");
+        fs::create_dir_all(root.join("lib")).unwrap();
+        let watched = [
+            "hex.config.ts",
+            "spelling.js",
+            "lib/words.mjs",
+            "lib/types.mts",
+            "data.json",
+            "lib/upper.JS",
+            "lib/foo.d.js",
+        ];
+        for name in watched {
+            fs::write(root.join(name), "first").unwrap();
+        }
+        fs::write(root.join("notes.md"), "first").unwrap();
+        fs::write(root.join("hex.d.ts"), "first").unwrap();
+        fs::write(root.join("lib/x.d.mts"), "first").unwrap();
+        let mut fingerprint = workspace_fingerprint(&root);
+        for name in watched {
+            fs::write(root.join(name), "second").unwrap();
+            let next = workspace_fingerprint(&root);
+            assert_ne!(next, fingerprint, "editing {name} should reload");
+            fingerprint = next;
+        }
+        fs::write(root.join("lib/new.js"), "first").unwrap();
+        assert_ne!(
+            workspace_fingerprint(&root),
+            fingerprint,
+            "a new .js file should reload"
+        );
+        fingerprint = workspace_fingerprint(&root);
+        fs::write(root.join("notes.md"), "changed").unwrap();
+        fs::write(root.join("hex.d.ts"), "changed").unwrap();
+        fs::write(root.join("lib/x.d.mts"), "changed").unwrap();
+        assert_eq!(workspace_fingerprint(&root), fingerprint);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
@@ -1701,6 +1793,24 @@ export default defineHexConfig({
             "import { shout } from \"./lib/words\"\nexport default { transformations: { shout: { name: \"Shout\", transform: shout } } }\n",
         );
         assert_eq!(harness.transform(&["shout"], "hi").unwrap(), "HI!");
+
+        fs::write(
+            workspace.join("lib/plain.js"),
+            "export const yell = (text) => text.toUpperCase()\n",
+        )
+        .unwrap();
+        harness.write(
+            "import { yell } from \"./lib/plain.js\"\nexport default { transformations: { yell: { name: \"Yell\", transform: yell } } }\n",
+        );
+        assert_eq!(harness.transform(&["yell"], "hi").unwrap(), "HI");
+
+        fs::write(workspace.join("notes.txt"), "export const x = 1\n").unwrap();
+        harness.write("import { x } from \"./notes.txt\"\nexport default {}\n");
+        assert!(
+            harness.error().contains("./notes.txt"),
+            "a .txt import loaded as JavaScript: {}",
+            harness.error()
+        );
 
         for import in [
             "node:fs",

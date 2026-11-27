@@ -29,6 +29,9 @@ pub(crate) enum Request {
     SelectInstalledModel(TranscriptionModelId),
     /// `hex model use`: this exact selection, installed only, never a download.
     UseInstalledSelection(TranscriptionSelection),
+    /// Labs › Model switch shortcut, or `hex model switch`: swap the dictation
+    /// model with the saved other one, installed only, through preparation.
+    SwapModel,
     /// Snapshot from the main-thread TIS observer, not a shortcut event.
     InputSourceChanged(Option<String>),
     CancelModel,
@@ -44,12 +47,15 @@ pub(crate) enum ShortcutTarget {
     PasteLast,
     #[cfg(hex_capture)]
     Capture,
-    /// Labs › Annotate 15 s replay shortcut.
+    /// Labs › Annotate last 15 seconds shortcut.
     #[cfg(hex_capture)]
     CaptureReplay,
     RawDictation,
     /// Labs › Second dictation shortcut.
     SecondDictation,
+    /// Labs › Model switch shortcut: swaps the dictation model with the
+    /// saved other one.
+    ModelSwitch,
     /// Labs › More dictation shortcuts (macOS): row `index`.
     ExtraDictation(usize),
     /// Toggle mode's cancel shortcut.

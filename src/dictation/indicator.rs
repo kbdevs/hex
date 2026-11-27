@@ -46,9 +46,13 @@ pub enum DictationIndicatorEvent {
         job_id: u64,
     },
     Transcribing {
+        // `Submitted` already enters `Transcribing`; `job_id` stays on the
+        // event for listener parity and diagnostics.
+        #[allow(dead_code)]
         job_id: u64,
     },
     Processing {
+        #[allow(dead_code)]
         job_id: u64,
     },
     Discarded,
@@ -56,6 +60,7 @@ pub enum DictationIndicatorEvent {
     JobCompleted {
         job_id: u64,
     },
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     JobCancelled {
         job_id: u64,
     },
@@ -123,45 +128,66 @@ mod macos {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Phase {
+/// The HUD's explicit lifecycle state: active capture, pending jobs, minimum
+/// processing dwell, and terminal outcomes live in one variant so illegal
+/// combinations are unrepresentable.
+#[derive(Debug, Eq, PartialEq)]
+enum HudState {
+    /// Idle and hidden; the scope may still be fading out its last look.
     Hidden,
-    Recording,
-    Transcribing,
+    /// Actively capturing audio; earlier accepted jobs may still be running.
+    Recording { jobs: BTreeSet<u64> },
+    /// No active capture, with at least one transcription/processing job in
+    /// flight.
+    Transcribing {
+        jobs: BTreeSet<u64>,
+        working_since: Instant,
+    },
+    /// The last job completed before [`PROCESSING_MIN_DURATION`] elapsed; holds
+    /// the processing look until then before entering [`Self::Completed`].
+    Completing { working_since: Instant },
+    /// Showing the done look until its visible duration elapses, then hidden.
+    Completed { started: Instant },
+    /// Showing the failed look until [`FAILED_VISIBLE_DURATION`] elapses, then
+    /// hidden.
+    Failed { started: Instant },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JobOutcome {
     Completed,
     Cancelled,
     Failed,
 }
 
-fn active_phase(capturing: bool, pending_jobs: usize) -> Option<Phase> {
-    if capturing {
-        Some(Phase::Recording)
-    } else if pending_jobs > 0 {
-        Some(Phase::Transcribing)
-    } else {
-        None
-    }
-}
-
-impl Phase {
-    fn visible_duration(self, ears: bool) -> Option<Duration> {
+impl HudState {
+    fn take_jobs(&mut self) -> BTreeSet<u64> {
         match self {
-            Self::Completed if ears => Some(EARS_COMPLETED_VISIBLE_DURATION),
-            Self::Completed => Some(COMPLETED_VISIBLE_DURATION),
-            Self::Cancelled => Some(Duration::ZERO),
-            Self::Failed => Some(FAILED_VISIBLE_DURATION),
-            _ => None,
+            Self::Recording { jobs } | Self::Transcribing { jobs, .. } => std::mem::take(jobs),
+            Self::Hidden
+            | Self::Completing { .. }
+            | Self::Completed { .. }
+            | Self::Failed { .. } => BTreeSet::new(),
         }
     }
 
-    /// The look this phase shows; `None` keeps the last one as it fades.
-    fn stage(self) -> Option<Stage> {
+    fn status(&self) -> Option<&'static str> {
         match self {
-            Self::Recording => Some(Stage::Recording),
-            Self::Transcribing => Some(Stage::Processing),
-            Self::Completed => Some(Stage::Done),
-            Self::Failed => Some(Stage::Failed),
-            Self::Hidden | Self::Cancelled => None,
+            Self::Recording { .. } => Some("Recording"),
+            Self::Transcribing { .. } | Self::Completing { .. } => Some("Transcribing"),
+            Self::Failed { .. } => Some("Failed"),
+            Self::Hidden | Self::Completed { .. } => None,
+        }
+    }
+
+    /// The look this state shows; `None` keeps the last one as it fades.
+    fn stage(&self) -> Option<Stage> {
+        match self {
+            Self::Recording { .. } => Some(Stage::Recording),
+            Self::Transcribing { .. } | Self::Completing { .. } => Some(Stage::Processing),
+            Self::Completed { .. } => Some(Stage::Done),
+            Self::Failed { .. } => Some(Stage::Failed),
+            Self::Hidden => None,
         }
     }
 }
@@ -203,7 +229,7 @@ fn fill_island(tuning: Tuning, island: Option<Island>) -> Tuning {
     };
     let pitch = tuning.spacing;
     let edge = field_edge(&tuning);
-    let columns = ((island.plate_width() - 2.0 * edge) / pitch).floor() + 1.0;
+    let columns = tuning.columns_in(island.plate_width(), edge);
     let width = (columns - 1.0) * pitch + 2.0 * edge;
     Tuning {
         columns,
@@ -215,15 +241,7 @@ fn fill_island(tuning: Tuning, island: Option<Island>) -> Tuning {
 
 /// The HUD's state: what the listener reported and Dot scope's simulation.
 pub struct IndicatorModel {
-    phase: Phase,
-    capturing: bool,
-    jobs: BTreeSet<u64>,
-    phase_started: Instant,
-    /// When the processing look began, for [`PROCESSING_MIN_DURATION`].
-    working_since: Instant,
-    /// The last job finished; done shows once processing has had its
-    /// minimum.
-    completion_pending: bool,
+    state: HudState,
     scope: Scope,
     stage: Stage,
     /// The tuning as set, before [`fill_island`].
@@ -239,14 +257,9 @@ pub struct IndicatorModel {
 }
 
 impl IndicatorModel {
-    pub fn new(tuning: Tuning, now: Instant) -> Self {
+    pub fn new(tuning: Tuning, _now: Instant) -> Self {
         Self {
-            phase: Phase::Hidden,
-            capturing: false,
-            jobs: BTreeSet::new(),
-            phase_started: now,
-            working_since: now,
-            completion_pending: false,
+            state: HudState::Hidden,
             scope: Scope::new(tuning),
             stage: Stage::Recording,
             tuning,
@@ -263,22 +276,54 @@ impl IndicatorModel {
         self.active
     }
 
+    /// Whether the HUD is recording a capture: the one phase whose only events
+    /// are meters, so the only one a recovery re-ask may act on (#1793).
+    #[cfg(any(target_os = "windows", test))]
+    pub fn recording(&self) -> bool {
+        matches!(self.state, HudState::Recording { .. })
+    }
+
+    /// The meter's loudness, dBFS: tests check that a meter still updates it
+    /// when the update draws no frame of its own.
+    #[cfg(test)]
+    pub fn loudness(&self) -> f32 {
+        self.loudness
+    }
+
     /// What the HUD says to assistive technology: Recording, Transcribing,
     /// or Failed, in English (callers translate it); `None` while nothing
     /// shows or the HUD fades out.
     pub fn status(&self) -> Option<&'static str> {
-        match self.phase {
-            Phase::Recording => Some("Recording"),
-            Phase::Transcribing => Some("Transcribing"),
-            Phase::Failed => Some("Failed"),
-            Phase::Hidden | Phase::Completed | Phase::Cancelled => None,
-        }
+        self.state.status()
     }
 
     /// Dot scope's tuning, as set.
     #[cfg(target_os = "macos")]
     pub fn tuning(&self) -> Tuning {
         self.tuning
+    }
+
+    /// Spreads the field over `room` pt from its `hold` end, as the island
+    /// spreads it across a notch, but at once and keeping every dot that
+    /// stays ([`Scope::span`]): for a field whose room follows a moving edge.
+    pub fn span(&mut self, room: f32, hold: dot_scope::Hold) {
+        self.scope.span(room, hold);
+    }
+
+    /// The frame as it stands, without advancing.
+    pub fn frame(&self) -> DotFrame {
+        DotFrame {
+            pose: self.scope.pose(),
+            tuning: self.scope.tuning(),
+            columns: self.scope.columns(),
+            rows: self.scope.rows(),
+            dots: self
+                .scope
+                .dots()
+                .iter()
+                .map(|value| value.map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16))
+                .collect(),
+        }
     }
 
     /// Spreads Dot scope's field across the notch island it now sits in.
@@ -294,10 +339,7 @@ impl IndicatorModel {
         self.active = true;
         match event {
             DictationIndicatorEvent::Reset => {
-                self.capturing = false;
-                self.jobs.clear();
-                self.phase = Phase::Hidden;
-                self.completion_pending = false;
+                self.state = HudState::Hidden;
                 self.loudness = SILENT;
                 self.demo_voice = None;
             }
@@ -311,10 +353,8 @@ impl IndicatorModel {
             DictationIndicatorEvent::Started => {
                 // HUD Lab and the playground send `DemoVoice` after this.
                 self.demo_voice = None;
-                self.capturing = true;
-                self.phase = Phase::Recording;
-                self.phase_started = now;
-                self.completion_pending = false;
+                let jobs = self.state.take_jobs();
+                self.state = HudState::Recording { jobs };
                 self.loudness = SILENT;
                 self.stage = Stage::Recording;
                 self.scope.restart(reduce);
@@ -323,83 +363,88 @@ impl IndicatorModel {
                 self.loudness = dot_scope::loudness(average);
             }
             DictationIndicatorEvent::Submitted { job_id } => {
-                self.capturing = false;
-                self.jobs.insert(job_id);
-                self.show_pipeline(now);
+                let working_since = match self.state {
+                    HudState::Transcribing { working_since, .. }
+                    | HudState::Completing { working_since } => working_since,
+                    _ => now,
+                };
+                let mut jobs = self.state.take_jobs();
+                jobs.insert(job_id);
+                self.state = HudState::Transcribing {
+                    jobs,
+                    working_since,
+                };
             }
-            DictationIndicatorEvent::Transcribing { job_id }
-            | DictationIndicatorEvent::Processing { job_id } => {
-                if self.jobs.contains(&job_id) {
-                    self.show_pipeline(now);
-                }
-            }
-            DictationIndicatorEvent::Discarded => {
-                self.finish_capture(now, Phase::Hidden);
-            }
-            DictationIndicatorEvent::Cancelled => {
-                self.finish_capture(now, Phase::Cancelled);
+            DictationIndicatorEvent::Transcribing { .. }
+            | DictationIndicatorEvent::Processing { .. } => {}
+            DictationIndicatorEvent::Discarded | DictationIndicatorEvent::Cancelled => {
+                self.finish_capture(now, false);
             }
             DictationIndicatorEvent::JobCompleted { job_id } => {
-                self.finish_job(job_id, now, Phase::Completed);
+                self.finish_job(job_id, now, JobOutcome::Completed);
             }
             DictationIndicatorEvent::JobCancelled { job_id } => {
-                self.finish_job(job_id, now, Phase::Cancelled);
+                self.finish_job(job_id, now, JobOutcome::Cancelled);
             }
             DictationIndicatorEvent::JobFailed { job_id, .. } => {
-                self.finish_job(job_id, now, Phase::Failed);
+                self.finish_job(job_id, now, JobOutcome::Failed);
             }
             DictationIndicatorEvent::Failed { .. } => {
-                self.finish_capture(now, Phase::Failed);
+                self.finish_capture(now, true);
             }
         }
     }
 
-    fn finish_capture(&mut self, now: Instant, empty_phase: Phase) {
-        self.capturing = false;
-        if !matches!(empty_phase, Phase::Hidden) {
-            self.phase_started = now;
-        }
-        self.completion_pending = false;
-        if self.jobs.is_empty() {
-            self.phase = empty_phase;
-        } else {
-            self.show_pipeline(now);
-        }
-    }
-
-    fn show_pipeline(&mut self, now: Instant) {
-        let Some(phase) = active_phase(self.capturing, self.jobs.len()) else {
-            return;
-        };
-        if phase == Phase::Transcribing && self.phase != Phase::Transcribing {
-            self.working_since = now;
-        }
-        self.phase = phase;
-        if phase == Phase::Recording {
-            return;
-        }
-        self.phase_started = now;
-        self.completion_pending = false;
-    }
-
-    fn finish_job(&mut self, job_id: u64, now: Instant, terminal: Phase) {
-        if !self.jobs.remove(&job_id) {
-            return;
-        }
-        if active_phase(self.capturing, self.jobs.len()).is_some() {
-            self.show_pipeline(now);
-            return;
-        }
-        if terminal == Phase::Completed {
-            if self.phase != Phase::Transcribing {
-                self.phase = Phase::Transcribing;
-                self.working_since = now;
+    fn finish_capture(&mut self, now: Instant, failed: bool) {
+        match std::mem::replace(&mut self.state, HudState::Hidden) {
+            HudState::Recording { jobs } if !jobs.is_empty() => {
+                self.state = HudState::Transcribing {
+                    jobs,
+                    working_since: now,
+                };
             }
-            self.completion_pending = true;
-        } else {
-            self.phase = terminal;
-            self.phase_started = now;
-            self.completion_pending = false;
+            HudState::Transcribing {
+                jobs,
+                working_since,
+            } => {
+                self.state = HudState::Transcribing {
+                    jobs,
+                    working_since,
+                };
+            }
+            _ => {
+                self.state = if failed {
+                    HudState::Failed { started: now }
+                } else {
+                    HudState::Hidden
+                };
+            }
+        }
+    }
+
+    fn finish_job(&mut self, job_id: u64, now: Instant, outcome: JobOutcome) {
+        match &mut self.state {
+            HudState::Recording { jobs } => {
+                jobs.remove(&job_id);
+            }
+            HudState::Transcribing {
+                jobs,
+                working_since,
+            } => {
+                if !jobs.remove(&job_id) || !jobs.is_empty() {
+                    return;
+                }
+                let working_since = *working_since;
+                self.state = match outcome {
+                    JobOutcome::Completed => HudState::Completing { working_since },
+                    JobOutcome::Cancelled => HudState::Hidden,
+                    JobOutcome::Failed => HudState::Failed { started: now },
+                };
+            }
+            HudState::Hidden
+            | HudState::Completing { .. }
+            | HudState::Completed { .. }
+            | HudState::Failed { .. } => {}
         }
     }
 
@@ -407,20 +452,32 @@ impl IndicatorModel {
     /// everything has settled out of sight, [`Self::active`] turns false.
     pub fn step(&mut self, now: Instant, dt: f32, reduce: bool) -> DotFrame {
         let dt = dt.clamp(1.0 / 240.0, 1.0 / 20.0);
-        if self.completion_pending
-            && now.duration_since(self.working_since) >= PROCESSING_MIN_DURATION
-        {
-            self.phase = Phase::Completed;
-            self.phase_started = now;
-            self.completion_pending = false;
+        let ears = self.island.is_some_and(|island| island.ears);
+        let completed_duration = if ears {
+            EARS_COMPLETED_VISIBLE_DURATION
+        } else {
+            COMPLETED_VISIBLE_DURATION
+        };
+        match self.state {
+            HudState::Completing { working_since }
+                if now.saturating_duration_since(working_since) >= PROCESSING_MIN_DURATION =>
+            {
+                self.state = HudState::Completed { started: now };
+            }
+            HudState::Completed { started }
+                if now.saturating_duration_since(started) >= completed_duration =>
+            {
+                self.state = HudState::Hidden;
+            }
+            HudState::Failed { started }
+                if now.saturating_duration_since(started) >= FAILED_VISIBLE_DURATION =>
+            {
+                self.state = HudState::Hidden;
+            }
+            _ => {}
         }
-        let elapsed = now.duration_since(self.phase_started);
-        let terminal_finished = self
-            .phase
-            .visible_duration(self.island.is_some_and(|island| island.ears))
-            .is_some_and(|duration| elapsed >= duration);
-        let visible = self.phase != Phase::Hidden && !terminal_finished;
-        if let Some(stage) = self.phase.stage() {
+        let visible = !matches!(self.state, HudState::Hidden);
+        if let Some(stage) = self.state.stage() {
             self.stage = stage;
         }
         let loudness = match &mut self.demo_voice {
@@ -440,18 +497,7 @@ impl IndicatorModel {
             },
         );
         self.active = visible || !self.scope.settled();
-        DotFrame {
-            pose: self.scope.pose(),
-            tuning: self.scope.tuning(),
-            columns: self.scope.columns(),
-            rows: self.scope.rows(),
-            dots: self
-                .scope
-                .dots()
-                .iter()
-                .map(|value| value.map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16))
-                .collect(),
-        }
+        self.frame()
     }
 }
 
@@ -502,6 +548,7 @@ mod tests {
         assert_eq!(fill_island(tuning, None), tuning);
         let island = Island {
             notch: [185.0, 32.0],
+            bar: 0.0,
             width: 241.0,
             top: -64.0,
             ears: false,
@@ -560,6 +607,46 @@ mod tests {
         model.handle(DictationIndicatorEvent::Started, start, false);
         model.handle(DictationIndicatorEvent::Discarded, start, false);
         assert_eq!(model.status(), None);
+    }
+
+    /// Only the recording phase reports nothing but meters, so it is the only
+    /// phase a recovery re-ask may act on: `active` stays true through the
+    /// transcribing, done and failed looks, which draw their own frames (#1793).
+    #[test]
+    fn only_the_recording_phase_is_recording() {
+        let start = Instant::now();
+        let mut model = IndicatorModel::new(Tuning::default(), start);
+        assert!(!model.recording());
+        model.handle(DictationIndicatorEvent::Started, start, false);
+        assert!(model.recording());
+        model.handle(
+            DictationIndicatorEvent::Submitted { job_id: 1 },
+            start,
+            false,
+        );
+        assert!(!model.recording(), "transcribing draws its own frames");
+        model.handle(
+            DictationIndicatorEvent::JobFailed {
+                job_id: 1,
+                message: None,
+            },
+            start,
+            false,
+        );
+        assert!(!model.recording());
+        model.handle(DictationIndicatorEvent::Started, start, false);
+        assert!(model.recording());
+        model.handle(
+            DictationIndicatorEvent::Failed { message: None },
+            start,
+            false,
+        );
+        assert!(!model.recording());
+        model.handle(DictationIndicatorEvent::Started, start, false);
+        model.handle(DictationIndicatorEvent::Cancelled, start, false);
+        assert!(!model.recording());
+        model.handle(DictationIndicatorEvent::Reset, start, false);
+        assert!(!model.recording());
     }
 
     fn at(start: Instant, seconds: f32) -> Instant {
@@ -682,6 +769,7 @@ mod tests {
         };
         let ears = Island {
             notch: [185.0, 32.0],
+            bar: 34.0,
             width: 253.0,
             top: -64.0,
             ears: true,
@@ -727,9 +815,45 @@ mod tests {
 
     #[test]
     fn pending_completion_cannot_replace_a_new_recording_phase() {
-        assert_eq!(active_phase(true, 0), Some(Phase::Recording));
-        assert_eq!(active_phase(true, 2), Some(Phase::Recording));
-        assert_eq!(active_phase(false, 2), Some(Phase::Transcribing));
-        assert_eq!(active_phase(false, 0), None);
+        let start = Instant::now();
+        let mut model = IndicatorModel::new(Tuning::default(), start);
+        model.handle(DictationIndicatorEvent::Started, start, false);
+        model.handle(
+            DictationIndicatorEvent::Submitted { job_id: 1 },
+            at(start, 0.2),
+            false,
+        );
+        // Start a second recording while job 1 is still transcribing.
+        model.handle(DictationIndicatorEvent::Started, at(start, 0.3), false);
+        assert!(model.recording());
+        assert_eq!(model.status(), Some("Recording"));
+
+        // Job 1 completing must not replace the active recording with Done.
+        model.handle(
+            DictationIndicatorEvent::JobCompleted { job_id: 1 },
+            at(start, 0.35),
+            false,
+        );
+        run(&mut model, start, 0.35, 0.4);
+        assert!(model.recording());
+        assert_eq!(model.stage, Stage::Recording);
+
+        // Discarding a new capture while an earlier job is still in flight
+        // returns to Transcribing rather than hiding.
+        model.handle(
+            DictationIndicatorEvent::Submitted { job_id: 2 },
+            at(start, 0.8),
+            false,
+        );
+        model.handle(DictationIndicatorEvent::Started, at(start, 0.9), false);
+        model.handle(DictationIndicatorEvent::Discarded, at(start, 1.0), false);
+        assert!(!model.recording());
+        assert_eq!(model.status(), Some("Transcribing"));
+        model.handle(
+            DictationIndicatorEvent::JobCancelled { job_id: 2 },
+            at(start, 1.1),
+            false,
+        );
+        assert_eq!(model.status(), None);
     }
 }

@@ -1,8 +1,9 @@
 //! The optional pair of Markdown files beside each other in the user's
 //! meetings folder: `<stem>.transcript.md` and `<stem>.notes.md` while
-//! Labs › Separate notes file is on. Export chooses a stem free for both, and
-//! Labs › Descriptive meeting file names moves the pair together.
+//! Separate notes file is on. Export chooses a stem free for both, and
+//! Descriptive meeting file names moves the pair together.
 
+#[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -89,7 +90,7 @@ pub(super) fn tracked(manifest: &MeetingManifest) -> Option<PathBuf> {
 }
 
 /// Writes or refreshes the meeting's notes file after its notes are applied.
-/// `create` is the caller's Labs › Separate notes file switch: only a first
+/// `create` is the caller's Separate notes file switch: only a first
 /// notes file is gated, while an already tracked one follows later notes.
 pub(super) fn write_after_notes(manifest: &mut MeetingManifest, create: bool) {
     let Some(transcript) = manifest.export_path.clone().filter(|path| path.exists()) else {
@@ -106,7 +107,7 @@ pub(super) fn write_after_notes(manifest: &mut MeetingManifest, create: bool) {
 
 /// Re-renders a tracked notes file whose bytes Hex still wrote, so its
 /// heading and transcript link follow a rename or chapter retitle. Never
-/// creates one: only [`write_after_notes`] does, and only with its lab on.
+/// creates one: only [`write_after_notes`] does, and only with Separate notes file on.
 pub(super) fn refresh(manifest: &mut MeetingManifest) {
     let Some(transcript) = manifest.export_path.clone().filter(|path| path.exists()) else {
         return;
@@ -149,24 +150,22 @@ fn update(manifest: &mut MeetingManifest, transcript: &Path, create: bool) -> Re
         None if create => first_free_path(transcript)?,
         None => return Ok(()),
     };
-    if path.exists() {
-        let unchanged = manifest
-            .notes_export_sha256
-            .as_deref()
-            .is_some_and(|written| super::file_sha256(&path).as_deref() == Some(written));
-        if !unchanged {
-            tracing::info!(
-                meeting = manifest.id,
-                path = %path.display(),
-                "kept the meeting's notes file, which changed since Hex wrote it"
-            );
-            return Ok(());
-        }
+    let mut written = manifest.notes_export_sha256.clone();
+    let outcome = super::write::markdown::rewrite(
+        &path,
+        &mut written,
+        super::write::markdown::RewritePolicy::WholeFileIfOwned,
+        |_| render(manifest, transcript),
+    )?;
+    if outcome == super::write::markdown::RewriteOutcome::NotOwned {
+        tracing::info!(
+            meeting = manifest.id,
+            "kept the meeting notes file, which changed since Hex wrote it"
+        );
+        return Ok(());
     }
-    let markdown = render(manifest, transcript);
-    write_atomically(&path, &markdown)?;
     manifest.notes_export_path = Some(path);
-    manifest.notes_export_sha256 = Some(super::text_sha256(markdown.as_bytes()));
+    manifest.notes_export_sha256 = written;
     Ok(())
 }
 
@@ -300,26 +299,6 @@ fn percent_encode(name: &str) -> String {
         }
     }
     encoded
-}
-
-/// Replaces the file atomically: the complete new bytes are flushed under a
-/// temporary name before the rename, so a crash leaves one whole file.
-fn write_atomically(path: &Path, markdown: &str) -> Result<()> {
-    let folder = path
-        .parent()
-        .ok_or_else(|| eyre!("{} has no folder", path.display()))?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| eyre!("{} has no name", path.display()))?
-        .to_string_lossy();
-    let temporary = folder.join(format!(".{name}.tmp"));
-    fs::write(&temporary, markdown)?;
-    if let Ok(metadata) = fs::metadata(path) {
-        let _ = fs::set_permissions(&temporary, metadata.permissions());
-    }
-    crate::durable::sync_file(&temporary)?;
-    fs::rename(&temporary, path)?;
-    Ok(super::sync_directory(folder)?)
 }
 
 #[cfg(test)]

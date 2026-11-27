@@ -1,8 +1,8 @@
-//! Native open dialogs for one file or one folder, through Rune's
-//! `FileDialogs`: `NSOpenPanel` on macOS, the common item dialog on Windows,
-//! and the FileChooser portal on Linux. Each runs on its own thread and
-//! answers on a channel, so neither the window nor the runtime waits on the
-//! person.
+//! Native open and save dialogs for one file or one folder, through Rune's
+//! `FileDialogs`: `NSOpenPanel`/`NSSavePanel` on macOS, the common item
+//! dialog on Windows, and the FileChooser portal on Linux. Each runs on its
+//! own thread and answers on a channel, so neither the window nor the runtime
+//! waits on the person.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
@@ -26,6 +26,13 @@ fn show(dialog: Dialog, reply: Reply) {
                     }
                     pollster::block_on(dialogs.open(options))
                 }
+                Target::Save { filters, file_name } => {
+                    options.file_name = Some(file_name);
+                    for filter in filters {
+                        options = options.filter(filter.label, filter.extensions);
+                    }
+                    pollster::block_on(dialogs.save(options))
+                }
             };
             reply.send(choice.map_err(|error| error.to_string()));
         });
@@ -41,7 +48,13 @@ pub(crate) struct Dialog {
 pub(crate) enum Target {
     /// One existing file.
     File(Vec<Filter>),
-    /// Only the macOS meetings folder asks for one yet.
+    /// A file to write, with the name the dialog offers first.
+    Save {
+        filters: Vec<Filter>,
+        file_name: String,
+    },
+    /// A folder: the meetings and annotations folders, and Labs ›
+    /// Screenshots' saves folder.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Folder,
 }
@@ -61,6 +74,82 @@ pub(crate) fn open(dialog: Dialog, wake: impl Fn() + Send + 'static) -> Pending 
     let (reply, pending) = channel(wake);
     show(dialog, reply);
     pending
+}
+
+/// [`open`] for a save dialog asked from an overlay, such as Labs ›
+/// Screenshots' editor. Rune's dialogs attach to a window and refuse
+/// overlays, so on macOS this is an `NSSavePanel` of its own, free-standing
+/// above every overlay, with Hex brought forward so the panel takes keys.
+/// Off the main thread, for other targets, and elsewhere it is [`open`].
+pub(crate) fn open_over_overlays(dialog: Dialog, wake: impl Fn() + Send + 'static) -> Pending {
+    let (reply, pending) = channel(wake);
+    #[cfg(target_os = "macos")]
+    if let Some(mtm) = objc2::MainThreadMarker::new()
+        && matches!(dialog.target, Target::Save { .. })
+    {
+        save_panel(mtm, dialog, reply);
+        return pending;
+    }
+    show(dialog, reply);
+    pending
+}
+
+/// Above Rune's overlays, which sit at most at level 27
+/// (`OverlayLevel::AboveOverlays`).
+#[cfg(target_os = "macos")]
+const ABOVE_OVERLAYS: isize = 28;
+
+#[cfg(target_os = "macos")]
+fn save_panel(mtm: objc2::MainThreadMarker, dialog: Dialog, reply: Reply) {
+    use std::cell::Cell;
+
+    use block2::RcBlock;
+    use objc2_app_kit::{NSApplication, NSModalResponse, NSSavePanel};
+    use objc2_foundation::{NSArray, NSString, NSURL};
+
+    /// `NSModalResponseOK`.
+    const OK: NSModalResponse = 1;
+
+    let Target::Save { filters, file_name } = dialog.target else {
+        return;
+    };
+    let panel = NSSavePanel::savePanel(mtm);
+    panel.setTitle(Some(&NSString::from_str(&dialog.title)));
+    panel.setNameFieldStringValue(&NSString::from_str(&file_name));
+    if let Some(url) = dialog
+        .directory
+        .filter(|path| path.is_dir())
+        .and_then(NSURL::from_directory_path)
+    {
+        panel.setDirectoryURL(Some(&url));
+    }
+    let extensions: Vec<_> = filters
+        .iter()
+        .flat_map(|filter| filter.extensions)
+        .filter(|extension| **extension != "*")
+        .map(|extension| NSString::from_str(extension))
+        .collect();
+    if !extensions.is_empty() {
+        // `allowedContentTypes` needs UTTypes; the extensions do the same.
+        #[allow(deprecated)]
+        panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&extensions)));
+    }
+    panel.setCanCreateDirectories(true);
+    panel.setLevel(ABOVE_OVERLAYS);
+    NSApplication::sharedApplication(mtm).activate();
+    let reply = Cell::new(Some(reply));
+    let answered = panel.clone();
+    let handler = RcBlock::new(move |response: NSModalResponse| {
+        let Some(reply) = reply.take() else {
+            return;
+        };
+        let path = (response == OK)
+            .then(|| answered.URL())
+            .flatten()
+            .and_then(|url| url.to_file_path());
+        reply.send(Ok(path));
+    });
+    panel.beginWithCompletionHandler(&handler);
 }
 
 fn channel(wake: impl Fn() + Send + 'static) -> (Reply, Pending) {

@@ -117,6 +117,7 @@ fn history_stats_parse_sum_retained_entries_and_need_the_labs_toggle() {
     ));
     const DAY: u64 = 86_400_000;
     let entry = |id: u64, age_days: u64, raw: &str, final_text: &str| HistoryEntry {
+        cancelled: false,
         id,
         timestamp_ms: NOW - age_days * DAY,
         kind: HistoryKind::Dictation,
@@ -127,7 +128,6 @@ fn history_stats_parse_sum_retained_entries_and_need_the_labs_toggle() {
         audio_ms: 6_000,
         inference_ms: 0,
         total_ms: 0,
-        source: None,
         recording_bytes: 0,
         model: None,
         language: None,
@@ -140,28 +140,87 @@ fn history_stats_parse_sum_retained_entries_and_need_the_labs_toggle() {
         entry(3, 0, "ten words", "ten words"),
     ];
     let utc = |ms: u64| (ms / DAY) as i64;
-    let output = stats_output(&entries, None, None, HistoryRetention::Week, NOW, utc).unwrap();
+    let hour = |ms: u64| ((ms / 3_600_000) % 24) as usize;
+    let output = stats_output(
+        &entries,
+        None,
+        None,
+        (
+            HistoryRetention::Week,
+            crate::app_settings::DEFAULT_TYPING_WPM,
+        ),
+        NOW,
+        utc,
+        hour,
+    )
+    .unwrap();
     assert_eq!(output.stats.dictations, 2);
     assert_eq!(output.stats.words, 3);
     assert_eq!(output.stats.words_per_minute, Some(15));
     assert_eq!(output.stats.changed_by_output, 1);
     assert_eq!(output.stats.streak_days, 2);
     assert_eq!(output.stats.top_apps[0].dictations, 2);
+    // Three words at 40 wpm take 4.5 s; 12 s of audio was recorded, so
+    // nothing was saved.
+    assert_eq!(output.stats.time_saved_ms, 0);
     let json = serde_json::to_value(&output).unwrap();
     assert_eq!(json["version"], 1);
     assert_eq!(json["words"], 3);
+    assert_eq!(json["typing_wpm"], crate::app_settings::DEFAULT_TYPING_WPM);
+    assert_eq!(json["time_saved_ms"], 0);
+    assert_eq!(json["hours"].as_array().map(Vec::len), Some(24));
+    assert!(
+        json.get("yearly").is_none(),
+        "the rollup is filled in later"
+    );
     let today = stats_output(
         &entries,
         Some("today"),
         None,
-        HistoryRetention::Week,
+        (HistoryRetention::Week, 65),
         NOW,
         utc,
+        hour,
     );
     assert!(today.unwrap().stats.dictations <= 1);
     assert!(stats_text(&HistoryStats::default()).starts_with("No retained"));
     assert!(require_history_stats(false).is_err());
     assert!(require_history_stats(true).is_ok());
+}
+
+/// The rollup follows Dictation stats now: `hex history stats` refuses before
+/// reading anything while the lab is off, so the JSON always includes it.
+#[test]
+fn history_stats_json_includes_the_yearly_rollup_with_dictation_stats() {
+    let root = temp();
+    let history = root.join("history.json");
+    let path = crate::history::usage::path(&history);
+    let timestamp = NOW - 86_400_000;
+    crate::history::usage::count(&path, timestamp, 9, 3_000).unwrap();
+
+    let mut output = stats_output(
+        &entries(),
+        None,
+        None,
+        (
+            HistoryRetention::Week,
+            crate::app_settings::DEFAULT_TYPING_WPM,
+        ),
+        NOW,
+        |ms| (ms / 86_400_000) as i64,
+        |ms| ((ms / 3_600_000) % 24) as usize,
+    )
+    .unwrap();
+    output.yearly = Some(yearly_output(&history, NOW));
+    let json = serde_json::to_value(&output).unwrap();
+    let yearly = &json["yearly"];
+    assert_eq!(yearly["dictations"], 1);
+    assert_eq!(yearly["words"], 9);
+    assert_eq!(
+        yearly["days"][0]["day"],
+        crate::history::stats::local_day(timestamp)
+    );
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -361,15 +420,37 @@ fn history_json_names_a_recording_only_where_one_is_kept() {
 #[test]
 fn retention_defaults_fails_closed_and_off_preserves_existing_entries() {
     let root = temp();
-    assert_eq!(retention(&root).unwrap(), HistoryRetention::Week);
+    assert_eq!(retention(&root).unwrap().0, HistoryRetention::Week);
     fs::write(root.join("settings.json"), "{}").unwrap();
-    assert_eq!(retention(&root).unwrap(), HistoryRetention::Week);
+    assert_eq!(retention(&root).unwrap().0, HistoryRetention::Week);
     fs::write(root.join("settings.json"), r#"{"history_retention":"day"}"#).unwrap();
+    assert_eq!(retention(&root).unwrap(), (HistoryRetention::Day, 40));
+    fs::write(
+        root.join("settings.json"),
+        r#"{"history_retention":"day","typing_wpm":900}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        retention(&root).unwrap(),
+        (HistoryRetention::Day, crate::app_settings::MAX_TYPING_WPM)
+    );
+    for bad in [r#""fast""#, "null", "-5", "1.5", "{}"] {
+        fs::write(
+            root.join("settings.json"),
+            format!(r#"{{"history_retention":"day","typing_wpm":{bad}}}"#),
+        )
+        .unwrap();
+        assert_eq!(
+            retention(&root).unwrap(),
+            (HistoryRetention::Day, 40),
+            "{bad}"
+        );
+    }
     let entries = entries();
     let output = history_output(
         &entries,
         &args(&[]),
-        retention(&root).unwrap(),
+        retention(&root).unwrap().0,
         NOW,
         &[],
         None,
@@ -631,37 +712,74 @@ fn meeting_chapters_list_and_select_a_chapter_in_json_and_markdown() {
 fn subtitles_render_speaker_turns_as_srt_and_vtt_cues() {
     use crate::meeting::{MeetingSource, TranscriptEntry};
     let entries = [
-        TranscriptEntry {
-            source: MeetingSource::Microphone,
-            start_ms: 5_500,
-            end_ms: 8_000,
-            text: "Hello <there> & welcome.".into(),
-        },
-        TranscriptEntry {
-            source: MeetingSource::System,
-            start_ms: 3_725_042,
-            end_ms: 3_725_000,
-            text: "First line\n\n  \nsecond --> line".into(),
-        },
-        TranscriptEntry {
-            source: MeetingSource::System,
-            start_ms: 3_800_000,
-            end_ms: 3_801_000,
-            text: " \n ".into(),
-        },
+        TranscriptEntry::new(
+            MeetingSource::Microphone,
+            5_500,
+            8_000,
+            "Hello <there> & welcome.",
+        ),
+        TranscriptEntry::new(
+            MeetingSource::System,
+            3_725_042,
+            3_725_000,
+            "First line\n\n  \nsecond --> line",
+        ),
+        TranscriptEntry::new(MeetingSource::System, 3_800_000, 3_801_000, " \n "),
     ];
     assert_eq!(
-        render_subtitles(&entries, SubtitleFormat::Srt),
+        render_subtitles(&entries, Labels::default(), SubtitleFormat::Srt),
         "1\n00:00:05,500 --> 00:00:08,000\nYou: Hello <there> & welcome.\n\n\
          2\n01:02:05,042 --> 01:02:05,042\nThem: First line\nsecond -> line\n\n"
     );
     assert_eq!(
-        render_subtitles(&entries, SubtitleFormat::Vtt),
+        render_subtitles(&entries, Labels::default(), SubtitleFormat::Vtt),
         "WEBVTT\n\n\
          00:00:05.500 --> 00:00:08.000\n<v You>Hello &lt;there&gt; &amp; welcome.\n\n\
          01:02:05.042 --> 01:02:05.042\n<v Them>First line\nsecond -&gt; line\n\n"
     );
-    assert_eq!(subtitle_time(360_000_000, ','), "100:00:00,000");
+    assert_eq!(subtitles::subtitle_time(360_000_000, ','), "100:00:00,000");
+}
+
+/// A meeting whose manifest names a speaker: JSON gains the table and the
+/// line's id, and subtitles carry the name. Unnamed meetings are covered by
+/// `meeting_json_contract_snapshot`, whose fixture has neither field.
+#[test]
+fn a_named_speaker_shows_in_meeting_json_and_subtitles() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meetings");
+    let id = "1790000500000-1002";
+    let root = std::env::temp_dir().join(format!("hex-cli-speakers-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    copy_dir_all(&fixtures.join(id), &root.join(id));
+    let path = root.join(id).join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let speakers = serde_json::json!([{"id": "s1", "name": "Priya & Co", "from": "call_app"}]);
+    manifest["speakers"] = speakers.clone();
+    fs::write(&path, manifest.to_string()).unwrap();
+    fs::write(
+        root.join(id).join("transcript.ndjson"),
+        concat!(
+            r#"{"source":"system","start_ms":0,"end_ms":5000,"text":"Let's review.","speaker":"s1"}"#,
+            "\n",
+            r#"{"source":"microphone","start_ms":5500,"end_ms":12000,"text":"Profiling first."}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    let meeting = Library::new(&root).meeting(id).unwrap();
+    let json = meeting_json(&meeting, OffsetRange::default(), NOW).unwrap();
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["meeting"]["speakers"], speakers);
+    assert_eq!(json["entries"][0]["speaker"], "s1");
+    assert!(json["entries"][1].get("speaker").is_none(), "{json}");
+
+    let labels = Labels::by_track(&meeting.manifest.speakers);
+    let cues = |format| render_subtitles(meeting.entries.iter(), labels, format);
+    assert!(cues(SubtitleFormat::Srt).contains("\nPriya & Co: Let's review.\n"));
+    assert!(cues(SubtitleFormat::Srt).contains("\nYou: Profiling first.\n"));
+    assert!(cues(SubtitleFormat::Vtt).contains("\n<v Priya &amp; Co>Let's review.\n"));
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -670,20 +788,17 @@ fn subtitles_follow_the_range_and_need_the_labs_toggle() {
         Library::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meetings"));
     let meeting = library.meeting("1790000500000-1002").unwrap();
     let range = OffsetRange::parse(Some("0:06"), Some("14")).unwrap();
-    let srt = render_subtitles(meeting.entries_in(range, NOW).unwrap(), SubtitleFormat::Srt);
+    let srt = render_subtitles(
+        meeting.entries_in(range, NOW).unwrap(),
+        Labels::default(),
+        SubtitleFormat::Srt,
+    );
     assert!(srt.starts_with("1\n00:00:05,500 --> "), "{srt}");
     assert!(srt.contains("\n2\n00:00:13,000 --> "), "{srt}");
     assert!(srt.contains("You: Performance profiling"), "{srt}");
     assert!(srt.contains("Them: Agreed."), "{srt}");
     assert!(!srt.contains("\n3\n"), "{srt}");
 
-    assert!(require_subtitle_export(true).is_ok());
-    assert!(
-        require_subtitle_export(false)
-            .unwrap_err()
-            .to_string()
-            .contains("hex labs on subtitle-export")
-    );
     assert_eq!(SubtitleFormat::from_flags(false, false), None);
     assert_eq!(
         SubtitleFormat::from_flags(false, true),
@@ -717,6 +832,14 @@ fn parses_release_commands_and_rejects_invalid_limits_and_times() {
         vec!["hex", "meetings", "list", "--json"],
         vec!["hex", "meetings", "show", "latest", "--md"],
         vec!["hex", "meetings", "search", "problems"],
+        vec![
+            "hex",
+            "meetings",
+            "search",
+            "--meeting",
+            "latest",
+            "problems",
+        ],
         vec!["hex", "meetings", "chapters", "latest", "--json"],
         vec![
             "hex",
@@ -771,4 +894,98 @@ fn parses_release_commands_and_rejects_invalid_limits_and_times() {
         crate::meeting::query::parse_time("2026-10-20T12:00:00.123456Z", NOW, false).unwrap(),
         second + 123
     );
+}
+
+#[test]
+fn meetings_search_with_meeting_flag_scopes_to_that_meeting() {
+    let meetings_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meetings");
+    let root = temp();
+    let dest = root.join("meetings");
+    copy_dir_all(&meetings_dir, &dest);
+
+    let mut all = Vec::new();
+    meetings_to(
+        &root,
+        &MeetingsCommand::Search {
+            query: "cron".into(),
+            meeting: None,
+            since: None,
+            until: None,
+            limit: 10,
+        },
+        NOW,
+        &mut all,
+    )
+    .unwrap();
+    let all = String::from_utf8(all).unwrap();
+    assert!(all.contains("1790000000000-1001"), "{all}");
+    assert!(all.contains("1790001000000-1003"), "{all}");
+
+    let mut scoped = Vec::new();
+    meetings_to(
+        &root,
+        &MeetingsCommand::Search {
+            query: "cron".into(),
+            meeting: Some("1790000000000-1001".into()),
+            since: None,
+            until: None,
+            limit: 10,
+        },
+        NOW,
+        &mut scoped,
+    )
+    .unwrap();
+    let scoped = String::from_utf8(scoped).unwrap();
+    assert!(scoped.contains("1790000000000-1001"), "{scoped}");
+    assert!(!scoped.contains("1790001000000-1003"), "{scoped}");
+
+    // Unknown meeting id fails clearly instead of searching everything.
+    let mut missing = Vec::new();
+    assert!(
+        meetings_to(
+            &root,
+            &MeetingsCommand::Search {
+                query: "cron".into(),
+                meeting: Some("does-not-exist".into()),
+                since: None,
+                until: None,
+                limit: 10,
+            },
+            NOW,
+            &mut missing,
+        )
+        .is_err()
+    );
+
+    // `latest` resolves like `meetings show latest`.
+    let mut latest = Vec::new();
+    meetings_to(
+        &root,
+        &MeetingsCommand::Search {
+            query: "cron".into(),
+            meeting: Some("latest".into()),
+            since: None,
+            until: None,
+            limit: 10,
+        },
+        NOW,
+        &mut latest,
+    )
+    .unwrap();
+    let latest = String::from_utf8(latest).unwrap();
+    assert!(!latest.contains("1790000000000-1001"), "{latest}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let target = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir_all(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }

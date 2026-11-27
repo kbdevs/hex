@@ -37,7 +37,11 @@ Release (push to dev: dev channel; workflow_dispatch on dev: channel check | dev
 ├─ sign-macos               Developer ID inside-out, notarize + staple, ZIP + DMG (sign-macos.sh)     [release]
 ├─ verify-macos             validate-app.sh, Gatekeeper, updater requirement, launch                 [build]
 ├─ sign-windows             Azure Artifact Signing of both hex.exe, Authenticode check                [release]
-├─ installers               windows-installers.yml: Setup.exe around them, tested on x64 + ARM64      [build]
+├─ setup-engine             windows-setup-engine.yml (signed runs): the unsigned setup engine      [build]
+│                           ISCC asks to sign
+├─ sign-windows-engine      Azure Artifact Signing of that setup engine (Smart App Control)            [release]
+├─ installers               windows-installers.yml: Setup.exe around them + the signed engine,        [build]
+│                           tested on x64 + ARM64
 ├─ sign-windows-installers  Azure Artifact Signing of both Setup.exe                                  [release]
 ├─ check-linux, -macos,     stable, check: the full suites on the candidate (check-<os>.yml, called   [build]
 │  -windows                 here; pull requests only compile, dev pushes run no checks)
@@ -177,7 +181,7 @@ secrets; the `homebrew` job pushes that verified file with the tap deploy key
   Windows targets (the run summary says so); Linux needs no signing. It
   publishes only the release: no GitHub release, AUR, Homebrew, Nix record,
   or site deploy. Publishing a dev build is not a release: it leaves
-  `production`, the stable channel, and the release freeze alone. Installs on
+  `production` and the stable channel alone. Installs on
   the Dev channel check every 10 minutes and when the window opens or gains
   focus (at most once a minute), so a push reaches them within minutes of its
   run finishing.
@@ -203,33 +207,64 @@ the same OIDC identity.
 Publish from `dev`. `production` is for site deploys only and moves by
 fast-forward from `dev`.
 
-1. Bump `version` in `Cargo.toml` (and `Cargo.lock`), add
-   `docs/releases/<version>.md`, push to `dev`. Run
-   `scripts/check-onboarding.sh` on that commit and give Dax its result and
-   scene images with the go/no-go; stable releases need his explicit go-ahead.
-2. Let the push to `dev` publish its dev-channel build
-   (`https://anoma.ly/release/hex/desktop/dev.json`) and try it on an install
-   set to the Dev update channel.
-3. Confirm the reviewed commit is still the tip of `dev`. Dispatch Release on
-   `dev` with `channel: stable` and check the run's SHA. After publishing,
-   the workflow tags that commit `v<version>`.
-4. Bump the README version link. The site reads the release from the service
-   when it deploys. Fast-forward `production` when ready to deploy the site;
-   dispatch Deploy there if the push did not touch a site deploy path.
-5. First release on the service only: set the informational item's version in
+A stable release is one Release Radar thread in `#abattoir`: the pre-flight
+and the draft notes are posted there, Kit or Dax approves there, and the
+announcement closes it. Steps 1 and 2 need no one's go-ahead and publish
+nothing; nothing after them starts before the approval in step 3.
+
+```ts
+Release Radar (one #abattoir thread per stable release)
+├─ 1 pre-flight   Release, channel: check, on the tip of dev        publishes nothing
+├─ 2 draft        prep PR: version bump + docs/releases/<version>.md
+├─ 3 approve      check run, onboarding scenes, and notes in the thread → go from Kit or Dax
+├─ 4 release      merge the prep PR → Release, channel: stable → tag v<version>
+├─ 5 site         fast-forward production → Deploy → download buttons and /hex/changelog
+└─ 6 announce     the thread gets the changelog and GitHub release links
+```
+
+1. Pre-flight. Dispatch Release on `dev` with `channel: check`
+   (`gh workflow run release.yml --ref dev -f channel=check`). It builds,
+   signs, and verifies every platform, runs the full Linux, macOS, and
+   Windows suites and the onboarding gate (`scripts/check-onboarding.sh`),
+   and publishes nothing. Every push to `dev` has already published its
+   dev-channel build (`https://anoma.ly/release/hex/desktop/dev.json`), so
+   installs on the Dev update channel are running the candidate.
+2. Draft. Open the prep pull request: bump `version` in `Cargo.toml` (and
+   `Cargo.lock`) and add `docs/releases/<version>.md`. That file is the
+   release's notes everywhere: the GitHub release's body and the release's
+   entry on `https://anoma.ly/hex/changelog`
+   (`site/src/changelog.ts`: a `## Hex <version>` title, `###` sections such
+   as new, labs, and fixes, bullets, and `>` callouts for upgrade notes).
+3. Approve. Post the check run, the onboarding result with its scene images,
+   and the prep pull request in the release's `#abattoir` thread. A stable
+   release needs an explicit go there from Kit or Dax.
+4. Release. Merge the prep pull request, confirm it is the tip of `dev`, and
+   dispatch Release on `dev` with `channel: stable`
+   (`gh workflow run release.yml --ref dev -f channel=stable`); check the
+   run's SHA. It runs the suites and the onboarding gate again on that commit,
+   and after publishing tags it `v<version>`.
+5. Site. Fast-forward `production` to the released commit. Deploy rebuilds
+   the site there: the download buttons read the new stable release from the
+   service, and `/hex/changelog` gains the release from its notes file, with
+   nothing to edit by hand. `README.md` links the version-less
+   `/hex/download/<target>` routes, so it needs no bump. `docs/releases/` is
+   not a site deploy path: dispatch Deploy on `production` when the
+   fast-forward brought no `site/` change.
+6. Announce. Reply in the thread with
+   `https://anoma.ly/hex/changelog#<version>` and the GitHub release once the
+   site shows the release.
+7. First release on the service only: set the informational item's version in
    `packaging/macos/legacy-appcast.xml` (a 2.4.0 / build 20400 placeholder) to
    the release, push it, deploy the old hosts' redirect, and publish the
    item for 2.3.1 Macs (both below, "Transition from Kit's hosting").
 
-The first Anomaly-signed macOS release also changes the bundle ID to
-`anomaly.hex` (docs/plans/macos-signing.md). Its notes must tell Mac users
-that macOS sees a new app: grant Microphone, Accessibility, and (for
-meetings) Screen & System Audio Recording once more, removing any
-stale Hex entry in System Settings first; turn Launch at login on again; and
-point `DisableUpdates` profiles at `anomaly.hex`. Settings, history, and
-models do not carry over from 2.3.1 on any OS: 2.3.1 kept them in
-`voice-control`, and Hex now reads only `hex` and imports nothing. Decide how
-2.3.1 installs reach it first (same doc, "Existing installs").
+The Anomaly-signed macOS bundle uses `anomaly.hex` (SDK helper
+`anomaly.hex.service`, virtual microphone driver `anomaly.hex.microphone.driver`,
+test build `anomaly.hex.test`). Compared to 2.3.1 (`com.kitlangton.hex2`),
+macOS treats `anomaly.hex` as a new app (fresh Microphone, Accessibility,
+Screen & System Audio Recording, Launch at login, and `DisableUpdates`
+managed-preference domain), while settings, history, and models live in `hex`
+(2.3.1's `voice-control` is not imported).
 
 Versions are display text and never compared: each channel has one current
 release, which installs follow.
@@ -248,6 +283,7 @@ cloudflare.config.ts (cf deploy --prebuilt --mode <mode>, from CI only)
 https://anoma.ly/hex/                      the site; downloads read the service's stable manifest at build time
 ├─ download/dev                            302 to the dev channel's macos-arm64-dmg, read per request
 ├─ dev                                     the dev builds' changelog, rendered per request from the dev-notes branch
+├─ changelog                               the stable changelog, built with the site from docs/releases/<X.Y.Z>.md
 ├─ install-linux.sh, install-windows.ps1   the installers, copied from .github/release/ at build time
 └─ files/                                  the one owner of every release file (below)
    ├─ install-linux.sh, install-windows.ps1, appcast.xml   built and served with the site
@@ -345,11 +381,14 @@ app (new updater, and on macOS a new bundle ID), so:
   `packaging/macos/legacy-appcast.xml`, served by the site build: one
   informational item that tells 2.3.1 users to download the new Hex from
   https://anoma.ly/hex (no enclosure, so Sparkle installs nothing). Edit that
-  file and push; Deploy serves it. Superseded (Kit, 2026-11-02): the 2.3.1
-  and Swift feeds offer the released ZIP itself, signed with their old Sparkle
-  key, so Install Update moves those Macs onto the new Hex
-  (docs/plans/swift-app-handoff.md, "Legacy Update"). Keep `SUPublicEDKey` in
-  `app/Info.plist`.
+  file and push; Deploy serves it. Superseded (2026-11-02): the 2.3.1
+  (`com.kitlangton.hex2`) and Swift (`com.kitlangton.Hex`) feeds offer the
+  released `Hex.app` ZIP signed with their shared EdDSA key
+  (`CFBundleVersion` >= 30300, `sparkle:minimumSystemVersion` 15.0, `arm64`),
+  so Sparkle's Install Update replaces the old app in place; once setup is
+  ready, `anomaly.hex` asks any running retired Hex bundle to quit without
+  importing Swift data. Keep `SUPublicEDKey` in `app/Info.plist`
+  (`scripts/validate-app.sh` enforces it).
 - **Windows signer:** the updater accepts only a Valid Authenticode signature
   whose signer is `AUTHENTICODE_SIGNER` in `src/updater/windows.rs` (OpenCode's
   Artifact Signing subject). Check the first Azure-signed Hex build's subject
@@ -420,7 +459,7 @@ jobs that run repository code.
 | `shared/AUR_SSH_KEY` | pushes `hex-bin`; one key for every Anomaly AUR package (`github-actions-hex-aur`) |
 | `shared/HOMEBREW_TAP_DEPLOY_KEY` | pushes `Casks/hex.rb`; one deploy key on `anomalyco/homebrew-tap` for every app (`anomaly-release`) |
 | vars `AZURE_*` | Authenticode (docs/windows-signing.md); not secrets, `azure/login` uses OIDC |
-| `shared/APPLE_SIGNING_CERTIFICATE`, `shared/APPLE_NOTARY_KEY`, vars `APPLE_NOTARY_*` | macOS signing and notarization (docs/plans/macos-signing.md) |
+| `shared/APPLE_SIGNING_CERTIFICATE`, `shared/APPLE_NOTARY_KEY`, vars `APPLE_NOTARY_*` | macOS signing and notarization (team `5NZ4Q7NXJ4`) |
 | `hex/release/RELEASE_SIGNING_KEY` | ed25519 PEM; signs each Linux executable (`<target>-sig`), public key `.github/release/linux-signing.pub` and `src/updater/linux.rs` |
 | `SPARKLE_ED_PRIVATE_KEY` | old 2.3.1 appcast key; unused, kept for old clients |
 

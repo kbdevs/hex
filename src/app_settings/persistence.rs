@@ -4,11 +4,11 @@
 //! those bytes beside the original, including when a migration is first.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use color_eyre::eyre::{Result, eyre};
 use serde::Deserialize;
@@ -21,8 +21,7 @@ use crate::policy::Policy;
 
 // A settings editor and a background migration may save at the same time.
 static WRITER: Mutex<u64> = Mutex::new(0);
-static COMMITTED_REVISIONS: LazyLock<Mutex<HashMap<PathBuf, u64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static COMMITTED_REVISION: AtomicU64 = AtomicU64::new(0);
 
 /// Load provenance travels with a snapshot, but isn't a preference and never
 /// participates in settings equality or serialization.
@@ -133,6 +132,47 @@ impl AppSettings {
         Self::read_managed_from(path, Policy::current())
     }
 
+    /// Publishes the saved values the embedded transcription service reads:
+    /// the Labs switches transcription checks (Labs › Vocabulary help
+    /// gates the list), the vocabulary and its boost, and, on Linux and
+    /// Windows, the speech engine. `hex transcribe` and the TypeScript SDK's
+    /// direct child start that service without the app's launch, so nothing
+    /// else publishes these for it; this writes nothing.
+    pub(crate) fn apply_for_embedded_service() -> Option<Self> {
+        let path = match path() {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "could not read settings; transcribing without the saved vocabulary"
+                );
+                return None;
+            }
+        };
+        Self::apply_for_embedded_service_at(&path)
+    }
+
+    /// `apply_for_embedded_service` from `path`, returning the settings it
+    /// published so a test can assert on them without the process globals.
+    pub(crate) fn apply_for_embedded_service_at(path: &Path) -> Option<Self> {
+        let settings = match Self::read_from(path) {
+            Ok((settings, _)) => settings,
+            Err(error) => {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    path = %path.display(),
+                    "could not read settings; transcribing without the saved vocabulary"
+                );
+                return None;
+            }
+        };
+        crate::labs::apply(&settings.labs);
+        crate::dictation::vocabulary::apply(&settings.vocabulary, settings.vocabulary_boost);
+        #[cfg(not(target_os = "macos"))]
+        crate::transcription::local_transcriber::set_device(settings.transcription_device);
+        Some(settings)
+    }
+
     pub(super) fn read_managed_from(path: &Path, policy: Policy) -> Result<(Self, bool)> {
         let mut revision = WRITER.lock().unwrap_or_else(|error| error.into_inner());
         let (mut settings, migrated, issue) = Self::read_managed_checked_from(path, policy)?;
@@ -176,10 +216,11 @@ impl AppSettings {
         settings.repair_bare_primary_clicks();
         #[cfg(target_os = "macos")]
         settings.repair_mouse_shortcuts();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         settings.repair_special_keys();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         settings.repair_section_key();
+        settings.repair_microphone_key();
         settings.normalize_double_tap_settings();
         settings.repair_extra_dictation_shortcuts();
         // After every repair that can put Annotate back on its default
@@ -195,14 +236,6 @@ impl AppSettings {
         }
         settings.apply_one_time_migrations();
         settings.normalize_transcription_recents();
-        // Labs › Browser access to the local API: an entry that isn't an
-        // absolute HTTP(S) origin is ignored, never widened into a match.
-        let origins =
-            crate::app_settings::normalize_browser_origins(&settings.labs.api_browser_origins);
-        if origins != settings.labs.api_browser_origins {
-            warn("labs.api_browser_origins", "not an http(s) origin");
-            settings.labs.api_browser_origins = origins;
-        }
         settings
             .keyboard_model_switching
             .mappings
@@ -230,6 +263,11 @@ impl AppSettings {
         // keep their existing write-on-load behavior for healthy settings.
         let migrated =
             !repaired && (!hints.is_empty() || serde_json::to_value(&settings)? != loaded);
+        // After every repair above, and after the migration check so this
+        // repair alone never rewrites the file: a saved shortcut on the
+        // dictation chord is cleared on every load, and only leaves the file
+        // at its next save.
+        settings.clear_shortcuts_sharing_dictation();
         Ok((settings, migrated, issue))
     }
 
@@ -265,13 +303,13 @@ impl AppSettings {
         let mut merged = json(&current)?;
         merge(&mut merged, &json(self)?, &json(candidate)?);
         let mut merged: Self = serde_json::from_value(merged)?;
+        // The merge can land the dictation shortcut on a shortcut the file
+        // already had, so both are held to the same rule a load repairs.
+        merged.clear_shortcuts_sharing_dictation();
         merged.write_locked(path, policy)?;
         policy.enforce(&mut merged);
         stamp(&mut merged, path, true, &mut revision);
-        COMMITTED_REVISIONS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(path.to_owned(), merged.source.revision);
+        COMMITTED_REVISION.store(merged.source.revision, Ordering::Release);
         merged.apply_runtime();
         Ok(merged)
     }
@@ -284,16 +322,10 @@ impl AppSettings {
             return Ok(None);
         };
         let (settings, issue) = Self::load_checked_from(path)?;
-        let committed_revision = COMMITTED_REVISIONS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(path)
-            .copied()
-            .unwrap_or(0);
         if issue.is_none()
             && (!self.source.writable
                 || settings != *self
-                || self.source.revision < committed_revision)
+                || self.source.revision < COMMITTED_REVISION.load(Ordering::Acquire))
         {
             settings.apply_runtime();
             Ok(Some(settings))
@@ -358,6 +390,16 @@ impl AppSettings {
                         "summarize_with_apple_intelligence",
                     ][..],
                 ),
+                (
+                    "/labs",
+                    &[
+                        "stop_when_call_ends",
+                        "meeting_descriptive_filenames",
+                        "meeting_notes_file",
+                        "expire_meeting_audio",
+                        "yearly_stats",
+                    ][..],
+                ),
             ] {
                 if let Some(Value::Object(object)) = original.pointer_mut(parent) {
                     for key in keys {
@@ -381,6 +423,8 @@ impl AppSettings {
         let mut saved = saved.map_or_else(Self::default, |data| decode(data).0);
         // A file from before `meetings.summaries` keeps its choice under a lock.
         saved.migrate_meeting_summaries();
+        // A file from before Yearly stats merged keeps its choice too.
+        saved.migrate_yearly_stats_lab();
         let mut written = self.clone();
         policy.keep_saved(&mut written, &saved);
         Cow::Owned(written)

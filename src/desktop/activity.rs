@@ -106,6 +106,10 @@ pub(crate) fn failure_explanation(message: &str) -> String {
         .to_owned()
     } else if message.contains(crate::audio::NO_MICROPHONE_ERROR) {
         crate::desktop::i18n::tr("No microphone is available. Connect a microphone.").to_owned()
+    } else if crate::paste::refused_by_macos(message) {
+        crate::desktop::i18n::tr(crate::paste::POST_EVENT_REFUSED).to_owned()
+    } else if crate::paste::blocked_by_windows(message) {
+        crate::desktop::i18n::tr(crate::paste::WINDOWS_PASTE_BLOCKED).to_owned()
     } else {
         message.to_owned()
     }
@@ -172,6 +176,7 @@ pub(crate) fn event_summary(event: &VoiceEvent) -> String {
                 DictationPhase::Cancelled => "Dictation was cancelled".into(),
                 DictationPhase::Transcribing => "Dictation is being transcribed".into(),
                 DictationPhase::Pasted => text_or("Dictation paste sent", text),
+                DictationPhase::Copied => text_or("Dictation copied to the clipboard", text),
                 DictationPhase::Printed => text_or("Dictation was printed", text),
                 DictationPhase::Edited => text_or("Selected text was edited", text),
                 DictationPhase::VoiceAction => text_or("Voice Action completed", text),
@@ -394,6 +399,16 @@ mod tests {
         assert_eq!(
             failure_explanation("OpenCode generation failed"),
             "OpenCode generation failed"
+        );
+        assert_eq!(
+            failure_explanation(crate::paste::POST_EVENT_REFUSED),
+            crate::desktop::i18n::tr(crate::paste::POST_EVENT_REFUSED),
+            "a refused paste names the pane to add Hex to"
+        );
+        assert_eq!(
+            failure_explanation(crate::paste::WINDOWS_PASTE_BLOCKED),
+            crate::desktop::i18n::tr(crate::paste::WINDOWS_PASTE_BLOCKED),
+            "a blocked Windows paste says the words are on the clipboard"
         );
     }
 }

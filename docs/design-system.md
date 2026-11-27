@@ -12,7 +12,9 @@ language:
   style, and motion token (`rune_theme_opencode::kit(dark)`), which is
   `@opencode/ui`'s tokens as data. Hex follows the system appearance, so every
   view works in light and dark; Labs › Appearance can force the main window
-  light or dark, while the HUD and other overlays keep following the OS.
+  light or dark. The dictation HUD (including its previews) and the meeting
+  recording pill (including its expanded controls and finished summary) always draw dark. Other
+  overlays follow the OS.
 
 The window follows OpenCode Desktop's layout: a deep-background sidebar and a
 raised, rounded content panel. Hex keeps its own information, sections, and
@@ -61,6 +63,103 @@ by a Rune overlay's compositor on every OS, hand-tuned in HUD Lab.
    fill and the detail swap in that frame (`select_at_once`).
 6. **Verify by looking.** Render every view you touched with a `--snap` scene
    in light and dark (see [Verification](#verification)).
+7. **Sizes come from `METRICS`, `MODAL`, and `CAPSULE`; a new number is a
+   new token with a name.** Row heights are tokens (`min_h` + `center_y`),
+   never hand-typed vertical padding. Avoid off-scale spacing literals,
+   non-token radii (`>= 3`), ad-hoc `TextStyle::new`, `.mono()`, and private
+   `PADDING`/`MODAL_WIDTH`/`STATS_WIDTH` constants in `src/rune_ui/`.
+
+## Spatial scale (4 pt base)
+
+Base 4 pt. Allowed steps: **2** (title to its description, row to row), **4, 8,
+12, 16, 24, 32, 48**. 6, 10, and 14 exist only as derived concentric capsule
+values and inside kit controls. Two rails per side govern the window: card edge
+(16) and text/control rail (32). Modals reuse the same rails.
+
+| Token | Value | Use |
+|---|---:|---|
+| `METRICS.gutter` | 32 | Text rail: pane title, section labels, row text, modal titles and footers |
+| `METRICS.row_px` | 16 | Row inset inside cards; card edge = `gutter - row_px` (16) |
+| `METRICS.section_gap` | 24 | Between sections on a page |
+| `METRICS.label_gap` | 8 | Section label to its card |
+| `METRICS.header_h` | 52 | Pane header height |
+| `METRICS.row_h_compact` | 28 | Sidebar item, menu row |
+| `METRICS.row_h` | 48 | One-line setting row |
+| `METRICS.row_h_described` | 60 | Title + description setting row |
+| `METRICS.item_h` | 52 | Two-line list item in split panes |
+| `METRICS.icon` / `icon_lead` | 16 / 28 | Leading icon and icon column in settings rows and list rows |
+| `METRICS.list_w` / `split_gap` | 320 / 12 | List + detail fixed list width and split gap |
+| `METRICS.detail_pad` | 24 | Detail card padding on all sides |
+| `METRICS.fact_label_w` | 120 | Fact label column width |
+| `METRICS.copy_w` | 280 | Centred empty-state and option copy width |
+| `ModalWidth::{Narrow, Medium, Wide}` | 460 / 560 / 640 | Sounds, Stats / Calls, Auto-send rules / Shortcut mode, Vocabulary |
+| `MODAL.{top, bottom, gap, margin}` | 20 / 16 / 16 / 24 | Modal vertical rhythm and window clearance |
+| `CAPSULE.radius` / `window_inset` | 14 / 4 | Capsule shell radius and transparent window margin |
+| `CAPSULE.{chip, row, button}_inset` | 4 / 6 / 8 | Concentric inner insets (radii 10 / 8 / 6) |
+| `CAPSULE.row_px` / `text_rail()` | 10 / 16 | Text rail matches `METRICS.row_px` (icon spine 24, label rail 40) |
+| `CAPSULE.{header_h, row_h, row_gap}` | 36 / 44 / 2 | Recording and ready panel vertical rhythm |
+| `CAPSULE.{island_h, banner_h, close, panel_w}` | 40 / 44 / 28 / 252 | Island, banner, ✕ hit box, and panel width |
+| `overlay_dock::GAP` | 8 | Between floating surfaces sharing a screen edge (meeting capsules, Annotate, the HUD; [capture.md](features/capture.md#overlay-dock)) |
+
+## Concentric radius system
+
+`R_inner = R_outer - inset` whenever the inner shape sits closer to the corner
+than `R_outer`; equal insets on both axes at a corner. When `inset >= R_outer`
+the inner shape is free and takes its component's own token.
+
+| Shape | Radius | Token | Proof |
+|---|---:|---|---|
+| Badge, tone tag | 2 | `radius.xs` | |
+| Sidebar item, small button, value button | 4 | `radius.sm` | |
+| Push button, select, text field, list row fill, error panel | 6 | `radius.md` | |
+| Card, detail card, window content panel, empty-state badge | 8 | `radius.lg` | Sits 16 inside the panel: free |
+| Modal, picker | 10 | `radius.xl` | Cards sit 16 inside: free, stay 8 |
+| Capsule shell (island, banner, panel, list, popover, toolbar, the recording pill at rest and open) | 14 | `CAPSULE.radius` | One silhouette: a capsule that opens changes its size, never its corners |
+| Capsule chip, inset 4 | 10 | `radius.xl` | `14 - 4` (compile-time assert) |
+| Capsule row, inset 6 | 8 | `radius.lg` | `14 - 6` (compile-time assert) |
+| Capsule push button, inset 8 | 6 | `radius.md` | `14 - 8` (compile-time assert) |
+| Dot, knob, switch | `h / 2` | pill | |
+
+## Typography by role
+
+Six sizes: 22 (headline), 18 (display), 14, 13, 12, 11. Never place two styles of the same
+size beside each other to make hierarchy; step size (13 over 12) or colour.
+Use `p.tabular(...)` (`'tnum' 1`) on any number that changes in place or
+stacks in a column; reserve `ty.mono` for code, paths, and commands only.
+
+| Role | Helper / Token | Colour |
+|---|---|---|
+| Pane title, modal title, kind detail title | `p.title()` (`ty.body_medium`, 14/500/21) | `text_base` |
+| Document title leading its own full-width column (meeting name) | `ld::card_heading` (`HEADLINE`, 22/600/28, tracking −0.3) | `text_base` |
+| User-content detail title, stat number | `p.display()` (`DISPLAY`, 18/600/24; `p.tabular` for stats) | `text_base` |
+| Document body: transcript, summary | `p.k.ty.body` (14/400/21) | `text_base` |
+| Section label above a card, row value | `p.label()` (`ty.ui_medium` lh 16) | `text_muted` / `text_base` |
+| Heading inside a detail, list title, capsule title/primary row, button | `p.strong()` (`ty.ui_medium`, 13/530/20) | `text_base` |
+| Row title, sidebar item, capsule secondary row | `p.row_title()` (`ty.ui`, 13/440/20) | `text_base` / `text_muted` |
+| Description, note, detail meta, capsule detail/summary, empty hint | `p.description()` (`DESCRIPTION`, 12/440/16) | `text_muted` |
+| List item meta, sidebar footer, "Copied" hint | `p.meta()` (`ty.small`, 11/440/12) | `text_muted` / `text_faint` / `success` |
+| List time, transcript timestamp | `p.tabular(p.meta())` | `text_faint` |
+| Group label, speaker label, tag | `p.k.ty.small_medium` (11/530/12) | `text_faint` / `text_muted` / tone |
+| Timer, elapsed time, countdown | `p.clock()` (`ty.ui_medium` + tnum) | `text_muted` |
+| Code, paths, commands | `p.k.ty.mono` (12/400/18) | `text_muted` / `text_faint` |
+
+## Capsule grammar
+
+| Part | Rule |
+|---|---|
+| Shell | `CAPSULE.radius` (14), `bg_base`, hair `border_base`, `elevation.overlay`, 4 pt transparent window inset |
+| Island (one line) | 40 high; 32 pt chips at inset 4, radius 10; `p.strong()` labels |
+| Banner (offer, reminder, call ended) | 44 high (56 for two lines); 28 pt push buttons at inset 8, gap 8; Primary last |
+| Panel | 252 wide; header 36; 44 pt rows, radius 8, at inset 6, 2 apart; text rail 16 |
+| Row | 16 pt icon, 8 gap; lead action = `p.strong()` in `text_base`, no rest fill; `p.row_title()` in `text_muted` for the rest; every row fills with `hover` only under the pointer |
+| Title band | `p.strong()` title, `p.tabular(p.meta())` meta 2 below; a 14 pt ↗ trails the title at 0.6, whole on hover; link hover keeps 8 pt clear below |
+| Foot link (open recording) | Under the rows, 2 apart, radius 8: "Open in Hex" in `p.row_title()` `text_muted` on the 16 pt rail with the same ↗, 36 high; once the call has words, their last 3 lines in `p.description()` `text_muted`, anchored to the newest, the oldest fading out (`panel/peek.rs`) |
+| Icon slot (call ended, recording automatically) | 36 pt slot at inset 10 holding the 26 pt app icon (radius 6); the slot carries the state: an 8 pt `danger` dot ringed 2 pt in `bg_base` on the icon's bottom-right corner = recording live, a ring round the icon = ending |
+| Timer | `p.clock()`, 8 pt `status_dot` 6 before it |
+| ✕ | 28 pt box, `CLOSE_SMALL` in a `GhostMuted` icon button, centred on the icon spine (24) in panels and banners alike; destroys only after confirmation |
+| Confirmation | `capsule_confirm`: no icon, title + description on the 16 pt rail, equal-width Keep (neutral) and Danger buttons at inset 8, hugs content |
+| Countdown | Ring round the control that will act (✕, Undo, app icon); no drain bars |
+| Hint | `p.meta()` in `success` with a 12 pt check ("Copied") |
 
 ## Hex pieces
 
@@ -75,7 +174,8 @@ These live in [`rune_ui/controls.rs`](../src/rune_ui/controls.rs) and
 | A few exclusive choices / a dropdown | `segmented`, `select` |
 | A value whose choices open in a sheet, not a menu | `sheet_button` (the value and a trailing chevron) |
 | Main, other, and destructive actions | `button(…, ButtonKind::{Primary, Secondary, Danger}, …)`; inside a row: `small_button`; icon only (with an accessible label): `icon_button` |
-| How a modal enters and leaves | `modal_transition` on the surface (scale 0.96 and fade), `modal_scrim_transition` on its scrim |
+| Modal shell, scrim, and transition | `modal_panel` (`ModalWidth`, title on the text rail, footer on the control rail) inside `modal_sheet` (`modal_transition` scale 0.96 + fade, `modal_scrim_transition`) |
+| Capsule destructive confirmation | `capsule_confirm` (no icon, title + detail on the 16 pt rail, Keep / Danger buttons at inset 8, hugs content) |
 | Shortcut keycaps | `keycaps` (Small keys in a recessed tray as tall as a recorder); one live key that sinks when pressed: `keycap` inside `key_tray`; the recorder is `settings::hotkey_control` |
 | Status (never clickable) | `tone_tag`; a live or recorded state: `status_dot` |
 | Short message under a control | `note` |

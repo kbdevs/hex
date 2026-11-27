@@ -1,0 +1,185 @@
+# Settings and Home
+
+Part of [Hex for iPhone](../README.md).
+
+Home's single screen and the four Settings pages, the Labs list,
+and every `--snap-state` scene the app and the keyboard render.
+
+## Settings (`ContentView`, `HEXMobile/Settings/`)
+
+Home fits one screen: the
+Hex header, one status line ("Ready" with a check, or "Finish setup · 1 step ›"),
+Dictate, and four rows that each open a short page, then **iOS Settings ↗**
+(Hex's page in iOS Settings), **Run setup again** and **What's new** (see
+[What's new](#whats-new)), and last **Privacy
+policy**, **Support**, **Send feedback** (only in a build with a report key; see
+[Send feedback](#send-feedback)) and **Acknowledgements**. Privacy policy (App Review
+5.1.1(i)) and Support open in Safari inside Hex (`HexLinks`, one base URL:
+`https://dev.anoma.ly/hex` until the production site serves
+`anoma.ly/hex/privacy`). Each row has a one-line description at most. While Home or its
+setup sheet shows (and Hex is active), Home reads the setup state once a second
+(`KeyboardSetupMonitor.refresh`), as well as when Hex comes to the foreground and when the
+keyboard reports Full Access, so a change made with Hex still in front (the keyboard's Allow
+Paste flag in one of Hex's own fields, a keyboard added from Settings beside Hex in iPad
+Split View) shows within a second; on a Settings page it doesn't run. Home's speech model
+card opens Settings › Dictation at Speech model in keyboard; the page opened from Home's
+list starts at the top. The pages, one file each in `HEXMobile/Settings/`
+(`DictationSettingsPage`, `KeyboardSettingsPage`, `PrivacySettingsPage`,
+`ExperimentsSettingsPage`):
+
+- **Dictation:** Style, Dictation language and Translate what I say; under **Formatting**,
+  Lowercase, Format lists, and Spoken punctuation, Numbers as digits and End with a period,
+  those three hidden while Style is Verbatim, which ignores them (their values are kept);
+  **Live words** (iOS 26 and later): **Off**, **In bar** or **Into field**, one choice
+  stored in Show what I say's and Type as I speak's two App Group keys (`LiveDictationMode`:
+  Into field when Type as I speak's is on, In bar when only Show what I say's is, Off when
+  neither; picking one writes both, so the two together, which 1.0.4 allowed, keep working
+  until another is picked); then Clean up what I say and Custom vocabulary (below the
+  switch while it's on: its list, then the **Word replacements** and **Words file** rows,
+  and **Undo last import** while an import can still be undone; see
+  [dictation.md](dictation.md#word-replacements-and-hex-words-files-settings--dictation--custom-vocabulary));
+  and last Speech model in keyboard, then **Model**: **English** (the
+  default) or **Multilingual** (`SpeechModelChoice`, from Experiments until 2026-11-24, on
+  iPhones with 6 GB or more), with what the picked one means and its status below,
+  Keep mic warm and Microphone.
+- **Keyboard:** Keyboard, **Full** (the default) or **Dictation bar** (stored
+  as `FullKeyboardSettings.isEnabled`, App Group key `experiments.fullKeyboard`
+  from when the full keyboard was an experiment: unset or true is Full, false
+  the dictation bar, so testers who turned that experiment off keep the bar;
+  an iPad follows the same choice, where until build 117 it always showed the bar), with
+  Auto-start (Never, On switch by default, or Always) below it while the dictation bar is
+  chosen, and Languages, Hex key and Number row (off by default) while Full is; under
+  **Typing**, only while Full is chosen, Auto-capitalization, Autocorrect (with Spatial
+  autocorrect below it while it's on), Swipe typing, Suggest swear words and Vocabulary (Hex's
+  custom vocabulary list, how many words it holds); under **Feedback**, Key pop-ups (Full
+  only), Haptics (the dictation bar uses it too; Strength below it while it's on: Light, the
+  default until you choose, Medium or Strong; choosing one plays a key tick at it), Emoji key,
+  Emoji suggestions (Full only; the strip's emoji, with or without the key) and Clear emoji
+  history while either is on, which asks first; and a field to try the keyboard in.
+- **Privacy:** "Everything stays on this iPhone", Learn how I type (what it
+  learned below the switch), and under **Advanced**, Record typing logs (off
+  by default) with its Typing logs viewer while it's on; last, under **Feedback**, what
+  Send feedback sends and when (only in a build with a report key).
+- **Labs**, in four groups: **Dictation**: Two-language dictation, Voice isolation and Clean up with Apple Intelligence;
+  **Languages**: Hinglish (Hindi in Latin letters), Greeklish (Greek in Latin letters),
+  Korean keyboard (두벌식), Swipe typing in more languages and German spatial autocorrect
+  (greyed, its value kept, unless Autocorrect and Spatial autocorrect are on); **Keyboard
+  layout**: Comma and period keys, Dvorak punctuation keys, Quick accents, ABC under the
+  emoji key, Key colors (its Color menu below the switch while it's on) and Join the
+  keyboard when unfolded (only on a foldable iPhone, `FullKeyboardView.isFoldable`);
+  **Typing**: Adaptive touch (its status and Reset touch learning below the switch),
+  Two-thumb selection, Delete swiped words letter by letter, Hide word suggestions, Emoji
+  shortcodes and Learn each language separately. 21 switches, 20 on an iPhone that doesn't fold.
+  Last, **Send feedback**, for testers to say how an experiment went (only with a report key).
+
+Simulator scenes: `--snap-state settings-home` (ready), `settings-whats-new` (Home with What's new open), `setup` (keyboard
+added, Full Access not confirmed yet), `setup-sheet`, `setup-sheet-microphone`
+(before iOS has asked for the microphone), and
+`settings-<dictation|keyboard|privacy|experiments>[-on][-end]`, and
+`model-card-<waiting|downloading|ready>` (Home's speech model card, with English
+dictation and no keyboard limit, so nothing downloads),
+`settings-dictation-model-<english|multilingual>-<waiting|downloading|ready>` (Settings ›
+Dictation › Model with that model picked and its download in that state; waiting wants
+`--simulate-cellular`, which makes Hex read the connection as off Wi-Fi). Each settings scene writes
+its page's switches to the App Group: off by default, on with `-on`; switches that are
+on by default (Spatial autocorrect, Swipe typing, Emoji key, Emoji suggestions) stay on.
+`-end` starts the page scrolled to the bottom. `settings-privacy-confirm`
+opens Record typing logs' consent dialog. `--experiment-keyboard-themes` turns
+Key colors on, and `--keyboard-theme automatic|black|white|navy|forest|ember|burgundy`
+picks the theme. A theme colours the keys only (every keycap, special keys included, their
+pressed and held states, the key pop-ups and the labels), the same in light and dark; the
+background stays iOS's glass, matching the band iOS draws above a third-party keyboard and
+the globe row below it, and the strip, emoji panel, menus and dictation bar keep the system
+look.
+
+## What's new (`HEXMobile/WhatsNew/`)
+
+A sheet over Home, at full height with a grab bar: "What's new in Hex", then the release's
+items one under another, each a picture from the real app over a name and one sentence, and
+**Continue** kept at the bottom. Continue or swiping the sheet down closes it. Home's
+**What's new** row (under Run setup again) opens the same sheet any time.
+
+When it shows by itself (`WhatsNew`, `WhatsNewMoment`):
+
+- Each list belongs to the App Store version that brings it (`WhatsNew.releases`, newest
+  first). A build shows the newest list at or below its `CFBundleShortVersionString`, so
+  TestFlight's 9.0.0 shows the newest list too, once. A version without a list of its own
+  shows nothing new: the last list has shown by then.
+- Once: the list is marked seen (`whatsNew.seen` in Hex's own `UserDefaults`, the list's
+  version) as it appears. A lock or a quit part-way doesn't bring it back.
+- Never on a first run: when onboarding opened at launch (a new install, or setup left
+  part-way), the current list is marked seen as Home first shows after it. Someone
+  updating has `onboarding.completed`, so the list is due.
+- Only on a plain open, over Home itself: it waits 1 s after Hex comes to the front, then
+  shows only if no link opened Hex since it was last in the background (the keyboard's
+  hand-off or Open Hex, a Hex words file, setup), no setup sheet, Settings page or other
+  sheet is showing, nothing is recording or transcribing, Hex isn't asking for the
+  microphone and Hex is active. Otherwise it waits for the next open.
+- The keyboard never reads or shows it, and it downloads nothing.
+
+A release with something new adds one `WhatsNewRelease` at the top of `WhatsNew.releases`
+(its version, then each item's picture name, name, sentence and VoiceOver label, with
+Simplified Chinese in `Localizable.xcstrings`) and its pictures in
+`Assets.xcassets/WhatsNew/<name>.imageset`. Pictures are crops of real simulator
+screenshots, never drawn: dark (Hex is always dark), one JPEG at 3× (quality 82, 1206 px
+wide on an iPhone 18 Pro), with a `zh-Hans` variant where the picture shows Hex's own words.
+1.0.5's eight files are 336 KB. The 1.0.5 crops, from iPhone 18 Pro screenshots (1206 × 2622):
+
+| Picture | Scene | Crop (w×h+x+y) |
+| --- | --- | --- |
+| `languages` | `full-keyboard-typing-dark --keyboard-layout sv --dictation-language sv-SE` | 1206x800+0+1766 |
+| `emoji` | `full-keyboard-emoji-word-dark` (debug builds) | 1206x470+0+1766 |
+| `replacements` | Settings › Dictation › Custom vocabulary › Word replacements, three entries added by hand | 1206x530+0+1030 |
+| `kept` (and `zh-Hans`) | `full-keyboard-strip-stopped-dark` (debug builds) | 1206x470+0+1766 |
+| `key-colors` | `full-keyboard-typing-dark --experiment-keyboard-themes --keyboard-theme burgundy` | 1206x800+0+1766 |
+| `feedback` (and `zh-Hans`) | Home › Send feedback with Idea picked (a message typed in English) | 1206x780+0+250 |
+
+## Send feedback (`HEXMobile/Feedback/`)
+
+A form that sends one report to Bellhop, Anomaly's feedback inbox
+(`POST https://api.blhp.app/v1/feedback`, https://blhp.app/docs/feedback), from Home's
+**Send feedback** row (`metadata.screen` "Home") and the row at the end of Settings ›
+Labs ("Settings › Labs"). Only the app has it: the keyboard target has no
+feedback code or key and still makes no network request.
+
+```ts
+Send feedback (row)
+├─ draws Hex's key window (never the screen) → the form's first picture, JPEG
+└─ the form: Problem · Idea · Question · Other, subject, message, pictures (✕ removes;
+   Add opens the system photo picker, no permission, up to 5 in all), an optional email
+   (without one the feedback is anonymous), and what is sent in plain words
+   └─ Send → Idempotency-Key made now → multipart (payload JSON + screenshot parts), progress bar
+      ├─ 201 → Thanks; email "pending" → "you'll get an email if they reply, confirm once"
+      ├─ no connection / 5xx → retried (4 tries, 1 s, 2 s, 4 s), same body and key → offline words
+      ├─ 409 request_pending, 429 → after Retry-After (≤ 60 s), same key
+      ├─ 413, 415, 429 → kind words; 401, 403 feedback_disabled → "unavailable", logged as a fault
+      └─ other 4xx → not retried
+```
+
+- **Payload** (`FeedbackRequest.payload`): message, subject and category when set, app
+  (name, version, build), device (platform, os, model identifier, locale), metadata (screen,
+  dictation_language, speech_model: internal ids for the team, never shown). With an email:
+  the email and install_id (a random UUID in Hex's `UserDefaults`, `feedback.installID`,
+  made at the first such send). Without one: `anonymous: true`, no email, and no install_id
+  (none is made). A typed email that isn't an address stops Send until it's fixed or cleared. Never `user` (no accounts)
+  or `logs`, and nothing Hex keeps (typing logs, dictations, vocabulary, learned words,
+  recordings).
+- **Pictures** (`FeedbackImage`): re-encoded as JPEG at 80% with the longest side at most
+  2048 px (HEIC included). Limits are checked before sending: message 20,000 characters,
+  subject 200, 5 pictures, 10 MiB each, 20 MiB in all.
+- **Report key**: `BELLHOP_REPORT_KEY` in `HEXMobile/Feedback.xcconfig`, committed: a
+  Bellhop report key is publishable and safe to ship (Android keeps its own in
+  `android/gradle.properties`). It reaches the app as Info.plist's `BellhopReportKey`; no Swift
+  file holds it. A gitignored `HEXMobile/Feedback.local.xcconfig`, included after it, overrides
+  it: written locally, or by `ci_scripts/ci_post_clone.sh` from an Xcode Cloud
+  `BELLHOP_REPORT_KEY` secret if one is set. An empty key means no Send feedback row. To rotate
+  it, make a new key and revoke the old one in Bellhop › Settings › Report keys, change the
+  xcconfig (or set the override), and ship a build: builds with the old key then say feedback
+  is unavailable. Each send that works logs `feedback sent as #<number>` (subsystem
+  `anomaly.hex.mobile`, category `feedback`).
+- **Simulator proof** (debug builds only): `--feedback-log-request` writes each request
+  (headers without the key, the payload, each picture's bytes and pixel size) and each answer
+  to Documents/feedback-requests; `--feedback-key <key>` and `--feedback-endpoint <url>`
+  replace the key or address; `--feedback-drop-first-response` loses the first answer as a
+  dropped connection would; `--feedback-broken-image` cuts the last picture in half.
+- No unit test covers it: none of `HEXMobileTests`' files is about the app's networking.

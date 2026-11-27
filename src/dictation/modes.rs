@@ -1,5 +1,7 @@
 //! The Windows and Linux listeners' snapshot of the shared processing pipeline.
 
+pub(crate) mod output;
+
 use std::sync::atomic::AtomicBool;
 
 use url::Url;
@@ -21,7 +23,7 @@ impl ModeRuntime {
         let processing = &settings.dictation_processing;
         Self {
             profiles: Profiles::from_settings(processing),
-            // Labs › Voice prompt carries the browser host in its request,
+            // Labs › Rewrite by voice carries the browser host in its request,
             // so its mode runtime reads the page too.
             reads_page: uses_page(processing) || settings.labs.voice_prompt,
         }
@@ -71,6 +73,24 @@ impl ModeRuntime {
         processed.apply_transformations(transformations, context, cancelled, source);
         processed
     }
+
+    /// The local API's `process=global`: the same Global steps, without
+    /// Labs › Dictation style, which belongs to a dictation's own paste.
+    pub fn process_api_cancellable(
+        &self,
+        raw_text: &str,
+        language: &str,
+        context: &crate::dictation::context::ContextSnapshot,
+        transformations: &crate::personal_commands::TransformationClient,
+        cancelled: &AtomicBool,
+        source: crate::dictation::processor::Source,
+    ) -> Processed {
+        let mut processed = self
+            .profiles
+            .process_api_cancellable(raw_text, language, context, cancelled, source);
+        processed.apply_transformations(transformations, context, cancelled, source);
+        processed
+    }
 }
 
 /// The live mode runtime and transformation client a listener shares with
@@ -101,7 +121,7 @@ impl ProcessingState {
 /// Whether anything set up in `settings` looks at the focused page: a mode
 /// chosen by website, an OpenCode rewrite (its prompt names the site), or a
 /// script transformation (it receives the page address). Every OS asks the
-/// browser for its page only for one of these or Labs › Voice prompt (macOS
+/// browser for its page only for one of these or Labs › Rewrite by voice (macOS
 /// through `config::reads_browser`).
 pub(crate) fn uses_page(settings: &DictationProcessingSettings) -> bool {
     settings
@@ -117,36 +137,6 @@ pub(crate) fn uses_page(settings: &DictationProcessingSettings) -> bool {
                         .iter()
                         .any(|id| !crate::personal_commands::is_builtin_transformation(id))
             })
-}
-
-/// The history entry for one pasted dictation.
-pub fn history_draft(
-    raw_text: String,
-    processed: &Processed,
-    application: Option<String>,
-    audio_ms: u64,
-    inference_ms: u64,
-    total_ms: u64,
-    recording: Option<crate::history::Recording>,
-) -> crate::history::HistoryDraft {
-    crate::history::HistoryDraft {
-        kind: crate::history::HistoryKind::Dictation,
-        raw_text,
-        final_text: processed.text.clone(),
-        application,
-        processing: processed.observation.as_ref().map(|processing| {
-            crate::history::HistoryProcessing {
-                profile: processing.profile.clone(),
-                latency_ms: processing.latency_ms,
-                fallback: processing.fallback.clone(),
-            }
-        }),
-        audio_ms,
-        inference_ms,
-        total_ms,
-        recording,
-        model: crate::history::dictation_model(),
-    }
 }
 
 /// The speech model and language the mode matching the focused context
@@ -369,7 +359,10 @@ mod tests {
 
         assert_eq!(processed.text, "keep opencode exact.");
         let observation = processed.observation.as_ref().expect("transformation ran");
-        assert_eq!(observation.profile, "Custom transformations");
+        assert_eq!(
+            observation.profile,
+            crate::dictation::processor::CUSTOM_TRANSFORMATIONS
+        );
         assert_eq!(observation.fallback, None);
     }
 

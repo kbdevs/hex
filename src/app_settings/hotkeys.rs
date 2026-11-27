@@ -94,7 +94,7 @@ impl HotkeyModifiers {
         }
     }
 
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub const fn control() -> Self {
         Self {
             control: Some(ModifierSide::Either),
@@ -375,6 +375,11 @@ pub(super) const MOUSE_INPUT_CODES: std::ops::Range<u16> = 0x8000..0x8020;
 /// `^`, `´`, or `` ` ``.
 pub const ISO_SECTION_KEY_CODE: u16 = 10;
 
+/// macOS's virtual key code for the microphone (dictation) key in a laptop
+/// keyboard's top row, in F5's position. Every press reports it with
+/// SecondaryFn set, and it types nothing.
+pub const MICROPHONE_KEY_CODE: u16 = 176;
+
 impl HotkeyKey {
     /// macOS mouse buttons occupy a separate input-code range, beyond every
     /// native keyboard code used by macOS. A shared trigger code lets keyboard
@@ -400,6 +405,16 @@ impl HotkeyKey {
 
     pub fn is_mouse(&self) -> bool {
         MOUSE_INPUT_CODES.contains(&self.code)
+    }
+
+    /// ⌫ (Backspace) or Delete: macOS's Delete and Forward Delete key codes,
+    /// elsewhere the named keys.
+    pub fn is_erase(&self) -> bool {
+        if cfg!(target_os = "macos") {
+            matches!(self.code, 51 | 117)
+        } else {
+            matches!(self.name().as_str(), "backspace" | "delete")
+        }
     }
 
     /// A key identified by name on Windows and Linux.
@@ -472,6 +487,9 @@ pub(super) fn key_label(name: &str) -> String {
     let name = name.trim();
     if shortcut_repair::is_scroll_lock(name) {
         return "Scroll Lock".into();
+    }
+    if HotkeyKey::caps_lock_name(name) {
+        return "Caps Lock".into();
     }
     // `section`, as `hex settings` may name the § key.
     if name.eq_ignore_ascii_case("section") {
@@ -673,9 +691,14 @@ impl<'de> Deserialize<'de> for HotkeyBinding {
 }
 
 impl Default for HotkeyBinding {
-    /// Option on macOS, Ctrl+Space on Windows, Alt+Space on Linux, and
+    /// Option on macOS, Left Alt on Windows, Alt+Space on Linux, and
     /// Ctrl+Alt+Space on GNOME, whose window menu takes Alt+Space (#723), and
     /// on KDE Plasma, whose KRunner does (#898).
+    ///
+    /// Windows takes one modifier alone, and the left Alt sits under the
+    /// thumb where the Mac's Option does (#2278). It is the left one only:
+    /// Windows sends AltGr as a synthesized Left Ctrl plus Right Alt, and a
+    /// shortcut that took either Alt would press on every AltGr character.
     fn default() -> Self {
         #[cfg(target_os = "macos")]
         let binding = Self {
@@ -683,7 +706,13 @@ impl Default for HotkeyBinding {
             key: None,
         };
         #[cfg(target_os = "windows")]
-        let binding = Self::chord(HotkeyModifiers::control(), "space");
+        let binding = Self {
+            modifiers: HotkeyModifiers {
+                option: Some(ModifierSide::Left),
+                ..HotkeyModifiers::default()
+            },
+            key: None,
+        };
         #[cfg(target_os = "linux")]
         let binding =
             Self::linux_dictation_default(crate::linux::portal::desktop_takes_alt_space());
@@ -781,6 +810,34 @@ impl HotkeyBinding {
         binding
     }
 
+    /// Command-Shift-5, macOS's own screenshot toolbar (Labs › Screenshots
+    /// records with it): the "5" key's ANSI position. Elsewhere
+    /// Control-Shift-5, though nothing records there.
+    pub fn screenshot_record_default() -> Self {
+        #[cfg(target_os = "macos")]
+        let binding = Self {
+            modifiers: HotkeyModifiers {
+                command: Some(ModifierSide::Either),
+                shift: Some(ModifierSide::Either),
+                ..Default::default()
+            },
+            key: Some(HotkeyKey {
+                code: 23,
+                label: "5".into(),
+            }),
+        };
+        #[cfg(not(target_os = "macos"))]
+        let binding = Self::chord(
+            HotkeyModifiers {
+                control: Some(ModifierSide::Either),
+                shift: Some(ModifierSide::Either),
+                ..Default::default()
+            },
+            "5",
+        );
+        binding
+    }
+
     /// Escape, with no modifier.
     pub fn cancel_default() -> Self {
         #[cfg(target_os = "macos")]
@@ -795,20 +852,6 @@ impl HotkeyBinding {
         #[cfg(not(target_os = "macos"))]
         let binding = Self::chord(HotkeyModifiers::default(), "escape");
         binding
-    }
-
-    pub fn paste_meeting_default() -> Self {
-        Self {
-            modifiers: HotkeyModifiers {
-                option: Some(ModifierSide::Either),
-                control: Some(ModifierSide::Either),
-                ..Default::default()
-            },
-            key: Some(HotkeyKey {
-                code: paste_key_code(),
-                label: "V".into(),
-            }),
-        }
     }
 }
 
@@ -941,6 +984,12 @@ impl HotkeyBinding {
                 key.code == MOUSE_INPUT_CODES.start
                     || HotkeyKey::mouse_number(&key.label) == Some(1)
             })
+    }
+
+    /// ⌫ or Delete with no modifier: the recorder's gesture for turning a
+    /// shortcut off, never a shortcut itself.
+    pub fn is_bare_erase(&self) -> bool {
+        self.modifiers.is_empty() && self.key.as_ref().is_some_and(HotkeyKey::is_erase)
     }
 
     /// What the input layers match. On macOS a letter key follows its
@@ -1100,13 +1149,14 @@ impl RuntimeHotkey {
 }
 
 /// macOS virtual key codes whose events always carry SecondaryFn: F1–F20,
-/// the arrows, Home, End, Page Up, Page Down, Forward Delete, and Help.
+/// the arrows, Home, End, Page Up, Page Down, Forward Delete, and Help, plus
+/// the microphone (dictation) key on laptop keyboards.
 pub(super) fn key_reports_function_flag(code: u16) -> bool {
     const CODES: [u16; 30] = [
         122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
         123, 124, 125, 126, 115, 119, 116, 121, 117, 114,
     ];
-    CODES.contains(&code)
+    CODES.contains(&code) || code == MICROPHONE_KEY_CODE
 }
 
 pub fn modifiers_from_flags(flags: u64) -> HotkeyModifiers {
@@ -1240,99 +1290,13 @@ pub fn hotkey_conflicts(
         .any(|binding| candidate.overlaps(&binding))
 }
 
-impl AppSettings {
-    /// Whether `binding` overlaps a shortcut `slot` must not share: the other
-    /// active shortcuts (each active Labs › More dictation shortcuts row
-    /// included) and, where meetings exist (macOS), meeting paste. The two
-    /// capture shortcuts never share a key, on or off, since turning captures
-    /// on can't pull them apart. A saved Screenshots record shortcut and
-    /// Annotate's capture shortcuts never share a key, whether Annotate or the
-    /// Lab is on, since turning either on can't pull them apart.
-    pub fn hotkey_in_use(&self, slot: HotkeySlot, binding: &HotkeyBinding) -> bool {
-        let mut others = Vec::new();
-        if slot != HotkeySlot::Dictation {
-            others.push(self.dictation_hotkey.clone());
-        }
-        if slot != HotkeySlot::PasteLast
-            && let Some(paste) = &self.paste_last_hotkey
-        {
-            others.push(paste.clone());
-        }
-        if slot != HotkeySlot::RawDictation
-            && let Some(raw) = &self.raw_dictation_hotkey
-        {
-            others.push(raw.clone());
-        }
-        if slot != HotkeySlot::TypedText
-            && cfg!(target_os = "linux")
-            && self.labs.typed_text
-            && let Some(typed) = &self.typed_text_hotkey
-        {
-            others.push(typed.clone());
-        }
-        if slot != HotkeySlot::Cancel {
-            others.push(self.cancel_hotkey.clone());
-        }
-        if slot != HotkeySlot::SecondDictation
-            && self.labs.second_dictation_shortcut
-            && let Some(second) = &self.second_dictation_hotkey
-            // Linux and Windows register a key, so a keyless binding never
-            // runs there and takes no key from another shortcut.
-            && (cfg!(target_os = "macos") || second.key.is_some())
-        {
-            others.push(second.clone());
-        }
-        if cfg!(target_os = "macos") && self.labs.more_dictation_shortcuts {
-            for (index, row) in self.extra_dictation_hotkeys.iter().enumerate() {
-                if slot != HotkeySlot::ExtraDictation(index)
-                    && let Some(extra) = &row.binding
-                {
-                    others.push(extra.clone());
-                }
-            }
-        }
-        if slot != HotkeySlot::TerminalPaste
-            && cfg!(any(target_os = "windows", target_os = "linux"))
-            && self.labs.terminal_paste_shortcut
-            && let Some(terminal) = &self.terminal_paste_hotkey
-        {
-            others.push(terminal.clone());
-        }
-        if cfg!(target_os = "macos") && self.meetings.available() {
-            others.push(HotkeyBinding::paste_meeting_default());
-        }
-        #[cfg(hex_capture)]
-        if slot != HotkeySlot::Capture && self.capture_on() {
-            others.push(self.capture.hotkey.clone());
-        }
-        #[cfg(hex_capture)]
-        if slot != HotkeySlot::CaptureReplay
-            && cfg!(target_os = "macos")
-            && self.capture_on()
-            && self.labs.annotate_replay
-            && let Some(replay) = &self.capture.replay_hotkey
-        {
-            others.push(replay.clone());
-        }
-        if slot != HotkeySlot::Screenshot && cfg!(target_os = "macos") && self.labs.screenshots {
-            others.push(self.screenshots.hotkey.clone());
-        }
-        // A saved record shortcut and Annotate's own capture shortcuts never
-        // share a key, even with one of them off, so turning either on can
-        // never leave one of the two dead.
-        others.extend(self.screenshots_record_counterparts(slot));
-        hotkey_conflicts(binding, others)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RuntimeHotkeys {
     pub dictation: RuntimeHotkey,
     pub paste_last: Option<RuntimeHotkey>,
-    pub paste_meeting: Option<RuntimeHotkey>,
     /// The capture shortcut, while captures are on (`cfg(hex_capture)`).
     pub capture: Option<RuntimeHotkey>,
-    /// Labs › Annotate 15 s replay shortcut (macOS 27+), while on and bound.
+    /// Labs › Annotate last 15 seconds shortcut (macOS 27+), while on and bound.
     pub capture_replay: Option<RuntimeHotkey>,
     /// Dictate without processing, while it is bound.
     pub raw_dictation: Option<RuntimeHotkey>,
@@ -1340,6 +1304,9 @@ pub struct RuntimeHotkeys {
     pub typed_text: Option<RuntimeHotkey>,
     /// Labs › Second dictation shortcut, while it is on and bound.
     pub second_dictation: Option<RuntimeHotkey>,
+    /// Labs › Model switch shortcut, while it is on and bound to a saved
+    /// other model.
+    pub model_switch: Option<RuntimeHotkey>,
     /// Labs › More dictation shortcuts (macOS), while the Lab is on and each
     /// row is bound and shares no key.
     pub extra_dictation: [Option<RuntimeHotkey>; MAX_EXTRA_DICTATION_SHORTCUTS],
@@ -1360,12 +1327,12 @@ impl RuntimeHotkeys {
         let named: [_; Self::NAMED] = [
             Some(self.dictation),
             self.paste_last,
-            self.paste_meeting,
             self.capture,
             self.capture_replay,
             self.raw_dictation,
             self.typed_text,
             self.second_dictation,
+            self.model_switch,
         ];
         let mut all = [None; Self::NAMED + MAX_EXTRA_DICTATION_SHORTCUTS];
         all[..named.len()].copy_from_slice(&named);
@@ -1379,13 +1346,12 @@ impl Default for RuntimeHotkeys {
         Self {
             dictation: HotkeyBinding::default().runtime(),
             paste_last: Some(HotkeyBinding::paste_last_default().runtime()),
-            paste_meeting: crate::DEVELOPER_FEATURES_ENABLED
-                .then(|| HotkeyBinding::paste_meeting_default().runtime()),
             capture: None,
             capture_replay: None,
             raw_dictation: None,
             typed_text: None,
             second_dictation: None,
+            model_switch: None,
             extra_dictation: [None; MAX_EXTRA_DICTATION_SHORTCUTS],
             extra_dictation_modes: [ExtraDictationMode::HoldOrDoubleTap;
                 MAX_EXTRA_DICTATION_SHORTCUTS],

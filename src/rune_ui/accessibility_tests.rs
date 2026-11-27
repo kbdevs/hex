@@ -13,7 +13,7 @@ use super::*;
 
 const SIZE: (f32, f32) = (980.0, 760.0);
 
-fn runtime(scene: &str) -> Runtime<Ui> {
+pub(super) fn runtime(scene: &str) -> Runtime<Ui> {
     let mut state = Ui::with(AppSettings::default(), Service::Fixture(Vec::new()));
     let (_, apply) = SCENES
         .iter()
@@ -154,6 +154,43 @@ fn the_pane_title_is_its_heading() {
     assert_eq!(name(&title), "History");
 }
 
+#[test]
+fn the_local_build_footer_keeps_its_commit_in_the_description() {
+    let rt = runtime("mac-local-build");
+    let version = node(&rt, "version");
+    assert_eq!(name(&version), "3.4.0 · Local build");
+    assert_eq!(
+        version["description"],
+        "Local build · updates off\nfc837db2a56858eeef61411c97737d2435e60a88"
+    );
+    assert!(rt.find("update-status").is_none());
+    assert!(rt.find("build-badge").is_none());
+    if host::QUIT_IN_WINDOW {
+        let [x, y, w, _] = rt.presented("version").unwrap().0;
+        let [qx, qy, qw, _] = rt.presented("quit").unwrap().0;
+        let [sx, _, sw, _] = rt.presented("sidebar").unwrap().0;
+        assert_eq!(y, qy, "the English version and Quit fit on one line");
+        assert!(sx <= x && x + w <= qx && qx + qw <= sx + sw);
+    }
+}
+
+/// The stats dialog's daily chart is one image, and its name carries today's
+/// count and the busiest day's.
+#[test]
+fn the_stats_chart_names_todays_and_the_busiest_days_counts() {
+    let rt = runtime("history-stats");
+    let tree = rt.accessibility_json();
+    let chart = nodes(&tree)
+        .into_iter()
+        .find(|(path, node)| path.ends_with("/bars") && node["role"] == "image")
+        .map(|(_, node)| node)
+        .expect("the daily chart");
+    assert_eq!(
+        name(chart),
+        "Dictations per day: 5 today, 9 on the busiest day"
+    );
+}
+
 /// The sidebar is a list whose shown pane is selected, and choosing
 /// another through accessibility switches to it, as a click does.
 #[test]
@@ -171,6 +208,20 @@ fn the_sidebar_says_which_pane_shows_and_switches_through_accessibility() {
     assert!(states(&node(&rt, "nav-history")).contains(&"selected"));
     assert!(!states(&node(&rt, "nav-general")).contains(&"selected"));
     assert_eq!(name(&node(&rt, "pane-title")), "History");
+
+    let news = node(&rt, "nav-whats-new");
+    assert_eq!(news["role"], "list-item");
+    assert!(!states(&news).contains(&"selected"));
+    assert!(rt.accessibility_action("nav-whats-new", Action::Click, None));
+    settle(&mut rt);
+    assert!(states(&node(&rt, "nav-whats-new")).contains(&"selected"));
+    assert_eq!(name(&node(&rt, "pane-title")), "What's new");
+    assert_eq!(rt.find("quit").is_some(), host::QUIT_IN_WINDOW);
+
+    assert!(rt.accessibility_action("nav-labs", Action::Click, None));
+    settle(&mut rt);
+    assert!(!states(&node(&rt, "nav-whats-new")).contains(&"selected"));
+    assert!(states(&node(&rt, "nav-labs")).contains(&"selected"));
 }
 
 /// History's list says how many entries it holds and each row its place,
@@ -233,6 +284,30 @@ fn choices_name_what_they_choose_and_read_their_value() {
     assert!(microphone["value"].as_str().is_some_and(|v| !v.is_empty()));
 }
 
+/// The Sounds sheet's volume reads as a percent, and each set's play
+/// button is named inside the set's row.
+#[test]
+fn the_sounds_sheet_names_its_slider_and_play_buttons() {
+    let mut rt = runtime("sound-sets");
+    rt.state.settings.sound_effect_volume = 0.35;
+    settle(&mut rt);
+    let tree = rt.accessibility_json();
+    let all = nodes(&tree);
+    let slider = all
+        .iter()
+        .find(|(path, node)| path.contains("sound-volume-slider") && node["role"] == "slider")
+        .map(|(_, node)| *node)
+        .expect("the volume slider");
+    assert_eq!(name(slider), "Sound volume");
+    assert_eq!(slider["value"].as_str(), Some("35%"));
+    let plays: Vec<_> = all
+        .iter()
+        .filter(|(path, node)| path.contains("set-") && node["key"] == "play")
+        .collect();
+    assert_eq!(plays.len(), crate::feedback::SoundSet::ALL.len());
+    assert!(plays.iter().all(|(_, node)| name(node) == "Play"));
+}
+
 /// The model picker is a dialog named by its title, the only part of the
 /// window a screen reader reaches while it is open.
 #[test]
@@ -240,7 +315,7 @@ fn the_model_picker_is_a_named_modal_dialog() {
     let mut rt = runtime("portal");
     assert!(rt.accessibility_action("transcription-control", Action::Click, None));
     settle(&mut rt);
-    assert!(rt.state.picker.open);
+    assert!(rt.state.is_modal(Modal::Picker));
     let picker = node(&rt, "transcription-picker");
     assert_eq!(picker["role"], "dialog");
     assert!(!name(&picker).is_empty());

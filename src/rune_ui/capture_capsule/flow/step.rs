@@ -4,12 +4,21 @@ use super::*;
 impl Flow {
     pub(super) fn step(&mut self, input: Input, now: f64) -> Vec<Action> {
         let mut actions = Vec::new();
+        self.undo.expire(now);
         if input == Input::NothingHeard {
             self.silent = true;
             return actions;
         }
         if input == Input::CopyFailed {
             self.uncopied = true;
+            return actions;
+        }
+        if input == Input::Copied {
+            self.uncopied = false;
+            return actions;
+        }
+        if let Input::RuleMatch(rule_match) = input {
+            self.rule_match = rule_match;
             return actions;
         }
         if let Input::Drawing(on) = input {
@@ -19,47 +28,44 @@ impl Flow {
         if input == Input::Stage(Stage::Recording) {
             self.silent = false;
             self.uncopied = false;
+            self.rule_match = None;
             if !matches!(self.phase, Phase::Recording { .. }) {
                 self.drawing = false;
             }
         }
         if matches!(input, Input::Stage(_)) {
-            self.closed = false;
-            self.undoing = false;
-            self.superseded = false;
+            self.undo = Undo::Idle;
         }
-        if matches!(input, Input::Undone(_)) {
-            // The earlier send's, taken back before the pick went.
-            if std::mem::take(&mut self.superseded) {
+        match (self.undo, &input) {
+            // The earlier send's Undone, taken back before the pick went.
+            (Undo::Superseded { .. }, Input::Undone(_)) => {
+                self.undo = Undo::Idle;
                 return actions;
             }
-            self.undoing = false;
-        }
-        // The send an Undo takes back, arriving late (it went, queued, or
-        // failed), changes nothing: the list it reopened stays.
-        if self.undoing
-            && matches!(
-                input,
-                Input::Settled | Input::Delivered(_) | Input::Failed(Failure::Send(_), _)
-            )
-        {
-            return actions;
-        }
-        // News of the earlier send under the pick shown says nothing of it.
-        if self.superseded
-            && let Phase::Sent(sent) = &self.phase
-            && match &input {
-                Input::Delivered(Delivered::Sent { to } | Delivered::Queued { to, .. })
-                | Input::Failed(Failure::Send(to), _) => *to != sent.to,
-                _ => false,
+            (Undo::InFlight { .. }, Input::Undone(_)) => {
+                self.undo = Undo::Idle;
             }
-        {
-            return actions;
+            // The send an Undo takes back, arriving late (posting, went,
+            // queued, or failed), changes nothing: the list it reopened stays.
+            (
+                Undo::InFlight { .. },
+                Input::Sending
+                | Input::Settled
+                | Input::Delivered(_)
+                | Input::Failed(Failure::Send(_), _),
+            ) => return actions,
+            // News of the earlier send under the pick shown says nothing of it.
+            (
+                Undo::Superseded { .. },
+                Input::Delivered(Delivered::Sent { to } | Delivered::Queued { to, .. })
+                | Input::Failed(Failure::Send(to), _),
+            ) if matches!(&self.phase, Phase::Sent(sent) if *to != sent.to) => {
+                return actions;
+            }
+            _ => {}
         }
         if input == Input::Sending {
-            if !self.undoing
-                && let Phase::Routed(routed) = &mut self.phase
-                && matches!(routed.route, Route::Rule { .. })
+            if let Phase::Routed(routed) = &mut self.phase
                 && !routed.taken_back
             {
                 routed.sending = true;
@@ -70,8 +76,8 @@ impl Flow {
             self.hold_floor = self.hold_floor.max(now + tuning::get().brief_hold_s);
             // A rule's send went: it sounds Sent, once.
             if let Phase::Routed(routed) = &mut self.phase
-                && matches!(routed.route, Route::Rule { .. })
                 && !std::mem::replace(&mut routed.delivered, true)
+                && matches!(routed.route, Route::Rule { .. })
             {
                 self.cues.push(Cue::Sent);
             }
@@ -192,20 +198,55 @@ impl Flow {
             // Closed before the router answered (dismissed, or the answer
             // came after the hold): it stays closed, and `hex capture list`
             // and `hex capture send` still offer the capture.
-            (Phase::Hidden, Input::Routed(_) | Input::Delivered(_)) if self.closed => Phase::Hidden,
+            (Phase::Dismissed, Input::Routed(_) | Input::Delivered(_)) => Phase::Dismissed,
             // A queued send went on a retry: Hex can't take it back.
-            (_, Input::Delivered(delivered)) => match delivered {
+            (prev, Input::Delivered(delivered)) => match delivered {
                 Delivered::Sent { to } => Phase::Sent(Sent {
                     undoable: false,
-                    ..Sent::picked(&Dest::new(to, ""), false, now, None)
+                    ..Sent::picked(&Dest::new(to, ""), false, now, None, None)
                 }),
-                Delivered::Queued { why, .. } => Phase::Queued { why, at: now },
+                Delivered::Queued { to, why } => {
+                    let (session, back) = match prev {
+                        Phase::Sent(sent) => (Some(sent.session), sent.back),
+                        Phase::Routed(routed) => (
+                            rule_to(&routed.route).map(|d| d.session.clone()),
+                            Some(routed.route),
+                        ),
+                        Phase::Queued { session, back, .. } => (session, back),
+                        _ => (None, None),
+                    };
+                    Phase::Queued {
+                        to,
+                        session,
+                        why,
+                        at: now,
+                        back,
+                    }
+                }
+            },
+            (
+                Phase::Routed(Routed {
+                    route: Route::ResolvingRule { name },
+                    taken_back: false,
+                    ..
+                }),
+                Input::Refined(Route::Unreachable { why }),
+            ) => Phase::Failed {
+                at: now,
+                what: Failure::Send(name),
+                why: plain_reason(&why),
             },
             (Phase::Routed(routed), Input::Refined(route)) if !routed.taken_back => {
                 Phase::Routed(routes::refine(routed, route, now, self.suggest_on_route))
             }
             (_, Input::Routed(route)) => {
+                // In the default List flow, finished capsules stay compact
+                // (`Copied [→ ACME ⌄] ✕` with a suggestion, or `Annotation copied
+                // [Paste] ✕` without one) until `⌄` or `Send to…` is clicked.
+                // Experimental flows (Toast, MenuBar, Cursor, Notch) keep
+                // auto-opening their suggestions.
                 let suggests = self.suggest_on_route
+                    && tuning::get().flow != CapsuleFlow::List
                     && !matches!(
                         route,
                         Route::Rule { .. }
@@ -222,6 +263,7 @@ impl Flow {
                     taken_from: None,
                     delivered: false,
                     sending: false,
+                    queued: false,
                 })
             }
             (Phase::Routed(routed), Input::OpenList)
@@ -229,14 +271,47 @@ impl Flow {
             {
                 Phase::Routed(routed)
             }
-            // The capture shortcut over the suggestions searches every
-            // session; in the search it records anew, which the listener
-            // does itself.
+            // The capture shortcut over a compact finished capsule or open
+            // suggestions opens session search; once search is already open it
+            // records anew, which the listener does itself.
             (Phase::Routed(routed), Input::Record)
-                if routed.open.as_ref().is_some_and(|open| !open.typing) =>
+                if routed.open.as_ref().is_some_and(|open| !open.typing)
+                    || routed.compact_searchable() =>
             {
                 self.phase = Phase::Routed(routed);
                 return self.step(Input::OpenList, now);
+            }
+            (phase @ Phase::Queued { .. }, Input::Record) => {
+                self.phase = phase;
+                return self.step(Input::OpenList, now);
+            }
+            (
+                Phase::Queued {
+                    to, session, back, ..
+                },
+                Input::OpenList,
+            ) => {
+                let route = back.unwrap_or_else(|| Route::Nothing {
+                    recent: vec![
+                        Dest::new(to.clone(), tr("queued")).session(session.unwrap_or(to)),
+                    ],
+                });
+                let mut routed = Routed {
+                    route,
+                    at: now,
+                    open: Some(Open {
+                        typing: true,
+                        ..Open::suggesting()
+                    }),
+                    taken_back: false,
+                    already_with: None,
+                    taken_from: None,
+                    delivered: false,
+                    sending: false,
+                    queued: true,
+                };
+                clamp(&mut routed);
+                Phase::Routed(routed)
             }
             (Phase::Routed(mut routed), Input::OpenList) => {
                 match &mut routed.open {
@@ -291,11 +366,23 @@ impl Flow {
             }
             (Phase::Routed(routed), Input::Send { always }) => {
                 let selected = routed.open.as_ref().map(|open| open.selected);
-                send(routed, selected, always, now, &mut actions)
+                send(
+                    routed,
+                    selected,
+                    always,
+                    now,
+                    self.rule_match.clone(),
+                    &mut actions,
+                )
             }
-            (Phase::Routed(routed), Input::SendRow(row)) => {
-                send(routed, Some(row), false, now, &mut actions)
-            }
+            (Phase::Routed(routed), Input::SendRow(row)) => send(
+                routed,
+                Some(row),
+                false,
+                now,
+                self.rule_match.clone(),
+                &mut actions,
+            ),
             (Phase::Routed(mut routed), Input::Cycle(by)) => {
                 let rows = routed
                     .open
@@ -336,13 +423,18 @@ impl Flow {
             // Taken back, folding it starts its hold: it leaves like any
             // finished capsule, and Send to… brings it back.
             (Phase::Routed(mut routed), Input::ClickAway) if !self.hovered => {
-                if routed.taken_back {
-                    routed.at = now;
-                }
                 if routed.open.take().is_some() {
+                    if routed.taken_back {
+                        routed.at = now;
+                    }
                     self.fold_hold(now);
                 }
                 Phase::Routed(routed)
+            }
+            (Phase::Sent(mut sent), Input::ClickAway) if !self.hovered && sent.always.is_some() => {
+                sent.always = None;
+                self.fold_hold(now);
+                Phase::Sent(sent)
             }
             (phase, Input::ClickAway) => phase,
             // Taken back, ✕ (or Escape in its open list) is the dismissal:
@@ -360,7 +452,7 @@ impl Flow {
             {
                 match already_with {
                     None => Phase::Kept { at: now },
-                    Some(_) => Phase::Hidden,
+                    Some(_) => Phase::Dismissed,
                 }
             }
             // Escape only reaches an open list; it folds it. It never takes
@@ -376,6 +468,13 @@ impl Flow {
             (Phase::Routed(routed), Input::Undo) => {
                 if let Route::ResolvingRule { name } = &routed.route {
                     actions.push(Action::Undo { to: name.clone() });
+                    return {
+                        self.phase = Phase::TakenBack { at: now };
+                        actions
+                    };
+                }
+                if routed.queued {
+                    actions.push(Action::Undo { to: String::new() });
                     return {
                         self.phase = Phase::TakenBack { at: now };
                         actions
@@ -402,6 +501,11 @@ impl Flow {
                 let from = sent.from();
                 taking_back(sent.back, &from, now)
             }
+            (Phase::Sent(mut sent), Input::Escape) if sent.always.is_some() => {
+                sent.always = None;
+                self.fold_hold(now);
+                Phase::Sent(sent)
+            }
             // Nothing to list: dismissing says where the bundle is.
             (Phase::TakenBack { .. }, Input::Dismiss) => Phase::Kept { at: now },
             // Escape closes the picker, but never ends a recording: it may be
@@ -411,7 +515,7 @@ impl Flow {
                 Phase::Hidden
             }
             // Pasted or dismissed: the take-back it asked for says nothing.
-            (Phase::Hidden, Input::Undone(_)) => Phase::Hidden,
+            (phase @ (Phase::Hidden | Phase::Dismissed), Input::Undone(_)) => phase,
             // The list opened as the Undo was asked for. Taken back, it
             // stays as it is; too late, the session it went to has it.
             (Phase::Routed(mut routed), Input::Undone(undone)) if routed.taken_back => {
@@ -475,6 +579,16 @@ impl Flow {
             // Escape is the app's everywhere else: it is never claimed, so
             // one that arrives is ignored.
             (phase, Input::Escape | Input::Undo) => phase,
+            (
+                Phase::Saved { .. }
+                | Phase::Routed(_)
+                | Phase::Sent(_)
+                | Phase::Queued { .. }
+                | Phase::Kept { .. }
+                | Phase::TooLate { .. }
+                | Phase::Failed { .. },
+                Input::Dismiss,
+            ) => Phase::Dismissed,
             (_, Input::Dismiss) => Phase::Hidden,
             (phase, _) => phase,
         };
