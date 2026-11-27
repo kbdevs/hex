@@ -1209,8 +1209,7 @@ final class FullKeyboardEngine {
             typingLog?.context("space")
             return
         }
-        let ending = holdsTypedSpace ? "" : " "
-        defer { if ending.isEmpty { holdSpaceAfterWord(spaceBar: true) } }
+        let ending = " "
         let token = AutocorrectEngine.currentToken(in: textBefore)
         let taps = currentTokenTaps
         learning?.didFinish(word: token, language: autocorrect.language.rawValue)
